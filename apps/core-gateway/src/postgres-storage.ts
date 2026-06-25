@@ -394,12 +394,7 @@ export class PostgresStorageStore implements StoragePort, SignedReadPort, Cleanu
     const predicates = ["project_id = $1", "deleted_at IS NULL"];
     if (prefix) {
       params.push(prefix);
-      predicates.push(`key >= $${params.length}`);
-      const upper = prefixUpperBound(prefix);
-      if (upper) {
-        params.push(upper);
-        predicates.push(`key < $${params.length}`);
-      }
+      predicates.push(`starts_with(key, $${params.length})`);
     }
     if (cursor) {
       params.push(cursor);
@@ -432,12 +427,7 @@ export class PostgresStorageStore implements StoragePort, SignedReadPort, Cleanu
     const predicates = ["project_id = $1", "deleted_at IS NULL"];
     if (prefix) {
       params.push(prefix);
-      predicates.push(`key >= $${params.length}`);
-      const upper = prefixUpperBound(prefix);
-      if (upper) {
-        params.push(upper);
-        predicates.push(`key < $${params.length}`);
-      }
+      predicates.push(`starts_with(key, $${params.length})`);
     }
     const result = await this.#pool.query<{ key: string }>(
       `
@@ -639,12 +629,7 @@ export class PostgresStorageStore implements StoragePort, SignedReadPort, Cleanu
     const predicates = ["project_id = $1", "deleted_at IS NULL"];
     if (normalizedPrefix) {
       params.push(normalizedPrefix);
-      predicates.push(`key >= $${params.length}`);
-      const upper = prefixUpperBound(normalizedPrefix);
-      if (upper) {
-        params.push(upper);
-        predicates.push(`key < $${params.length}`);
-      }
+      predicates.push(`starts_with(key, $${params.length})`);
     }
     const result = await client.query<{ key: string }>(
       `
@@ -853,12 +838,6 @@ function clampListLimit(value: number | undefined): number {
   if (value === undefined) return 100;
   if (!Number.isFinite(value) || value < 1) return 100;
   return Math.min(Math.floor(value), 500);
-}
-
-function prefixUpperBound(prefix: string): string | null {
-  if (!prefix) return null;
-  const last = prefix.charCodeAt(prefix.length - 1);
-  return `${prefix.slice(0, -1)}${String.fromCharCode(last + 1)}`;
 }
 
 function versionId(sha256: string): string {

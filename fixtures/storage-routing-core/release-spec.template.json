@@ -1,0 +1,87 @@
+{
+  "project": "__PROJECT_ID__",
+  "base": {
+    "release": "current"
+  },
+  "site": {
+    "replace": {
+      "events.html": {
+        "sha256": "__EVENTS_SHA256__",
+        "size": "__EVENTS_SIZE__",
+        "contentType": "text/html"
+      },
+      "login.html": {
+        "sha256": "__LOGIN_SHA256__",
+        "size": "__LOGIN_SIZE__",
+        "contentType": "text/html"
+      },
+      "assets/app.css": {
+        "sha256": "__APP_CSS_SHA256__",
+        "size": "__APP_CSS_SIZE__",
+        "contentType": "text/css"
+      },
+      "hidden.txt": {
+        "sha256": "__HIDDEN_SHA256__",
+        "size": "__HIDDEN_SIZE__",
+        "contentType": "text/plain"
+      }
+    },
+    "public_paths": {
+      "mode": "explicit",
+      "replace": {
+        "/events": {
+          "asset": "events.html",
+          "cache_class": "html"
+        },
+        "/assets/app.css": {
+          "asset": "assets/app.css",
+          "cache_class": "revalidating_asset"
+        }
+      }
+    }
+  },
+  "routes": {
+    "replace": [
+      {
+        "pattern": "/login",
+        "methods": ["GET", "HEAD"],
+        "target": {
+          "type": "static",
+          "file": "login.html"
+        }
+      }
+    ]
+  },
+  "assets": {
+    "put": [
+      {
+        "key": "fixture/public.txt",
+        "sha256": "__PUBLIC_OBJECT_SHA256__",
+        "size_bytes": "__PUBLIC_OBJECT_SIZE__",
+        "content_type": "text/plain",
+        "visibility": "public",
+        "immutable": true
+      },
+      {
+        "key": "fixture/private.txt",
+        "sha256": "__PRIVATE_OBJECT_SHA256__",
+        "size_bytes": "__PRIVATE_OBJECT_SIZE__",
+        "content_type": "text/plain",
+        "visibility": "private",
+        "immutable": true
+      },
+      {
+        "key": "fixture/prune/keep.txt",
+        "sha256": "__SYNC_KEEP_SHA256__",
+        "size_bytes": "__SYNC_KEEP_SIZE__",
+        "content_type": "text/plain",
+        "visibility": "public",
+        "immutable": true
+      }
+    ],
+    "sync": {
+      "prefix": "fixture/prune/",
+      "prune": true
+    }
+  }
+}

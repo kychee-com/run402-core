@@ -52,7 +52,15 @@ jobs:
         run: npm run core:smoke
 
       - name: Core apply smoke
-        run: npm run core:conformance
+        run: npm run core:apply-smoke
+
+      - name: Core storage routing conformance
+        run: npm run core:storage-routing
+
+      - name: Core storage routing restart persistence
+        run: npm run core:storage-routing
+        env:
+          CORE_CONFORMANCE_RESTART: "1"
 
       - name: Core Compose logs
         if: failure()

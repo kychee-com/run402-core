@@ -12,6 +12,7 @@ npm test
 docker compose up -d --build core
 npm run core:health
 npm run core:conformance
+CORE_CONFORMANCE_RESTART=1 npm run core:storage-routing
 ```
 
 ## What The Conformance Fixture Proves
@@ -24,6 +25,9 @@ npm run core:conformance
 - verify RLS through anon, user A, user B, and service-role dev JWTs
 - serve active-release static content
 - verify no-op reapply, stale-plan rejection, content-digest failure, and unsupported capability failure
+- upload, complete, list, read, sign, delete, and clean up local storage objects
+- verify public/private visibility, anonymous private denial, immutable URL retention, and restart persistence
+- verify exact static aliases, explicit public paths, HEAD/GET behavior, route miss/static lookup, private asset non-disclosure, route-conflict rejection, and unsupported dynamic-route failure
 
 ## Stop
 

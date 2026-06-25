@@ -11,6 +11,11 @@ Default credentials are local-development credentials. Do not expose this stack 
 - deterministic dev JWTs for repeatable local tests
 - explicit unsupported-capability errors for excluded runtime features
 - digest verification for staged static content
+- digest and size verification for local storage uploads
+- private storage objects hidden from anonymous callers as 404
+- local signed-read URLs with bounded TTL
+- immutable URL records resolved by content digest rather than mutable object rows
+- static route manifests that fail closed for unsupported dynamic targets
 
 ## Not Included
 
@@ -22,5 +27,7 @@ Default credentials are local-development credentials. Do not expose this stack 
 - untrusted code sandboxing
 - tenant isolation hardening beyond the local fixture path
 - upgrade automation
+- durable multi-node object storage
+- managed object quotas, abuse automation, and backup/restore workflows
 
 Treat this runtime as a portable developer reference until those operational concerns are designed and implemented.
