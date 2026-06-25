@@ -35,6 +35,7 @@ interface PlanRow {
   target_release_id: string;
   target_release_digest: string;
   target_release: PortableReleaseState;
+  storage_effects: StoredCoreApplyPlan["storage_effects"] | null;
   noop: boolean;
   status: "planned" | "committed";
   created_at: Date;
@@ -109,11 +110,15 @@ export class PostgresApplyStore implements ReleaseStatePort, ApplyPlanStorePort,
         target_release_id text NOT NULL,
         target_release_digest text NOT NULL,
         target_release jsonb NOT NULL,
+        storage_effects jsonb,
         noop boolean NOT NULL,
         status text NOT NULL DEFAULT 'planned' CHECK (status IN ('planned', 'committed')),
         created_at timestamptz NOT NULL DEFAULT now(),
         committed_at timestamptz
       );
+
+      ALTER TABLE internal.core_apply_plans
+        ADD COLUMN IF NOT EXISTS storage_effects jsonb;
 
       CREATE TABLE IF NOT EXISTS internal.core_applied_migrations (
         project_id text NOT NULL REFERENCES internal.core_projects(project_id) ON DELETE CASCADE,
@@ -216,11 +221,12 @@ export class PostgresApplyStore implements ReleaseStatePort, ApplyPlanStorePort,
           target_release_id,
           target_release_digest,
           target_release,
+          storage_effects,
           noop
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         RETURNING plan_id, project_id, spec, release_spec_digest, base_release_id,
-          target_release_id, target_release_digest, target_release, noop, status, created_at
+          target_release_id, target_release_digest, target_release, storage_effects, noop, status, created_at
       `,
       [
         `plan_${randomToken(12)}`,
@@ -231,6 +237,7 @@ export class PostgresApplyStore implements ReleaseStatePort, ApplyPlanStorePort,
         input.target_release_id,
         input.target_release_digest,
         input.target_release,
+        input.storage_effects ?? null,
         input.noop,
       ],
     );
@@ -241,7 +248,7 @@ export class PostgresApplyStore implements ReleaseStatePort, ApplyPlanStorePort,
     const result = await this.#pool.query<PlanRow>(
       `
         SELECT plan_id, project_id, spec, release_spec_digest, base_release_id,
-          target_release_id, target_release_digest, target_release, noop, status, created_at
+          target_release_id, target_release_digest, target_release, storage_effects, noop, status, created_at
         FROM internal.core_apply_plans
         WHERE plan_id = $1
       `,
@@ -347,6 +354,7 @@ function rowToPlan(row: PlanRow): StoredCoreApplyPlan {
     base_release_id: row.base_release_id,
     target_release_id: row.target_release_id,
     target_release_digest: row.target_release_digest,
+    ...(row.storage_effects ? { storage_effects: row.storage_effects } : {}),
     noop: row.noop,
     status: row.status,
     created_at: row.created_at.toISOString(),

@@ -2,8 +2,10 @@ import { randomBytes } from "node:crypto";
 import type { Pool as PgPool } from "pg";
 import {
   clampSignedReadTtlSeconds,
+  computeStorageInventoryRevision,
   createStorageReadSignature,
   encodeStorageKeyPath,
+  ApplyInvariantError,
   normalizeSha256Hex,
   normalizeStorageContentType,
   normalizeStorageKey,
@@ -16,10 +18,13 @@ import {
   type CoreStorageObject,
   type CoreStorageObjectList,
   type CoreUploadSession,
+  type CoreStorageApplyEffects,
+  type CleanupPort,
   type SignedReadPort,
   type StorageObjectVisibility,
   type StoragePort,
 } from "@run402/runtime-kernel";
+import type { PortableReleaseState } from "@run402/release";
 
 export interface PostgresStorageStoreOptions {
   publicBaseUrl: string;
@@ -69,7 +74,7 @@ interface StorageVersionRow {
   retained_until: Date | string | null;
 }
 
-export class PostgresStorageStore implements StoragePort, SignedReadPort {
+export class PostgresStorageStore implements StoragePort, SignedReadPort, CleanupPort {
   readonly #pool: PgPool;
   readonly #publicBaseUrl: string;
   readonly #signedReadSecret: string;
@@ -418,6 +423,105 @@ export class PostgresStorageStore implements StoragePort, SignedReadPort {
     };
   }
 
+  async inventoryRevision(input: {
+    projectId: string;
+    prefix: string;
+  }): Promise<{ keys: string[]; revision: string }> {
+    const prefix = normalizeStoragePrefix(input.prefix);
+    const params: unknown[] = [input.projectId];
+    const predicates = ["project_id = $1", "deleted_at IS NULL"];
+    if (prefix) {
+      params.push(prefix);
+      predicates.push(`key >= $${params.length}`);
+      const upper = prefixUpperBound(prefix);
+      if (upper) {
+        params.push(upper);
+        predicates.push(`key < $${params.length}`);
+      }
+    }
+    const result = await this.#pool.query<{ key: string }>(
+      `
+        SELECT key
+        FROM internal.core_storage_objects
+        WHERE ${predicates.join(" AND ")}
+        ORDER BY key ASC
+      `,
+      params,
+    );
+    const keys = result.rows.map((row) => row.key);
+    return {
+      keys,
+      revision: computeStorageInventoryRevision(keys),
+    };
+  }
+
+  async commitAssetPlan(input: {
+    projectId: string;
+    effects: CoreStorageApplyEffects;
+  }): Promise<void> {
+    const client = await this.#pool.connect();
+    try {
+      await client.query("BEGIN");
+      await this.#applyStorageEffects(client, input.projectId, input.effects);
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async activateReleaseWithStorage(input: {
+    projectId: string;
+    releaseId: string;
+    digest: string;
+    release: PortableReleaseState;
+    expectedBaseReleaseId: string | null;
+    effects?: CoreStorageApplyEffects;
+  }): Promise<void> {
+    const client = await this.#pool.connect();
+    try {
+      await client.query("BEGIN");
+      const active = await client.query<{ active_release_id: string | null }>(
+        "SELECT active_release_id FROM internal.core_projects WHERE project_id = $1 FOR UPDATE",
+        [input.projectId],
+      );
+      if (!active.rows[0]) {
+        throw new ApplyInvariantError("project_not_found", `Run402 Core project not found: ${input.projectId}`);
+      }
+      if (active.rows[0].active_release_id !== input.expectedBaseReleaseId) {
+        throw new ApplyInvariantError("stale_plan", "Apply plan base release no longer matches the active release.");
+      }
+      if (input.effects && !input.effects.noop) {
+        await this.#applyStorageEffects(client, input.projectId, input.effects);
+      }
+      await client.query(
+        `
+          INSERT INTO internal.core_releases (project_id, release_id, digest, state)
+          VALUES ($1, $2, $3, $4)
+          ON CONFLICT (project_id, release_id)
+          DO UPDATE SET digest = EXCLUDED.digest, state = EXCLUDED.state
+        `,
+        [input.projectId, input.releaseId, input.digest, input.release],
+      );
+      await client.query(
+        `
+          UPDATE internal.core_projects
+          SET active_release_id = $2, updated_at = now()
+          WHERE project_id = $1
+        `,
+        [input.projectId, input.releaseId],
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   async deleteObject(input: { projectId: string; key: string }): Promise<boolean> {
     const key = normalizeStorageKey(input.key);
     const result = await this.#pool.query(
@@ -451,6 +555,108 @@ export class PostgresStorageStore implements StoragePort, SignedReadPort {
       [input.projectId, key, sha256],
     );
     return result.rows[0] ? this.#versionRow(result.rows[0]) : null;
+  }
+
+  async #applyStorageEffects(
+    client: Pick<PgPool, "query">,
+    projectId: string,
+    effects: CoreStorageApplyEffects,
+  ): Promise<void> {
+    if (effects.sync_prune) {
+      const current = await this.#inventoryRevisionWithClient(client, projectId, effects.sync_prune.prefix);
+      if (current.revision !== effects.sync_prune.base_revision) {
+        throw new ApplyInvariantError("asset_sync_drift", "Storage inventory changed after the apply plan was created.");
+      }
+    }
+
+    const putKeys = new Set(effects.puts.map((put) => put.key));
+    const deleteKeys = new Set([
+      ...effects.deletes,
+      ...(effects.sync_prune?.planned_delete_keys ?? []),
+    ]);
+    for (const key of putKeys) deleteKeys.delete(key);
+    for (const key of deleteKeys) {
+      await client.query(
+        `
+          DELETE FROM internal.core_storage_objects
+          WHERE project_id = $1 AND key = $2
+        `,
+        [projectId, key],
+      );
+    }
+
+    for (const put of effects.puts) {
+      await client.query(
+        `
+          INSERT INTO internal.core_content_objects (sha256, size_bytes, content_type)
+          VALUES ($1, $2, $3)
+          ON CONFLICT (sha256) DO UPDATE
+          SET size_bytes = EXCLUDED.size_bytes,
+              content_type = EXCLUDED.content_type,
+              last_verified_at = now()
+        `,
+        [put.sha256, put.size_bytes, put.content_type],
+      );
+      await client.query(
+        `
+          INSERT INTO internal.core_storage_objects (
+            project_id, key, content_sha256, size_bytes, content_type, visibility, immutable
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7)
+          ON CONFLICT (project_id, key) DO UPDATE
+          SET content_sha256 = EXCLUDED.content_sha256,
+              size_bytes = EXCLUDED.size_bytes,
+              content_type = EXCLUDED.content_type,
+              visibility = EXCLUDED.visibility,
+              immutable = EXCLUDED.immutable,
+              updated_at = now(),
+              deleted_at = NULL
+        `,
+        [projectId, put.key, put.sha256, put.size_bytes, put.content_type, put.visibility, put.immutable],
+      );
+      if (put.immutable) {
+        await client.query(
+          `
+            INSERT INTO internal.core_storage_versions (
+              project_id, key, sha256, version_id, size_bytes, content_type, visibility, public_url_key
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            ON CONFLICT (project_id, key, sha256) DO NOTHING
+          `,
+          [projectId, put.key, put.sha256, versionId(put.sha256), put.size_bytes, put.content_type, put.visibility, `${put.sha256}/${put.key}`],
+        );
+      }
+    }
+  }
+
+  async #inventoryRevisionWithClient(
+    client: Pick<PgPool, "query">,
+    projectId: string,
+    prefix: string,
+  ): Promise<{ keys: string[]; revision: string }> {
+    const normalizedPrefix = normalizeStoragePrefix(prefix);
+    const params: unknown[] = [projectId];
+    const predicates = ["project_id = $1", "deleted_at IS NULL"];
+    if (normalizedPrefix) {
+      params.push(normalizedPrefix);
+      predicates.push(`key >= $${params.length}`);
+      const upper = prefixUpperBound(normalizedPrefix);
+      if (upper) {
+        params.push(upper);
+        predicates.push(`key < $${params.length}`);
+      }
+    }
+    const result = await client.query<{ key: string }>(
+      `
+        SELECT key
+        FROM internal.core_storage_objects
+        WHERE ${predicates.join(" AND ")}
+        ORDER BY key ASC
+      `,
+      params,
+    );
+    const keys = result.rows.map((row) => row.key);
+    return { keys, revision: computeStorageInventoryRevision(keys) };
   }
 
   async signRead(input: {
@@ -495,6 +701,83 @@ export class PostgresStorageStore implements StoragePort, SignedReadPort {
       signature: input.signature,
       sha256: input.sha256 ?? null,
     });
+  }
+
+  async sweep(projectId?: string): Promise<{
+    removed_uploads: number;
+    removed_objects: number;
+    removed_versions: number;
+    removed_cas_objects: number;
+    retained_live_sha256: string[];
+  }> {
+    const projectPredicate = projectId ? "AND project_id = $1" : "";
+    const params = projectId ? [projectId] : [];
+    const expiredUploads = await this.#pool.query(
+      `
+        DELETE FROM internal.core_upload_sessions
+        WHERE status IN ('active', 'uploaded')
+          AND expires_at <= now()
+          ${projectPredicate}
+      `,
+      params,
+    );
+    const expiredVersions = await this.#pool.query(
+      `
+        DELETE FROM internal.core_storage_versions
+        WHERE retained_until IS NOT NULL
+          AND retained_until <= now()
+          ${projectPredicate}
+      `,
+      params,
+    );
+    const live = await this.#pool.query<{ sha256: string }>(
+      `
+        SELECT DISTINCT sha256
+        FROM (
+          SELECT content_sha256 AS sha256
+            FROM internal.core_storage_objects
+           WHERE deleted_at IS NULL
+             ${projectPredicate}
+          UNION
+          SELECT sha256
+            FROM internal.core_storage_versions
+           WHERE revoked_at IS NULL
+             AND (retained_until IS NULL OR retained_until > now())
+             ${projectPredicate}
+          UNION
+          SELECT declared_sha256 AS sha256
+            FROM internal.core_upload_sessions
+           WHERE status IN ('active', 'uploaded')
+             AND expires_at > now()
+             ${projectPredicate}
+          UNION
+          SELECT path.value->>'content_sha256' AS sha256
+            FROM internal.core_projects p
+            JOIN internal.core_releases r
+              ON r.project_id = p.project_id
+             AND r.release_id = p.active_release_id
+            CROSS JOIN LATERAL jsonb_array_elements(COALESCE(r.state->'site'->'paths', '[]'::jsonb)) AS path(value)
+           WHERE path.value ? 'content_sha256'
+             ${projectId ? "AND p.project_id = $1" : ""}
+          UNION
+          SELECT put.value->>'sha256' AS sha256
+            FROM internal.core_apply_plans plan
+            CROSS JOIN LATERAL jsonb_array_elements(COALESCE(plan.storage_effects->'puts', '[]'::jsonb)) AS put(value)
+           WHERE plan.status = 'planned'
+             ${projectId ? "AND plan.project_id = $1" : ""}
+        ) live_refs
+        WHERE sha256 IS NOT NULL
+        ORDER BY sha256
+      `,
+      params,
+    );
+    return {
+      removed_uploads: expiredUploads.rowCount ?? 0,
+      removed_objects: 0,
+      removed_versions: expiredVersions.rowCount ?? 0,
+      removed_cas_objects: 0,
+      retained_live_sha256: live.rows.map((row) => row.sha256),
+    };
   }
 
   #uploadRow(row: UploadSessionRow): CoreUploadSession {

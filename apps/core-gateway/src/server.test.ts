@@ -132,6 +132,7 @@ test("storage routes upload, serve, sign, preserve immutable versions, delete, a
     content,
     storage,
     signedReads: storage,
+    cleanup: storage,
     maxObjectBytes: 1024 * 1024,
   };
   const headers = { apikey: project.service_key };
@@ -292,6 +293,17 @@ test("storage routes upload, serve, sign, preserve immutable versions, delete, a
     method: "GET",
     pathname: `/projects/v1/${project.project_id}/storage/immutable/${firstSha}/assets/app.js`,
   }, runtime)).status, 200);
+
+  const cleanup = await coreGatewayResponse({
+    method: "POST",
+    pathname: `/projects/v1/${project.project_id}/storage/cleanup`,
+    headers,
+  }, runtime);
+  assert.equal(cleanup.status, 200);
+  assert.deepEqual(
+    (cleanup.body as { retained_live_sha256: string[] }).retained_live_sha256.sort(),
+    [firstSha, secondSha, privateSha].sort(),
+  );
 });
 
 class MemoryProjectCatalog implements ProjectCatalogPort {
@@ -517,6 +529,19 @@ class MemoryStoragePort implements StoragePort, SignedReadPort {
       secret: this.#secret,
       ...input,
     });
+  }
+
+  async sweep() {
+    const retained = new Set<string>();
+    for (const object of this.objects.values()) retained.add(object.sha256);
+    for (const object of this.versions.values()) retained.add(object.sha256);
+    return {
+      removed_uploads: 0,
+      removed_objects: 0,
+      removed_versions: 0,
+      removed_cas_objects: 0,
+      retained_live_sha256: [...retained].sort(),
+    };
   }
 
   #objectKey(projectId: string, key: string): string {

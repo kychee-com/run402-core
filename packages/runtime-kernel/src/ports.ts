@@ -47,6 +47,7 @@ export interface CoreApplyPlan {
   base_release_id: string | null;
   target_release_id: string;
   target_release_digest: string;
+  storage_effects?: CoreStorageApplyEffects;
   noop: boolean;
   status: "planned" | "committed";
   created_at: string;
@@ -63,6 +64,7 @@ export interface CoreApplyCommitContext {
   release_id: string;
   release_digest: string;
   target_release: PortableReleaseState;
+  storage_effects?: CoreStorageApplyEffects;
 }
 
 export interface CoreApplyDeferredResult {
@@ -176,6 +178,29 @@ export interface CoreStorageObjectList {
   next_cursor: string | null;
 }
 
+export interface CoreAssetPut {
+  key: string;
+  sha256: string;
+  size_bytes: number;
+  content_type: string;
+  visibility: StorageObjectVisibility;
+  immutable: boolean;
+}
+
+export interface CoreAssetSyncPrunePlan {
+  prefix: string;
+  base_revision: string;
+  delete_set_digest: string;
+  planned_delete_keys: string[];
+}
+
+export interface CoreStorageApplyEffects {
+  puts: CoreAssetPut[];
+  deletes: string[];
+  sync_prune: CoreAssetSyncPrunePlan | null;
+  noop: boolean;
+}
+
 export interface RouteStaticResponse {
   status: 200;
   sha256: string;
@@ -241,6 +266,17 @@ export interface StoragePort {
     limit?: number;
     cursor?: string;
   }): Promise<CoreStorageObjectList>;
+  inventoryRevision(input: {
+    projectId: string;
+    prefix: string;
+  }): Promise<{
+    keys: string[];
+    revision: string;
+  }>;
+  commitAssetPlan(input: {
+    projectId: string;
+    effects: CoreStorageApplyEffects;
+  }): Promise<void>;
   deleteObject(input: {
     projectId: string;
     key: string;

@@ -5,13 +5,23 @@ import {
   emptyPortableReleaseState,
   materializeRelease,
   parseReleaseSpec,
+  type AssetPutEntryWire,
   type ContentRefHex,
   type MigrationSpec,
   type PortableReleaseState,
   type ReleaseSpec,
 } from "@run402/release";
-import type { CoreApplyCommitContext, CoreApplyPlan, RuntimeKernelPorts } from "./ports.js";
+import type { CoreApplyCommitContext, CoreApplyPlan, CoreAssetPut, CoreStorageApplyEffects, RuntimeKernelPorts } from "./ports.js";
 import { UnsupportedCapabilityError } from "./errors.js";
+import {
+  computeStorageInventoryRevision,
+  normalizeSha256Hex,
+  normalizeStorageContentType,
+  normalizeStorageKey,
+  normalizeStoragePrefix,
+  normalizeStorageVisibility,
+  StorageValidationError,
+} from "./storage.js";
 import { validateProjectId } from "./projects.js";
 
 export interface CreateApplyPlanInput {
@@ -70,6 +80,7 @@ export async function createApplyPlan(
     spec,
     concreteBase: base.state,
   });
+  const storageEffects = await planStorageEffects(ports, spec);
   const releaseSpecDigest = digestApplyRequest(spec);
   const targetDigest = digestMaterializedRelease(target);
   const baseDigest = digestMaterializedRelease(base.state);
@@ -82,7 +93,8 @@ export async function createApplyPlan(
     target_release_id: targetReleaseId,
     target_release_digest: targetDigest,
     target_release: target,
-    noop: targetDigest === baseDigest,
+    storage_effects: storageEffects,
+    noop: targetDigest === baseDigest && storageEffects.noop,
   });
 
   return publicPlan(plan);
@@ -142,9 +154,11 @@ export async function commitApplyPlan(
     release_id: releaseId,
     release_digest: plan.target_release_digest,
     target_release: plan.target_release,
+    storage_effects: plan.storage_effects,
   });
 
   await verifyStaticContent(ports, plan.project_id, plan.target_release);
+  await verifyStorageContent(ports, plan.project_id, plan.storage_effects);
 
   const staged = await ports.lifecycle?.stage?.(context());
   if (staged?.release_id) releaseId = staged.release_id;
@@ -168,6 +182,13 @@ export async function commitApplyPlan(
   }
   if (activated?.release_id) releaseId = activated.release_id;
   if (!ports.lifecycle?.activate) {
+    if (plan.storage_effects && !plan.storage_effects.noop) {
+      if (!ports.storage) throw new UnsupportedCapabilityError("storage.objects.local");
+      await ports.storage.commitAssetPlan({
+        projectId: plan.project_id,
+        effects: plan.storage_effects,
+      });
+    }
     await ports.releases.setActiveRelease({
       projectId: plan.project_id,
       releaseId,
@@ -209,7 +230,9 @@ function validateSupportedSpec(spec: ReleaseSpec): void {
   if (spec.functions) throw new UnsupportedCapabilityError("functions.node");
   if (spec.secrets) throw new UnsupportedCapabilityError("secrets.hosted");
   if (spec.subdomains) throw new UnsupportedCapabilityError("subdomains.managed");
-  if (spec.assets) throw new UnsupportedCapabilityError("storage.user-api");
+  if (spec.assets && !spec.assets.put && !spec.assets.delete && !spec.assets.sync) {
+    throw new ApplyInvariantError("asset_spec_empty", "Asset spec must include put, delete, or sync.");
+  }
   if (spec.i18n) throw new UnsupportedCapabilityError("i18n.routing");
   if (spec.database?.zero_downtime) throw new UnsupportedCapabilityError("database.zero-downtime");
   if (spec.site && "patch" in spec.site && spec.site.patch) {
@@ -226,6 +249,120 @@ function validateSupportedSpec(spec: ReleaseSpec): void {
       throw new UnsupportedCapabilityError("functions.node");
     }
   }
+}
+
+async function planStorageEffects(
+  ports: RuntimeKernelPorts,
+  spec: ReleaseSpec,
+): Promise<CoreStorageApplyEffects> {
+  if (!spec.assets) return emptyStorageEffects();
+  if (!ports.storage) throw new UnsupportedCapabilityError("storage.objects.local");
+
+  const requestedPuts = normalizeAssetPuts(spec.assets.put ?? []);
+  const requestedDeletes = normalizeAssetDeletes(spec.assets.delete ?? []);
+  const requestedPutKeys = new Set(requestedPuts.map((put) => put.key));
+  const requestedDeleteKeys = new Set(requestedDeletes);
+  for (const key of requestedPutKeys) {
+    if (requestedDeleteKeys.has(key)) {
+      throw new ApplyInvariantError("asset_key_conflict", `Asset key ${key} appears in both put and delete.`);
+    }
+  }
+
+  const puts: CoreAssetPut[] = [];
+  for (const put of requestedPuts) {
+    const current = await ports.storage.getObject({ projectId: spec.project, key: put.key });
+    if (
+      current &&
+      current.sha256 === put.sha256 &&
+      current.size_bytes === put.size_bytes &&
+      current.content_type === put.content_type &&
+      current.visibility === put.visibility &&
+      current.immutable === put.immutable
+    ) {
+      continue;
+    }
+    puts.push(put);
+  }
+
+  const deletes: string[] = [];
+  for (const key of requestedDeletes) {
+    if (await ports.storage.getObject({ projectId: spec.project, key })) {
+      deletes.push(key);
+    }
+  }
+  const effectiveDeleteKeys = new Set(deletes);
+
+  let syncPrune: CoreStorageApplyEffects["sync_prune"] = null;
+  if (spec.assets.sync) {
+    if (spec.assets.sync.prune !== true) {
+      throw new ApplyInvariantError("asset_sync_prune_required", "Asset sync only supports prune: true in Core.");
+    }
+    const prefix = normalizeStoragePrefix(spec.assets.sync.prefix);
+    const inventory = await ports.storage.inventoryRevision({
+      projectId: spec.project,
+      prefix,
+    });
+    const plannedDeleteKeys = inventory.keys
+      .filter((key) => !requestedPutKeys.has(key) && !effectiveDeleteKeys.has(key))
+      .sort();
+    syncPrune = {
+      prefix,
+      base_revision: inventory.revision,
+      delete_set_digest: computeStorageInventoryRevision(plannedDeleteKeys),
+      planned_delete_keys: plannedDeleteKeys,
+    };
+  }
+
+  const noop = puts.length === 0 && deletes.length === 0 && (syncPrune?.planned_delete_keys.length ?? 0) === 0;
+  return {
+    puts,
+    deletes,
+    sync_prune: syncPrune,
+    noop,
+  };
+}
+
+function emptyStorageEffects(): CoreStorageApplyEffects {
+  return {
+    puts: [],
+    deletes: [],
+    sync_prune: null,
+    noop: true,
+  };
+}
+
+function normalizeAssetPuts(entries: AssetPutEntryWire[]): CoreAssetPut[] {
+  const seen = new Set<string>();
+  return entries.map((entry, index) => {
+    const key = normalizeStorageKey(entry.key);
+    if (seen.has(key)) throw new ApplyInvariantError("asset_duplicate_key", `Duplicate asset put key: ${key}`);
+    seen.add(key);
+    return {
+      key,
+      sha256: normalizeSha256Hex(entry.sha256),
+      size_bytes: normalizeAssetSize(entry.size_bytes, `assets.put.${index}.size_bytes`),
+      content_type: normalizeStorageContentType(entry.content_type),
+      visibility: normalizeStorageVisibility(entry.visibility),
+      immutable: entry.immutable ?? true,
+    };
+  });
+}
+
+function normalizeAssetDeletes(entries: string[]): string[] {
+  const seen = new Set<string>();
+  return entries.map((entry) => {
+    const key = normalizeStorageKey(entry);
+    if (seen.has(key)) throw new ApplyInvariantError("asset_duplicate_key", `Duplicate asset delete key: ${key}`);
+    seen.add(key);
+    return key;
+  });
+}
+
+function normalizeAssetSize(value: unknown, resource: string): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
+    throw new StorageValidationError("invalid_size", `${resource} must be a positive integer.`);
+  }
+  return value;
 }
 
 function releaseBaseTarget(spec: ReleaseSpec): "empty" | "current" | { release_id: string } {
@@ -245,6 +382,22 @@ async function verifyStaticContent(
       throw new ApplyInvariantError(
         "content_digest_missing",
         `Static content ${entry.content_sha256} has not been staged for project ${projectId}.`,
+      );
+    }
+  }
+}
+
+async function verifyStorageContent(
+  ports: RuntimeKernelPorts,
+  projectId: string,
+  effects: CoreStorageApplyEffects | undefined,
+): Promise<void> {
+  for (const put of effects?.puts ?? []) {
+    const present = await ports.content.hasContent(projectId, put.sha256);
+    if (!present) {
+      throw new ApplyInvariantError(
+        "content_digest_missing",
+        `Asset content ${put.sha256} has not been staged for project ${projectId}.`,
       );
     }
   }
@@ -330,6 +483,7 @@ function publicPlan(plan: CoreApplyPlan): CoreApplyPlan {
     base_release_id: plan.base_release_id,
     target_release_id: plan.target_release_id,
     target_release_digest: plan.target_release_digest,
+    ...(plan.storage_effects ? { storage_effects: plan.storage_effects } : {}),
     noop: plan.noop,
     status: plan.status,
     created_at: plan.created_at,

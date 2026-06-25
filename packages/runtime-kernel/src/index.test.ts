@@ -18,9 +18,12 @@ import {
   normalizeStorageKey,
   StorageValidationError,
   createStorageReadSignature,
+  computeStorageInventoryRevision,
   verifyStorageReadSignature,
   unsupportedCapabilityEnvelope,
   type CoreProject,
+  type CoreStorageObject,
+  type CoreStorageApplyEffects,
   type ProjectCatalogPort,
   type RuntimeKernelPorts,
   type StoredCoreApplyPlan,
@@ -304,6 +307,112 @@ test("commit apply plan short-circuits no-op plans before lifecycle side effects
   assert.deepEqual(order, ["plan.markCommitted"]);
 });
 
+test("apply plan commits asset storage effects through the storage port", async () => {
+  const storage = new MemoryStoragePort(["assets/old.txt", "assets/stale.txt"]);
+  const ports = new MemoryRuntimePorts({
+    storage,
+    contentPresent: true,
+  });
+  const plan = await createApplyPlan(ports, {
+    spec: {
+      project: "prj_0000000000000001",
+      base: { release: "empty" },
+      assets: {
+        put: [{
+          key: "assets/app.js",
+          sha256: "b".repeat(64),
+          size_bytes: 12,
+          content_type: "text/javascript",
+          visibility: "public",
+          immutable: true,
+        }],
+        delete: ["assets/old.txt"],
+        sync: {
+          prefix: "assets/",
+          prune: true,
+        },
+      },
+    },
+  });
+
+  assert.equal(plan.noop, false);
+  assert.deepEqual(plan.storage_effects?.sync_prune?.planned_delete_keys, ["assets/stale.txt"]);
+  const result = await commitApplyPlan(ports, { plan_id: plan.plan_id });
+
+  assert.equal(result.status, "committed");
+  assert.equal(storage.committed?.puts[0]?.key, "assets/app.js");
+  assert.deepEqual(storage.committed?.deletes, ["assets/old.txt"]);
+  assert.deepEqual(storage.committed?.sync_prune?.planned_delete_keys, ["assets/stale.txt"]);
+});
+
+test("asset sync-prune rejects stale inventory at commit", async () => {
+  const storage = new MemoryStoragePort(["assets/a.txt"]);
+  const ports = new MemoryRuntimePorts({
+    storage,
+    contentPresent: true,
+  });
+  const plan = await createApplyPlan(ports, {
+    spec: {
+      project: "prj_0000000000000001",
+      base: { release: "empty" },
+      assets: {
+        sync: {
+          prefix: "assets/",
+          prune: true,
+        },
+      },
+    },
+  });
+  storage.keys.push("assets/b.txt");
+
+  await assert.rejects(
+    commitApplyPlan(ports, { plan_id: plan.plan_id }),
+    (error) => error instanceof ApplyInvariantError && error.code === "asset_sync_drift",
+  );
+});
+
+test("asset reapply with identical object metadata is a no-op", async () => {
+  const existing: CoreStorageObject = {
+    project_id: "prj_0000000000000001",
+    key: "assets/app.js",
+    sha256: "b".repeat(64),
+    size_bytes: 12,
+    content_type: "text/javascript",
+    visibility: "public",
+    immutable: true,
+    created_at: new Date(0).toISOString(),
+    updated_at: new Date(0).toISOString(),
+  };
+  const storage = new MemoryStoragePort([existing.key], [existing]);
+  const ports = new MemoryRuntimePorts({
+    storage,
+    activeReleaseId: "rel_existing",
+    contentPresent: true,
+  });
+  ports.seedRelease("rel_existing", emptyCoreReleaseState());
+
+  const plan = await createApplyPlan(ports, {
+    spec: {
+      project: "prj_0000000000000001",
+      assets: {
+        put: [{
+          key: existing.key,
+          sha256: existing.sha256,
+          size_bytes: existing.size_bytes,
+          content_type: existing.content_type,
+          visibility: existing.visibility,
+          immutable: existing.immutable,
+        }],
+      },
+    },
+  });
+
+  assert.equal(plan.noop, true);
+  const result = await commitApplyPlan(ports, { plan_id: plan.plan_id });
+  assert.equal(result.status, "noop");
+  assert.equal(storage.committed, null);
+});
+
 class MemoryProjectCatalog implements ProjectCatalogPort {
   readonly createdNames: string[] = [];
   readonly projects = new Map<string, CoreProject>();
@@ -338,6 +447,7 @@ class MemoryRuntimePorts implements RuntimeKernelPorts {
   readonly releases: RuntimeKernelPorts["releases"];
   readonly plans: RuntimeKernelPorts["plans"];
   readonly content: RuntimeKernelPorts["content"];
+  readonly storage?: RuntimeKernelPorts["storage"];
   readonly migrations: RuntimeKernelPorts["migrations"];
   readonly lifecycle?: RuntimeKernelPorts["lifecycle"];
 
@@ -351,10 +461,12 @@ class MemoryRuntimePorts implements RuntimeKernelPorts {
     order?: string[];
     activeReleaseId?: string | null;
     contentPresent?: boolean;
+    storage?: RuntimeKernelPorts["storage"];
   } = {}) {
     this.#order = options.order ?? [];
     this.#activeReleaseId = options.activeReleaseId ?? null;
     this.lifecycle = options.lifecycle;
+    this.storage = options.storage;
     this.projects = {
       create: async () => {
         throw new Error("not used");
@@ -429,6 +541,99 @@ class MemoryRuntimePorts implements RuntimeKernelPorts {
 
   seedRelease(releaseId: string, state: ReturnType<typeof emptyCoreReleaseState>): void {
     this.#releases.set(releaseId, state);
+  }
+}
+
+class MemoryStoragePort implements NonNullable<RuntimeKernelPorts["storage"]> {
+  readonly keys: string[];
+  readonly objects: Map<string, CoreStorageObject>;
+  committed: CoreStorageApplyEffects | null = null;
+
+  constructor(keys: string[], objects: CoreStorageObject[] = []) {
+    this.keys = keys;
+    this.objects = new Map(objects.map((object) => [object.key, object]));
+  }
+
+  async createUploadSession(): Promise<never> {
+    throw new Error("not used");
+  }
+
+  async getUploadSession(): Promise<null> {
+    return null;
+  }
+
+  async markUploadBytesStored(): Promise<never> {
+    throw new Error("not used");
+  }
+
+  async completeUploadSession(): Promise<never> {
+    throw new Error("not used");
+  }
+
+  async abortUploadSession(): Promise<never> {
+    throw new Error("not used");
+  }
+
+  async getObject(input: { key: string }): Promise<CoreStorageObject | null> {
+    return this.objects.get(input.key) ??
+      (this.keys.includes(input.key)
+        ? {
+            project_id: "prj_0000000000000001",
+            key: input.key,
+            sha256: "a".repeat(64),
+            size_bytes: 1,
+            content_type: "text/plain",
+            visibility: "public",
+            immutable: false,
+            created_at: new Date(0).toISOString(),
+            updated_at: new Date(0).toISOString(),
+          }
+        : null);
+  }
+
+  async listObjects(input: { prefix?: string }) {
+    return {
+      objects: this.keys
+        .filter((key) => !input.prefix || key.startsWith(input.prefix))
+        .map((key) => ({
+          project_id: "prj_0000000000000001",
+          key,
+          sha256: "a".repeat(64),
+          size_bytes: 1,
+          content_type: "text/plain",
+          visibility: "public" as const,
+          immutable: false,
+          created_at: new Date(0).toISOString(),
+          updated_at: new Date(0).toISOString(),
+        })),
+      next_cursor: null,
+    };
+  }
+
+  async inventoryRevision(input: { prefix: string }) {
+    const keys = this.keys.filter((key) => !input.prefix || key.startsWith(input.prefix)).sort();
+    return {
+      keys,
+      revision: computeStorageInventoryRevision(keys),
+    };
+  }
+
+  async commitAssetPlan(input: { effects: CoreStorageApplyEffects }): Promise<void> {
+    if (input.effects.sync_prune) {
+      const current = await this.inventoryRevision({ prefix: input.effects.sync_prune.prefix });
+      if (current.revision !== input.effects.sync_prune.base_revision) {
+        throw new ApplyInvariantError("asset_sync_drift", "Storage inventory changed after the apply plan was created.");
+      }
+    }
+    this.committed = input.effects;
+  }
+
+  async deleteObject(): Promise<boolean> {
+    return false;
+  }
+
+  async getImmutableVersion(): Promise<null> {
+    return null;
   }
 }
 

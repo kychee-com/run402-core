@@ -50,7 +50,9 @@ export interface CoreGatewayRuntime {
   content?: ContentStorePort;
   storage?: RuntimeKernelPorts["storage"];
   signedReads?: RuntimeKernelPorts["signedReads"];
+  cleanup?: RuntimeKernelPorts["cleanup"];
   migrations?: RuntimeKernelPorts["migrations"];
+  lifecycle?: RuntimeKernelPorts["lifecycle"];
   jwtSecret?: string;
   maxObjectBytes?: number;
   close?: () => Promise<void>;
@@ -119,7 +121,21 @@ export async function createGatewayRuntime(config: CoreGatewayConfig): Promise<C
     content,
     storage,
     signedReads: storage,
+    cleanup: storage,
     migrations: applyStore,
+    lifecycle: {
+      activate: async (context) => {
+        await storage.activateReleaseWithStorage({
+          projectId: context.plan.project_id,
+          releaseId: context.release_id,
+          digest: context.release_digest,
+          release: context.target_release,
+          expectedBaseReleaseId: context.plan.base_release_id,
+          effects: context.storage_effects,
+        });
+        return { status: "activated", release_id: context.release_id };
+      },
+    },
     jwtSecret: config.jwtSecret,
     maxObjectBytes: config.maxObjectBytes,
     close: async () => {
@@ -309,6 +325,16 @@ export async function coreGatewayResponse(
     } catch (error) {
       return storageRouteError(error);
     }
+  }
+
+  const cleanupMatch = /^\/projects\/v1\/([^/]+)\/storage\/cleanup$/.exec(pathname);
+  if (method === "POST" && cleanupMatch) {
+    const cleanup = runtime.cleanup;
+    if (!cleanup) return unavailable("storage_cleanup_unavailable", "Run402 Core storage cleanup is not configured.");
+    const auth = await requireProjectService(runtime, cleanupMatch[1], headers);
+    if ("status" in auth) return auth;
+    const result = await cleanup.sweep(auth.project_id);
+    return { status: 200, body: result };
   }
 
   const immutableReadMatch = /^\/projects\/v1\/([^/]+)\/storage\/immutable\/([a-f0-9]{64})\/(.+)$/.exec(pathname);
@@ -587,7 +613,11 @@ function runtimePorts(runtime: CoreGatewayRuntime): RuntimeKernelPorts | null {
     releases: runtime.releases,
     plans: runtime.plans,
     content: runtime.content,
+    storage: runtime.storage,
+    signedReads: runtime.signedReads,
+    cleanup: runtime.cleanup,
     migrations: runtime.migrations,
+    lifecycle: runtime.lifecycle,
   };
 }
 
@@ -950,6 +980,9 @@ function applyErrorResponse(error: unknown): CoreGatewayResult {
   if (error instanceof ApplyInvariantError) {
     const status = error.code === "project_not_found" || error.code === "plan_not_found" ? 404 : error.status;
     return { status, body: applyInvariantEnvelope(error) };
+  }
+  if (error instanceof StorageValidationError) {
+    return { status: error.status, body: storageErrorEnvelope(error) };
   }
   if (error instanceof ReleaseCoreError) {
     return {
