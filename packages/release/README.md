@@ -1,0 +1,46 @@
+# @run402/release
+
+`@run402/release` is the public home for Run402 release manifest semantics.
+
+This package defines the production-used, deterministic behavior for parsing, validating, canonicalizing, materializing, and diffing a Run402 release manifest. It is a prerequisite for portable execution, not a self-hosted Run402 control plane.
+
+## Included In This Phase
+
+- Version identifiers for release specs, portable release state, canonicalization, and planner semantics.
+- JSON Schemas in `schemas/`.
+- Canonicalization rules in `docs/canonicalization.md`.
+- Field support matrix in `docs/field-support.md`.
+- Compatibility policy in `docs/compatibility.md`.
+- Static manifest construction, canonicalization, digesting, metadata summaries, and public path helpers.
+- Pure materialization from `ReleaseSpec` plus a concrete `PortableReleaseState`.
+- Release diff envelopes, count-only summaries, truncation metadata, logical effect requirements, content-reference discovery, and `RUN402_CORE_*` warnings.
+- Package metadata and clean public build/test/publish scaffolding.
+- Fact protocol APIs will be added in the extraction steps that follow.
+
+## Capability Table
+
+| Capability | Included |
+| --- | ---: |
+| Parse and validate ReleaseSpec | Yes |
+| Canonicalize and digest | Yes |
+| Materialize desired release state | Yes |
+| Compute release diff | Yes |
+| Derive fact and content requirements | Yes |
+| Deploy resources | No |
+| Execute migrations | No |
+| Store secrets/content | No |
+| Provide auth or HTTP gateway | No |
+| Run a local control plane | No |
+| Export/import a Cloud project | No |
+
+## Not Included
+
+- Deploying resources.
+- Executing migrations.
+- Storing content or secrets.
+- Providing auth, billing, quota, abuse controls, backups, monitoring, fleet scheduling, or a managed HTTP gateway.
+- Running a local Run402 control plane.
+
+Run402 Cloud should be the easiest place to start, not the only place the application can run. This package is one of the portability ratchets that makes that promise inspectable.
+
+Open source reduces vendor-lock-in risk. Run402 Cloud allowances and spend caps reduce financial-risk exposure. These are separate trust claims.

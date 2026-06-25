@@ -1,0 +1,242 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://run402.com/schemas/portable-release-state.v1.schema.json",
+  "title": "Run402 PortableReleaseState v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "state_version",
+    "site",
+    "static_manifest",
+    "functions",
+    "secrets",
+    "subdomains",
+    "routes",
+    "migrations",
+    "i18n"
+  ],
+  "properties": {
+    "state_version": {
+      "const": "run402.portable_release_state.v1"
+    },
+    "site": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["paths"],
+      "properties": {
+        "paths": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/site_path" }
+        }
+      }
+    },
+    "static_manifest": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/static_manifest" }
+      ]
+    },
+    "functions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/function_entry" }
+    },
+    "secrets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["keys"],
+      "properties": {
+        "keys": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "subdomains": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["names"],
+      "properties": {
+        "names": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "routes": {
+      "$ref": "#/$defs/materialized_routes"
+    },
+    "migrations": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/migration_entry" }
+    },
+    "i18n": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/materialized_i18n" }
+      ]
+    }
+  },
+  "$defs": {
+    "sha256_hex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "site_path": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "content_sha256", "content_type"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "content_sha256": { "$ref": "#/$defs/sha256_hex" },
+        "size_bytes": { "type": "integer", "minimum": 0 },
+        "content_type": { "type": "string", "minLength": 1 }
+      }
+    },
+    "static_manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "files"],
+      "properties": {
+        "version": { "const": "run402.static_manifest.v1" },
+        "public_path_mode": { "enum": ["implicit", "explicit"] },
+        "spa_fallback": { "type": ["string", "null"] },
+        "files": {
+          "type": "object",
+          "propertyNames": { "$ref": "#/$defs/public_path" },
+          "additionalProperties": { "$ref": "#/$defs/static_manifest_file" }
+        }
+      }
+    },
+    "public_path": {
+      "type": "string",
+      "pattern": "^/[^\\u0000]*$"
+    },
+    "static_asset_path": {
+      "type": "string",
+      "minLength": 1,
+      "not": { "pattern": "^/" }
+    },
+    "static_cache_class": {
+      "enum": ["html", "immutable_versioned", "revalidating_asset"]
+    },
+    "static_cache_class_source": {
+      "enum": ["declared", "inferred_html", "inferred_sha_filename", "downgraded", "legacy"]
+    },
+    "static_manifest_authority": {
+      "enum": ["implicit_file_path", "explicit_public_path", "route_static_alias"]
+    },
+    "static_manifest_file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256", "size", "content_type", "cache_class", "cache_class_source"],
+      "properties": {
+        "sha256": { "$ref": "#/$defs/sha256_hex" },
+        "size": { "type": "integer", "minimum": 0 },
+        "content_type": { "type": "string", "minLength": 1 },
+        "cache_class": { "$ref": "#/$defs/static_cache_class" },
+        "cache_class_source": { "$ref": "#/$defs/static_cache_class_source" },
+        "asset_path": { "$ref": "#/$defs/static_asset_path" },
+        "direct": { "type": "boolean" },
+        "authority": { "$ref": "#/$defs/static_manifest_authority" },
+        "route_id": { "type": "string", "minLength": 1 },
+        "methods": {
+          "type": "array",
+          "items": { "enum": ["GET", "HEAD"] }
+        },
+        "response_metadata": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "headers": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "function_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "code_hash",
+        "runtime",
+        "timeout_seconds",
+        "memory_mb",
+        "schedule",
+        "deps",
+        "require_auth",
+        "require_role"
+      ],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "code_hash": { "type": "string" },
+        "runtime": { "const": "node22" },
+        "timeout_seconds": { "type": "integer", "minimum": 1 },
+        "memory_mb": { "type": "integer", "minimum": 128 },
+        "schedule": { "type": ["string", "null"] },
+        "deps": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "require_auth": { "type": "boolean" },
+        "require_role": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "object", "additionalProperties": true }
+          ]
+        },
+        "class": { "enum": ["standard", "ssr"] },
+        "capabilities": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "materialized_routes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["manifest_sha256", "entries"],
+      "properties": {
+        "manifest_sha256": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/sha256_hex" }
+          ]
+        },
+        "entries": {
+          "type": "array",
+          "items": { "type": "object", "additionalProperties": true }
+        }
+      }
+    },
+    "migration_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["migration_id", "checksum_hex", "transaction"],
+      "properties": {
+        "migration_id": { "type": "string", "minLength": 1 },
+        "checksum_hex": { "$ref": "#/$defs/sha256_hex" },
+        "transaction": { "enum": ["default", "none"] }
+      }
+    },
+    "materialized_i18n": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["defaultLocale", "locales", "detect", "unknownLocalePolicy"],
+      "properties": {
+        "defaultLocale": { "type": "string" },
+        "locales": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "detect": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "unknownLocalePolicy": { "enum": ["reject", "pass-through"] }
+      }
+    }
+  }
+}

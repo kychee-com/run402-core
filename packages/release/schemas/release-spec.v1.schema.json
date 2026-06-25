@@ -1,0 +1,519 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://run402.com/schemas/release-spec.v1.schema.json",
+  "title": "Run402 ReleaseSpec v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["project"],
+  "properties": {
+    "project": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Run402 Cloud project selector. Included for apply-request compatibility; excluded from portable release state."
+    },
+    "base": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["release"],
+          "properties": {
+            "release": {
+              "enum": ["current", "empty"]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["release_id"],
+          "properties": {
+            "release_id": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      ]
+    },
+    "database": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "migrations": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/migration" }
+        },
+        "expose": {
+          "description": "Database expose manifest. Shape is public; convergence execution is Run402 Cloud behavior."
+        },
+        "zero_downtime": {
+          "type": "boolean"
+        }
+      }
+    },
+    "secrets": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "require": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/secret_key" }
+        },
+        "delete": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/secret_key" }
+        }
+      }
+    },
+    "functions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "replace": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/function_spec" }
+        },
+        "patch": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "set": {
+              "type": "object",
+              "additionalProperties": { "$ref": "#/$defs/function_spec" }
+            },
+            "delete": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/function_name" }
+            }
+          }
+        }
+      },
+      "oneOf": [
+        {
+          "required": ["replace"],
+          "properties": {
+            "replace": {
+              "type": "object",
+              "additionalProperties": { "$ref": "#/$defs/function_spec" }
+            },
+            "patch": false
+          }
+        },
+        {
+          "required": ["patch"],
+          "properties": {
+            "replace": false,
+            "patch": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "set": {
+                  "type": "object",
+                  "additionalProperties": { "$ref": "#/$defs/function_spec" }
+                },
+                "delete": {
+                  "type": "array",
+                  "items": { "$ref": "#/$defs/function_name" }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "site": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "replace": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/content_ref" }
+        },
+        "patch": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "put": {
+              "type": "object",
+              "additionalProperties": { "$ref": "#/$defs/content_ref" }
+            },
+            "delete": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/site_asset_path" }
+            }
+          }
+        },
+        "public_paths": { "$ref": "#/$defs/site_public_paths" }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "replace": {
+              "type": "object",
+              "additionalProperties": { "$ref": "#/$defs/content_ref" }
+            },
+            "patch": false,
+            "public_paths": { "$ref": "#/$defs/site_public_paths" }
+          }
+        },
+        {
+          "properties": {
+            "replace": false,
+            "patch": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "put": {
+                  "type": "object",
+                  "additionalProperties": { "$ref": "#/$defs/content_ref" }
+                },
+                "delete": {
+                  "type": "array",
+                  "items": { "$ref": "#/$defs/site_asset_path" }
+                }
+              }
+            },
+            "public_paths": { "$ref": "#/$defs/site_public_paths" }
+          }
+        },
+        {
+          "properties": {
+            "public_paths": { "$ref": "#/$defs/site_public_paths" }
+          }
+        }
+      ]
+    },
+    "subdomains": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "set": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/subdomain_name" }
+        },
+        "add": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/subdomain_name" }
+        },
+        "remove": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/subdomain_name" }
+        }
+      }
+    },
+    "routes": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["replace"],
+          "properties": {
+            "replace": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/route_spec" }
+            }
+          }
+        }
+      ]
+    },
+    "checks": {
+      "type": "null",
+      "description": "Reserved. Non-null values are rejected in v1."
+    },
+    "assets": {
+      "$ref": "#/$defs/assets",
+      "description": "Opaque to the phase-1 release compiler except for apply-request digest compatibility. Asset storage and activation are Cloud-only."
+    },
+    "i18n": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/i18n" }
+      ]
+    }
+  },
+  "$defs": {
+    "sha256_hex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "content_type": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+$"
+    },
+    "content_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256", "size"],
+      "properties": {
+        "sha256": { "$ref": "#/$defs/sha256_hex" },
+        "size": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "contentType": { "$ref": "#/$defs/content_type" },
+        "integrity": {
+          "type": "string"
+        }
+      }
+    },
+    "site_asset_path": {
+      "type": "string",
+      "minLength": 1,
+      "not": { "pattern": "^/" }
+    },
+    "public_path": {
+      "type": "string",
+      "pattern": "^/[^\\u0000]*$"
+    },
+    "cache_class": {
+      "enum": ["html", "immutable_versioned", "revalidating_asset"]
+    },
+    "site_public_paths": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode"],
+      "properties": {
+        "mode": {
+          "enum": ["implicit", "explicit"]
+        },
+        "replace": {
+          "type": "object",
+          "propertyNames": { "$ref": "#/$defs/public_path" },
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["asset"],
+            "properties": {
+              "asset": { "$ref": "#/$defs/site_asset_path" },
+              "cache_class": { "$ref": "#/$defs/cache_class" }
+            }
+          }
+        }
+      }
+    },
+    "migration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "checksum"],
+      "oneOf": [
+        { "required": ["sql"], "not": { "required": ["sql_ref"] } },
+        { "required": ["sql_ref"], "not": { "required": ["sql"] } }
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "checksum": { "$ref": "#/$defs/sha256_hex" },
+        "sql": {
+          "type": "string"
+        },
+        "sql_ref": { "$ref": "#/$defs/content_ref" },
+        "transaction": {
+          "enum": ["required", "none"]
+        }
+      }
+    },
+    "secret_key": {
+      "type": "string",
+      "pattern": "^[A-Z_][A-Z0-9_]{0,127}$"
+    },
+    "function_name": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{1,64}$"
+    },
+    "role_gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["table", "idColumn", "roleColumn", "allowed"],
+      "properties": {
+        "table": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+        "idColumn": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+        "roleColumn": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+        "allowed": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "cacheTtl": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 600
+        },
+        "onDeny": {
+          "enum": ["envelope", "redirect"]
+        },
+        "signInPath": {
+          "type": "string",
+          "pattern": "^/[^/].*$"
+        }
+      }
+    },
+    "function_spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runtime"],
+      "properties": {
+        "runtime": {
+          "enum": ["node22"]
+        },
+        "entrypoint": {
+          "type": "string"
+        },
+        "source": { "$ref": "#/$defs/content_ref" },
+        "files": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/content_ref" }
+        },
+        "config": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "timeoutSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 900
+            },
+            "memoryMb": {
+              "type": "integer",
+              "minimum": 128,
+              "maximum": 10240
+            }
+          }
+        },
+        "schedule": {
+          "type": ["string", "null"]
+        },
+        "deps": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "requireAuth": {
+          "type": "boolean"
+        },
+        "requireRole": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/role_gate" }
+          ]
+        },
+        "class": {
+          "enum": ["standard", "ssr"]
+        },
+        "capabilities": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "subdomain_name": {
+      "type": "string",
+      "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+    },
+    "http_method": {
+      "enum": ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+    },
+    "route_spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pattern", "target"],
+      "properties": {
+        "pattern": {
+          "type": "string",
+          "pattern": "^/.*$"
+        },
+        "methods": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/http_method" }
+        },
+        "target": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["type", "name"],
+              "properties": {
+                "type": { "const": "function" },
+                "name": { "$ref": "#/$defs/function_name" }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["type", "file"],
+              "properties": {
+                "type": { "const": "static" },
+                "file": { "$ref": "#/$defs/site_asset_path" }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "i18n": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["defaultLocale", "locales"],
+      "properties": {
+        "defaultLocale": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+        },
+        "locales": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+          }
+        },
+        "detect": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(accept-language|cookie:[A-Za-z0-9._-]{1,128})$"
+          }
+        },
+        "unknownLocalePolicy": {
+          "enum": ["reject", "pass-through"]
+        }
+      }
+    },
+    "assets": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "put": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["key", "sha256", "size_bytes"],
+            "properties": {
+              "key": { "type": "string", "minLength": 1 },
+              "sha256": { "$ref": "#/$defs/sha256_hex" },
+              "size_bytes": { "type": "integer", "minimum": 0 },
+              "content_type": { "$ref": "#/$defs/content_type" },
+              "visibility": { "enum": ["public", "private"] },
+              "immutable": { "type": "boolean" }
+            }
+          }
+        },
+        "delete": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "sync": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["prefix", "prune"],
+          "properties": {
+            "prefix": { "type": "string", "minLength": 1 },
+            "prune": { "const": true }
+          }
+        }
+      }
+    }
+  }
+}

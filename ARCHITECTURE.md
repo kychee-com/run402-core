@@ -2,7 +2,7 @@
 
 Run402 Core is the public home for production-used server/runtime code that is safe to publish.
 
-## Phase 0 Boundary
+## Current Boundary
 
 The first Core slice is `@run402/functions`.
 
@@ -14,6 +14,20 @@ The first Core slice is `@run402/functions`.
 - Package-local helpers for JWT and actor-context verification.
 
 It does not import Run402 Cloud gateway source or private shared packages.
+
+The next Core slice is `@run402/release`.
+
+`@run402/release` owns the public release manifest semantics:
+
+- ReleaseSpec schemas.
+- PortableReleaseState schemas.
+- Canonicalization rules.
+- Digest identities.
+- Field support matrix.
+- Compatibility policy.
+- Eventually: public parsing, validation, materialization, diffing, requirement derivation, Core warnings, and fact evaluation.
+
+It does not provision resources, execute migrations, store content or secrets, provide auth, run the HTTP gateway, or operate a local control plane.
 
 ## Runtime Contracts
 
@@ -28,6 +42,17 @@ The package consumes public runtime contracts:
 - gateway REST/Admin REST/SQL endpoints used by deployed functions
 
 These contracts are part of the application runtime surface. Cloud-specific implementations of the gateway routes remain outside Phase 0.
+
+## Release Compiler Contracts
+
+Release compiler contracts are intentionally separated from Cloud operations:
+
+- `run402-apply-request-v1` preserves Cloud apply request digest compatibility.
+- `run402-portable-manifest-v1` excludes Cloud context and mutable provider state.
+- `run402-materialized-release-v1` hashes only portable desired state.
+- `run402-evaluated-plan-v1` will bind desired state to complete caller-supplied facts.
+
+`PortableReleaseState` must not contain database row IDs, provider resource identifiers, storage paths, operation IDs, tenant IDs, fleet IDs, internal timestamps, or managed-service metadata.
 
 ## One-Way Core Ratchet
 

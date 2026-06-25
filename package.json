@@ -5,14 +5,21 @@
   "type": "module",
   "description": "Open-source Run402 server/runtime core.",
   "workspaces": [
-    "packages/functions"
+    "packages/functions",
+    "packages/release"
   ],
   "scripts": {
     "build": "npm run build --workspaces",
     "test": "npm run test --workspaces",
     "test:functions": "npm run test -w packages/functions",
     "test:functions:smoke": "node packages/functions/test/smoke-tarball.mjs",
-    "lint": "tsc --noEmit -p packages/functions/tsconfig.json"
+    "test:release": "npm run test -w packages/release",
+    "test:release:smoke": "node packages/release/test/smoke-tarball.mjs",
+    "lint": "npm run lint:functions && npm run lint:release",
+    "lint:functions": "tsc --noEmit -p packages/functions/tsconfig.json",
+    "lint:release": "npm run lint -w packages/release",
+    "pack:release": "npm pack -w packages/release --dry-run",
+    "clean:release": "npm run clean -w packages/release"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

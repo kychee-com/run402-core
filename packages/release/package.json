@@ -1,0 +1,52 @@
+{
+  "name": "@run402/release",
+  "version": "0.1.0",
+  "description": "Deterministic Run402 release manifest semantics: schema versions, canonicalization, materialization, diffing, and compatibility fixtures.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "docs",
+    "LICENSE",
+    "schemas",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "lint": "tsc --noEmit",
+    "test": "node --test --import tsx 'src/**/*.test.ts'",
+    "smoke:tarball": "node test/smoke-tarball.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {},
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kychee-com/run402-core.git",
+    "directory": "packages/release"
+  },
+  "homepage": "https://run402.com",
+  "bugs": "https://github.com/kychee-com/run402-core/issues",
+  "author": "Kychee Technologies",
+  "license": "Apache-2.0",
+  "keywords": [
+    "run402",
+    "release",
+    "manifest",
+    "canonicalization",
+    "ai-agent"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

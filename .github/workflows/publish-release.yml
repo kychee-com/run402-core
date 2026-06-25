@@ -1,0 +1,50 @@
+name: Publish @run402/release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: npm dist-tag
+        default: latest
+        required: true
+      dry_run:
+        description: Run npm publish with --dry-run
+        default: true
+        required: true
+        type: boolean
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Verify
+        run: |
+          npm run lint
+          npm run build
+          npm test
+          npm run test:release:smoke
+
+      - name: Publish dry run
+        if: ${{ inputs.dry_run }}
+        run: npm publish -w packages/release --access public --tag "${{ inputs.tag }}" --dry-run
+
+      - name: Publish
+        if: ${{ !inputs.dry_run }}
+        run: npm publish -w packages/release --provenance --access public --tag "${{ inputs.tag }}"
