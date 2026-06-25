@@ -4,6 +4,7 @@ import test from "node:test";
 
 import {
   createStorageReadSignature,
+  emptyCoreReleaseState,
   verifyStorageReadSignature,
   verifyContentRefBytes,
   runtimeCapabilities,
@@ -15,6 +16,7 @@ import {
   type StorageObjectVisibility,
   type StoragePort,
 } from "@run402/runtime-kernel";
+import { STATIC_MANIFEST_VERSION, type PortableReleaseState } from "@run402/release";
 import { coreGatewayResponse, loadConfig } from "./server.js";
 
 test("loadConfig does not require Cloud environment variables", () => {
@@ -306,6 +308,121 @@ test("storage routes upload, serve, sign, preserve immutable versions, delete, a
   );
 });
 
+test("static route manifest serving honors explicit paths, aliases, methods, diagnostics, and dynamic fail-closed", async () => {
+  const catalog = new MemoryProjectCatalog();
+  const project = await catalog.create({ name: "routes app" });
+  const content = new MemoryContentStore();
+  const events = Buffer.from("<h1>Events</h1>");
+  const login = Buffer.from("<h1>Login</h1>");
+  const hidden = Buffer.from("hidden");
+  const eventsSha = sha256Hex(events);
+  const loginSha = sha256Hex(login);
+  const hiddenSha = sha256Hex(hidden);
+  await content.putStatic({ sha256: eventsSha, bytes: events, contentType: "text/html" });
+  await content.putStatic({ sha256: loginSha, bytes: login, contentType: "text/html" });
+  await content.putStatic({ sha256: hiddenSha, bytes: hidden, contentType: "text/plain" });
+
+  const state: PortableReleaseState = {
+    ...emptyCoreReleaseState(),
+    site: {
+      paths: [
+        { path: "events.html", content_sha256: eventsSha, content_type: "text/html", size_bytes: events.byteLength },
+        { path: "login.html", content_sha256: loginSha, content_type: "text/html", size_bytes: login.byteLength },
+        { path: "hidden.txt", content_sha256: hiddenSha, content_type: "text/plain", size_bytes: hidden.byteLength },
+      ],
+    },
+    static_manifest: {
+      version: STATIC_MANIFEST_VERSION,
+      public_path_mode: "explicit",
+      files: {
+        "/events": {
+          sha256: eventsSha,
+          size: events.byteLength,
+          content_type: "text/html",
+          cache_class: "html",
+          cache_class_source: "declared",
+          asset_path: "events.html",
+          direct: true,
+          authority: "explicit_public_path",
+        },
+        "/login": {
+          sha256: loginSha,
+          size: login.byteLength,
+          content_type: "text/html",
+          cache_class: "html",
+          cache_class_source: "declared",
+          asset_path: "login.html",
+          direct: false,
+          authority: "route_static_alias",
+          methods: ["GET", "HEAD"],
+        },
+      },
+    },
+    routes: {
+      manifest_sha256: "route-manifest-test",
+      entries: [
+        {
+          pattern: "/login",
+          kind: "exact",
+          prefix: null,
+          methods: ["GET", "HEAD"],
+          target: { type: "static", file: "login.html" },
+        },
+        {
+          pattern: "/api/*",
+          kind: "prefix",
+          prefix: "/api/",
+          methods: ["GET"],
+          target: { type: "function", name: "api" },
+        },
+      ],
+    },
+  };
+  const runtime = {
+    projects: catalog,
+    releases: new MemoryReleaseState(state),
+    content,
+  };
+
+  const eventsRead = await coreGatewayResponse({
+    method: "GET",
+    pathname: `/projects/v1/${project.project_id}/static/events?ignored=true`,
+  }, runtime);
+  assert.equal(eventsRead.status, 200);
+  assert.equal(Buffer.from(eventsRead.body as Uint8Array).toString("utf8"), "<h1>Events</h1>");
+  assert.equal(eventsRead.headers?.["X-Run402-Content-Sha256"], eventsSha);
+
+  assert.equal((await coreGatewayResponse({
+    method: "GET",
+    pathname: `/projects/v1/${project.project_id}/static/events.html`,
+  }, runtime)).status, 404);
+
+  const loginHead = await coreGatewayResponse({
+    method: "HEAD",
+    pathname: `/projects/v1/${project.project_id}/static/login/`,
+  }, runtime);
+  assert.equal(loginHead.status, 200);
+  assert.equal(loginHead.headers?.["Content-Length"], String(login.byteLength));
+  assert.equal((loginHead.body as Uint8Array).byteLength, 0);
+
+  assert.equal((await coreGatewayResponse({
+    method: "POST",
+    pathname: `/projects/v1/${project.project_id}/static/login`,
+  }, runtime)).status, 405);
+  assert.equal((await coreGatewayResponse({
+    method: "GET",
+    pathname: `/projects/v1/${project.project_id}/static/api/users`,
+  }, runtime)).status, 422);
+
+  const diagnostics = await coreGatewayResponse({
+    method: "GET",
+    pathname: `/projects/v1/${project.project_id}/static-diagnostics`,
+    headers: { apikey: project.service_key },
+  }, runtime);
+  assert.equal(diagnostics.status, 200);
+  assert.deepEqual((diagnostics.body as { non_public_asset_paths: string[] }).non_public_asset_paths, ["hidden.txt"]);
+});
+
 class MemoryProjectCatalog implements ProjectCatalogPort {
   readonly createdNames: string[] = [];
   readonly projects = new Map<string, CoreProject>();
@@ -332,6 +449,22 @@ class MemoryProjectCatalog implements ProjectCatalogPort {
 
   async inspect(projectId: string): Promise<CoreProject | null> {
     return this.projects.get(projectId) ?? null;
+  }
+}
+
+class MemoryReleaseState {
+  readonly #state: PortableReleaseState;
+
+  constructor(state: PortableReleaseState) {
+    this.#state = state;
+  }
+
+  async getBase(): Promise<{ release_id: string | null; state: PortableReleaseState }> {
+    return { release_id: "rel_test", state: this.#state };
+  }
+
+  async setActiveRelease(): Promise<void> {
+    throw new Error("not used");
   }
 }
 

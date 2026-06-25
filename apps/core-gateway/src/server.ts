@@ -25,7 +25,15 @@ import {
   type RuntimeKernelPorts,
   type ProjectCatalogPort,
 } from "@run402/runtime-kernel";
-import { ReleaseCoreError, type ContentRefHex, type PortableReleaseState, type StaticManifestFileEntry } from "@run402/release";
+import {
+  cacheControlForStaticCacheClass,
+  computeStaticManifestSha256,
+  ReleaseCoreError,
+  type ContentRefHex,
+  type PortableReleaseState,
+  type RouteEntry,
+  type StaticManifestFileEntry,
+} from "@run402/release";
 import { FilesystemContentStore } from "./filesystem-content.js";
 import { PostgresApplyStore } from "./postgres-apply.js";
 import { createPostgresPool, PostgresProjectCatalog } from "./postgres-projects.js";
@@ -548,11 +556,21 @@ export async function coreGatewayResponse(
 
   const staticMatch = /^\/projects\/v1\/([^/]+)\/static(\/.*)?$/.exec(pathname);
   if ((method === "GET" || method === "HEAD") && staticMatch) {
-    const staticResult = await staticResponse(runtime, staticMatch[1], staticMatch[2] || "/");
+    const staticResult = await staticResponse(runtime, staticMatch[1], staticMatch[2] || "/", method);
     if (method === "HEAD" && staticResult.status === 200) {
       return { ...staticResult, body: new Uint8Array() };
     }
     return staticResult;
+  }
+  if (staticMatch) {
+    return await staticMethodResponse(runtime, staticMatch[1], staticMatch[2] || "/", method);
+  }
+
+  const staticDiagnosticsMatch = /^\/projects\/v1\/([^/]+)\/static-diagnostics$/.exec(pathname);
+  if (method === "GET" && staticDiagnosticsMatch) {
+    const auth = await requireProjectService(runtime, staticDiagnosticsMatch[1], headers);
+    if ("status" in auth) return auth;
+    return await staticDiagnostics(runtime, auth.project_id);
   }
 
   const unsupportedFeature = unsupportedFeatureForPath(pathname);
@@ -1011,6 +1029,7 @@ async function staticResponse(
   runtime: CoreGatewayRuntime,
   projectId: string,
   rawPath: string,
+  method: "GET" | "HEAD",
 ): Promise<CoreGatewayResult> {
   if (!runtime.releases || !runtime.content) {
     return unavailable("runtime_kernel_unavailable", "Run402 Core runtime kernel is not fully configured.");
@@ -1026,7 +1045,15 @@ async function staticResponse(
       },
     };
   }
-  const entry = active.state.static_manifest?.files[publicPath];
+  const route = routeForPath(active.state.routes.entries, publicPath);
+  if (route) {
+    if (!routeMethodAllows(route, method)) return methodNotAllowed(route);
+    if (route.target.type !== "static") {
+      const error = new UnsupportedCapabilityError("functions.node", `Unsupported route target for ${publicPath}: ${route.target.type}`);
+      return { status: error.status, body: unsupportedCapabilityEnvelope(error) };
+    }
+  }
+  const entry = active.state.static_manifest?.files[route?.target.type === "static" ? route.pattern : publicPath];
   if (!entry) {
     return {
       status: 404,
@@ -1054,6 +1081,78 @@ async function staticResponse(
     headers: {
       "Content-Type": entry.content_type || content.contentType,
       "Content-Length": String(content.bytes.byteLength),
+      "ETag": `"sha256-${sha256}"`,
+      "X-Run402-Content-Sha256": sha256,
+      "Content-Digest": `sha-256=:${Buffer.from(sha256, "hex").toString("base64")}:`,
+      "Cache-Control": cacheControlForStaticCacheClass(entry.cache_class),
+      ...entry.response_metadata?.headers,
+    },
+  };
+}
+
+async function staticMethodResponse(
+  runtime: CoreGatewayRuntime,
+  projectId: string,
+  rawPath: string,
+  method: string,
+): Promise<CoreGatewayResult> {
+  if (!runtime.releases) {
+    return unavailable("runtime_kernel_unavailable", "Run402 Core runtime kernel is not fully configured.");
+  }
+  const publicPath = normalizePublicStaticPath(rawPath);
+  const active = await runtime.releases.getBase(projectId, "current");
+  const route = routeForPath(active.state.routes.entries, publicPath);
+  if (route) return methodNotAllowed(route);
+  const entry = active.state.static_manifest?.files[publicPath];
+  if (entry && method !== "GET" && method !== "HEAD") {
+    return {
+      status: 405,
+      headers: { Allow: "GET, HEAD" },
+      body: {
+        error: "method_not_allowed",
+        message: `Static path ${publicPath} supports only GET and HEAD.`,
+      },
+    };
+  }
+  return {
+    status: 404,
+    body: {
+      error: "static_not_found",
+      message: `Static path not found: ${publicPath}`,
+    },
+  };
+}
+
+async function staticDiagnostics(
+  runtime: CoreGatewayRuntime,
+  projectId: string,
+): Promise<CoreGatewayResult> {
+  if (!runtime.releases) {
+    return unavailable("runtime_kernel_unavailable", "Run402 Core runtime kernel is not fully configured.");
+  }
+  const active = await runtime.releases.getBase(projectId, "current");
+  const manifest = active.state.static_manifest;
+  return {
+    status: 200,
+    body: {
+      project_id: projectId,
+      release_id: active.release_id,
+      route_manifest_sha256: active.state.routes.manifest_sha256,
+      static_manifest_sha256: manifest ? computeStaticManifestSha256(manifest) : null,
+      public_paths: Object.entries(manifest?.files ?? {}).map(([publicPath, entry]) => ({
+        public_path: publicPath,
+        asset_path: entry.asset_path ?? publicPath.replace(/^\//, ""),
+        sha256: entry.sha256,
+        content_type: entry.content_type,
+        authority: entry.authority ?? null,
+        direct: entry.direct ?? false,
+        methods: entry.methods ?? ["GET", "HEAD"],
+      })),
+      release_asset_paths: active.state.site.paths.map((entry) => entry.path).sort(),
+      non_public_asset_paths: active.state.site.paths
+        .map((entry) => entry.path)
+        .filter((path) => !Object.values(manifest?.files ?? {}).some((file) => (file.asset_path ?? "").replace(/^\/+/, "") === path))
+        .sort(),
     },
   };
 }
@@ -1069,11 +1168,62 @@ function staticEntrySha256(
 }
 
 function normalizePublicStaticPath(rawPath: string): string {
-  const decoded = decodeURIComponent(rawPath || "/");
-  if (decoded.includes("\0") || decoded.includes("..")) {
+  const raw = rawPath || "/";
+  if (!raw.startsWith("/")) throw new RangeError("Static path must start with /.");
+  if (raw.includes("\\") || /%(?:2f|5c)/i.test(raw)) {
+    throw new RangeError("Static path must not contain slash or backslash escapes.");
+  }
+  if (/[\x00-\x1f\x7f]/.test(raw) || raw.includes("//")) {
     throw new RangeError("Static path is invalid.");
   }
-  return decoded.startsWith("/") ? decoded : `/${decoded}`;
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(raw);
+  } catch {
+    throw new RangeError("Static path contains malformed percent encoding.");
+  }
+  if (/[\x00-\x1f\x7f]/.test(decoded) || decoded.includes("\\")) {
+    throw new RangeError("Static path is invalid.");
+  }
+  const normalized = decoded.normalize("NFC");
+  if (normalized.split("/").some((segment) => segment === "." || segment === "..")) {
+    throw new RangeError("Static path must not contain dot segments.");
+  }
+  if (
+    normalized === "/_cas" ||
+    normalized.startsWith("/_cas/") ||
+    normalized === "/_run402" ||
+    normalized.startsWith("/_run402/")
+  ) {
+    throw new RangeError("Static path targets an internal Run402 namespace.");
+  }
+  if (normalized !== "/" && normalized.endsWith("/")) return normalized.slice(0, -1);
+  return normalized;
+}
+
+function routeForPath(routes: readonly RouteEntry[], path: string): RouteEntry | null {
+  for (const route of routes) {
+    if (route.kind === "exact" && normalizePublicStaticPath(route.pattern) === path) return route;
+    if (route.kind === "prefix" && route.prefix && path.startsWith(route.prefix)) return route;
+  }
+  return null;
+}
+
+function routeMethodAllows(route: RouteEntry, method: "GET" | "HEAD"): boolean {
+  if (!route.methods) return true;
+  return route.methods.includes(method);
+}
+
+function methodNotAllowed(route: RouteEntry): CoreGatewayResult {
+  const allowed = route.methods?.length ? route.methods.join(", ") : "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS";
+  return {
+    status: 405,
+    headers: { Allow: allowed },
+    body: {
+      error: "method_not_allowed",
+      message: `Route ${route.pattern} does not allow this method.`,
+    },
+  };
 }
 
 function expectString(value: unknown, name: string): string {
