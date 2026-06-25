@@ -148,6 +148,7 @@ export class PostgresProjectCatalog implements ProjectCatalogPort {
       endpoints: {
         rest_url: `${this.#postgrestPublicUrl}`,
         static_base_url: `${this.#publicBaseUrl}/projects/v1/${row.project_id}/static`,
+        storage_base_url: `${this.#publicBaseUrl}/projects/v1/${row.project_id}/storage`,
       },
       active_release_id: row.active_release_id,
       capabilities: this.#capabilities,

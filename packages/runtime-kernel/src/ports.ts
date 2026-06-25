@@ -1,4 +1,9 @@
-import type { PortableReleaseState } from "@run402/release";
+import type {
+  ContentRefHex,
+  MaterializedRoutes,
+  PortableReleaseState,
+  StaticManifest,
+} from "@run402/release";
 import type { RuntimeCapabilityDocument } from "./capabilities.js";
 
 export interface CoreProject {
@@ -10,6 +15,7 @@ export interface CoreProject {
   endpoints: {
     rest_url: string;
     static_base_url: string;
+    storage_base_url?: string;
   };
   active_release_id: string | null;
   capabilities: RuntimeCapabilityDocument;
@@ -94,6 +100,183 @@ export interface ContentStorePort {
   }): Promise<void>;
   hasContent(projectId: string, sha256: string): Promise<boolean>;
   readStatic(projectId: string, sha256: string): Promise<{ bytes: Uint8Array; contentType: string } | null>;
+  putCas?(input: {
+    sha256: string;
+    bytes: Uint8Array;
+    contentType: string;
+  }): Promise<void>;
+  readCas?(sha256: string): Promise<{ bytes: Uint8Array; contentType: string } | null>;
+  putUploadBytes?(input: {
+    projectId: string;
+    uploadId: string;
+    bytes: Uint8Array;
+  }): Promise<{ size_bytes: number }>;
+  promoteUpload?(input: {
+    projectId: string;
+    uploadId: string;
+    ref: ContentRefHex;
+  }): Promise<{ sha256: string; size_bytes: number; content_type: string }>;
+  deleteUploadBytes?(input: {
+    projectId: string;
+    uploadId: string;
+  }): Promise<void>;
+}
+
+export type StorageObjectVisibility = "public" | "private";
+export type UploadSessionStatus = "active" | "uploaded" | "completed" | "aborted";
+
+export interface CoreStorageObject {
+  project_id: string;
+  key: string;
+  sha256: string;
+  size_bytes: number;
+  content_type: string;
+  visibility: StorageObjectVisibility;
+  immutable: boolean;
+  created_at: string;
+  updated_at: string;
+  public_url?: string;
+  immutable_url?: string;
+}
+
+export interface CoreImmutableObjectVersion {
+  project_id: string;
+  key: string;
+  sha256: string;
+  version_id: string;
+  size_bytes: number;
+  content_type: string;
+  visibility: StorageObjectVisibility;
+  public_url_key: string;
+  created_at: string;
+  retained_until: string | null;
+  public_url?: string;
+}
+
+export interface CoreUploadSession {
+  upload_id: string;
+  project_id: string;
+  key: string;
+  declared_size: number;
+  declared_sha256: string;
+  content_type: string;
+  visibility: StorageObjectVisibility;
+  immutable: boolean;
+  status: UploadSessionStatus;
+  upload_url: string;
+  bytes_written: number;
+  expires_at: string;
+  completed_at: string | null;
+  aborted_at: string | null;
+  created_at: string;
+}
+
+export interface CoreStorageObjectList {
+  objects: CoreStorageObject[];
+  next_cursor: string | null;
+}
+
+export interface RouteStaticResponse {
+  status: 200;
+  sha256: string;
+  content_type: string;
+  content_length: number;
+  etag: string;
+  cache_control: string;
+  bytes: Uint8Array;
+}
+
+export interface CoreRouteManifest {
+  project_id: string;
+  release_id: string | null;
+  route_manifest_sha256: string | null;
+  static_manifest_sha256: string | null;
+  routes: MaterializedRoutes;
+  static_manifest: StaticManifest | null;
+}
+
+export interface CleanupResult {
+  removed_uploads: number;
+  removed_objects: number;
+  removed_versions: number;
+  removed_cas_objects: number;
+  retained_live_sha256: string[];
+}
+
+export interface StoragePort {
+  createUploadSession(input: {
+    projectId: string;
+    key: string;
+    sizeBytes: number;
+    sha256: string;
+    contentType: string;
+    visibility: StorageObjectVisibility;
+    immutable: boolean;
+    ttlSeconds?: number;
+  }): Promise<CoreUploadSession>;
+  getUploadSession(input: {
+    projectId: string;
+    uploadId: string;
+  }): Promise<CoreUploadSession | null>;
+  markUploadBytesStored(input: {
+    projectId: string;
+    uploadId: string;
+    sizeBytes: number;
+  }): Promise<CoreUploadSession>;
+  completeUploadSession(input: {
+    projectId: string;
+    uploadId: string;
+  }): Promise<CoreStorageObject>;
+  abortUploadSession(input: {
+    projectId: string;
+    uploadId: string;
+  }): Promise<CoreUploadSession>;
+  getObject(input: {
+    projectId: string;
+    key: string;
+  }): Promise<CoreStorageObject | null>;
+  listObjects(input: {
+    projectId: string;
+    prefix?: string;
+    limit?: number;
+    cursor?: string;
+  }): Promise<CoreStorageObjectList>;
+  deleteObject(input: {
+    projectId: string;
+    key: string;
+  }): Promise<boolean>;
+  getImmutableVersion(input: {
+    projectId: string;
+    key: string;
+    sha256: string;
+  }): Promise<CoreImmutableObjectVersion | null>;
+}
+
+export interface SignedReadPort {
+  signRead(input: {
+    projectId: string;
+    key: string;
+    ttlSeconds?: number;
+    sha256?: string | null;
+  }): Promise<{
+    expires_at: string;
+    signed_url: string;
+  }>;
+  verifyRead(input: {
+    projectId: string;
+    key: string;
+    expiresAtEpochSeconds: number;
+    signature: string;
+    sha256?: string | null;
+  }): Promise<boolean>;
+}
+
+export interface RouteManifestPort {
+  getActiveRouteManifest(projectId: string): Promise<CoreRouteManifest | null>;
+}
+
+export interface CleanupPort {
+  sweep(projectId?: string): Promise<CleanupResult>;
 }
 
 export interface MigrationPort {
@@ -126,6 +309,10 @@ export interface RuntimeKernelPorts {
   releases: ReleaseStatePort;
   plans: ApplyPlanStorePort;
   content: ContentStorePort;
+  storage?: StoragePort;
+  signedReads?: SignedReadPort;
+  routes?: RouteManifestPort;
+  cleanup?: CleanupPort;
   migrations: MigrationPort;
   lifecycle?: ApplyLifecyclePort;
 }

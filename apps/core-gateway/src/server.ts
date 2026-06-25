@@ -7,13 +7,21 @@ import {
   createApplyPlan,
   createCoreProject,
   inspectCoreProject,
+  normalizeSha256Hex,
+  normalizeStorageContentType,
+  normalizeStorageKey,
+  normalizeStorageSize,
+  normalizeStorageVisibility,
   ProjectNotFoundError,
   projectNotFoundEnvelope,
   runtimeCapabilities,
   runtimeHealth,
+  StorageValidationError,
+  storageErrorEnvelope,
   UnsupportedCapabilityError,
   unsupportedCapabilityEnvelope,
   type ContentStorePort,
+  type CoreProject,
   type RuntimeKernelPorts,
   type ProjectCatalogPort,
 } from "@run402/runtime-kernel";
@@ -21,6 +29,7 @@ import { ReleaseCoreError, type ContentRefHex, type PortableReleaseState, type S
 import { FilesystemContentStore } from "./filesystem-content.js";
 import { PostgresApplyStore } from "./postgres-apply.js";
 import { createPostgresPool, PostgresProjectCatalog } from "./postgres-projects.js";
+import { PostgresStorageStore } from "./postgres-storage.js";
 
 export interface CoreGatewayConfig {
   host: string;
@@ -30,6 +39,8 @@ export interface CoreGatewayConfig {
   postgrestPublicUrl: string;
   contentDir: string;
   jwtSecret: string;
+  signedReadSecret: string;
+  maxObjectBytes: number;
 }
 
 export interface CoreGatewayRuntime {
@@ -37,8 +48,11 @@ export interface CoreGatewayRuntime {
   releases?: RuntimeKernelPorts["releases"];
   plans?: RuntimeKernelPorts["plans"];
   content?: ContentStorePort;
+  storage?: RuntimeKernelPorts["storage"];
+  signedReads?: RuntimeKernelPorts["signedReads"];
   migrations?: RuntimeKernelPorts["migrations"];
   jwtSecret?: string;
+  maxObjectBytes?: number;
   close?: () => Promise<void>;
 }
 
@@ -50,6 +64,7 @@ export interface CoreGatewayRequest {
   method?: string;
   pathname: string;
   body?: unknown;
+  headers?: Record<string, string | string[] | undefined>;
 }
 
 export interface CoreGatewayResult {
@@ -71,6 +86,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): CoreGatewayCon
     postgrestPublicUrl: env.CORE_POSTGREST_PUBLIC_URL || env.CORE_POSTGREST_URL || "http://127.0.0.1:4300",
     contentDir: env.CORE_CONTENT_DIR || ".run402-core/content",
     jwtSecret: env.CORE_JWT_SECRET || "run402-core-local-jwt-secret-change-me",
+    signedReadSecret: env.CORE_SIGNED_READ_SECRET || env.CORE_JWT_SECRET || "run402-core-local-signed-read-secret-change-me",
+    maxObjectBytes: Number.parseInt(env.CORE_MAX_OBJECT_BYTES || String(100 * 1024 * 1024), 10),
   };
 }
 
@@ -86,16 +103,25 @@ export async function createGatewayRuntime(config: CoreGatewayConfig): Promise<C
   });
   const applyStore = new PostgresApplyStore(pool);
   const content = new FilesystemContentStore(config.contentDir);
+  const storage = new PostgresStorageStore(pool, {
+    publicBaseUrl: config.publicBaseUrl,
+    signedReadSecret: config.signedReadSecret,
+    maxObjectBytes: config.maxObjectBytes,
+  });
   await projects.bootstrap();
   await applyStore.bootstrap();
+  await storage.bootstrap();
 
   return {
     projects,
     releases: applyStore,
     plans: applyStore,
     content,
+    storage,
+    signedReads: storage,
     migrations: applyStore,
     jwtSecret: config.jwtSecret,
+    maxObjectBytes: config.maxObjectBytes,
     close: async () => {
       await pool.end();
     },
@@ -110,7 +136,10 @@ export async function coreGatewayResponse(
     ? { method: "GET", pathname: requestOrPathname }
     : requestOrPathname;
   const method = request.method ?? "GET";
-  const pathname = request.pathname;
+  const url = new URL(request.pathname, "http://run402-core.local");
+  const pathname = url.pathname;
+  const query = url.searchParams;
+  const headers = normalizeHeaders(request.headers);
   const capabilities = runtimeCapabilities();
 
   if (method === "GET" && pathname === "/health") {
@@ -145,6 +174,286 @@ export async function coreGatewayResponse(
     }
     const staged = await stageContent(content, contentMatch[1], request.body);
     return { status: 201, body: staged };
+  }
+
+  const uploadCreateMatch = /^\/projects\/v1\/([^/]+)\/storage\/uploads$/.exec(pathname);
+  if (method === "POST" && uploadCreateMatch) {
+    const storage = runtime.storage;
+    if (!storage) return unavailable("storage_unavailable", "Run402 Core storage is not configured.");
+    const auth = await requireProjectService(runtime, uploadCreateMatch[1], headers);
+    if ("status" in auth) return auth;
+    try {
+      const input = storageUploadInput(request.body, runtime.maxObjectBytes ?? 100 * 1024 * 1024);
+      const session = await storage.createUploadSession({
+        projectId: auth.project_id,
+        ...input,
+      });
+      return { status: 201, body: session };
+    } catch (error) {
+      return storageRouteError(error);
+    }
+  }
+
+  const uploadBytesMatch = /^\/projects\/v1\/([^/]+)\/storage\/uploads\/([^/]+)\/bytes$/.exec(pathname);
+  if (method === "PUT" && uploadBytesMatch) {
+    const storage = runtime.storage;
+    const content = runtime.content;
+    if (!storage || !content?.putUploadBytes) {
+      return unavailable("storage_unavailable", "Run402 Core storage is not configured.");
+    }
+    const auth = await requireProjectService(runtime, uploadBytesMatch[1], headers);
+    if ("status" in auth) return auth;
+    try {
+      const uploadId = uploadBytesMatch[2];
+      const stored = await content.putUploadBytes({
+        projectId: auth.project_id,
+        uploadId,
+        bytes: requestBodyBytes(request.body),
+      });
+      const session = await storage.markUploadBytesStored({
+        projectId: auth.project_id,
+        uploadId,
+        sizeBytes: stored.size_bytes,
+      });
+      return { status: 200, body: session };
+    } catch (error) {
+      return storageRouteError(error);
+    }
+  }
+
+  const uploadStatusMatch = /^\/projects\/v1\/([^/]+)\/storage\/uploads\/([^/]+)$/.exec(pathname);
+  if (method === "GET" && uploadStatusMatch) {
+    const storage = runtime.storage;
+    if (!storage) return unavailable("storage_unavailable", "Run402 Core storage is not configured.");
+    const auth = await requireProjectService(runtime, uploadStatusMatch[1], headers);
+    if ("status" in auth) return auth;
+    const session = await storage.getUploadSession({
+      projectId: auth.project_id,
+      uploadId: uploadStatusMatch[2],
+    });
+    return session
+      ? { status: 200, body: session }
+      : { status: 404, body: { error: "upload_not_found", message: "Upload session was not found." } };
+  }
+
+  const uploadCompleteMatch = /^\/projects\/v1\/([^/]+)\/storage\/uploads\/([^/]+)\/complete$/.exec(pathname);
+  if (method === "POST" && uploadCompleteMatch) {
+    const storage = runtime.storage;
+    const content = runtime.content;
+    if (!storage || !content?.promoteUpload) {
+      return unavailable("storage_unavailable", "Run402 Core storage is not configured.");
+    }
+    const auth = await requireProjectService(runtime, uploadCompleteMatch[1], headers);
+    if ("status" in auth) return auth;
+    try {
+      const uploadId = uploadCompleteMatch[2];
+      const session = await storage.getUploadSession({ projectId: auth.project_id, uploadId });
+      if (!session) return { status: 404, body: { error: "upload_not_found", message: "Upload session was not found." } };
+      if (session.status !== "completed") {
+        if (session.status !== "uploaded") {
+          throw new StorageValidationError("upload_not_uploaded", "Upload session has no uploaded bytes.");
+        }
+        await content.promoteUpload({
+          projectId: auth.project_id,
+          uploadId,
+          ref: {
+            sha256: session.declared_sha256,
+            size: session.declared_size,
+            contentType: session.content_type,
+          },
+        });
+      }
+      const object = await storage.completeUploadSession({ projectId: auth.project_id, uploadId });
+      return { status: 200, body: object };
+    } catch (error) {
+      return storageRouteError(error);
+    }
+  }
+
+  const uploadAbortMatch = /^\/projects\/v1\/([^/]+)\/storage\/uploads\/([^/]+)\/abort$/.exec(pathname);
+  if (method === "POST" && uploadAbortMatch) {
+    const storage = runtime.storage;
+    const content = runtime.content;
+    if (!storage) return unavailable("storage_unavailable", "Run402 Core storage is not configured.");
+    const auth = await requireProjectService(runtime, uploadAbortMatch[1], headers);
+    if ("status" in auth) return auth;
+    try {
+      await content?.deleteUploadBytes?.({
+        projectId: auth.project_id,
+        uploadId: uploadAbortMatch[2],
+      });
+      const session = await storage.abortUploadSession({
+        projectId: auth.project_id,
+        uploadId: uploadAbortMatch[2],
+      });
+      return { status: 200, body: session };
+    } catch (error) {
+      return storageRouteError(error);
+    }
+  }
+
+  const objectListMatch = /^\/projects\/v1\/([^/]+)\/storage\/objects$/.exec(pathname);
+  if (method === "GET" && objectListMatch) {
+    const storage = runtime.storage;
+    if (!storage) return unavailable("storage_unavailable", "Run402 Core storage is not configured.");
+    const auth = await requireProjectService(runtime, objectListMatch[1], headers);
+    if ("status" in auth) return auth;
+    try {
+      const list = await storage.listObjects({
+        projectId: auth.project_id,
+        prefix: query.get("prefix") ?? undefined,
+        cursor: query.get("cursor") ?? undefined,
+        limit: query.has("limit") ? expectQueryInteger(query.get("limit"), "limit") : undefined,
+      });
+      return { status: 200, body: list };
+    } catch (error) {
+      return storageRouteError(error);
+    }
+  }
+
+  const immutableReadMatch = /^\/projects\/v1\/([^/]+)\/storage\/immutable\/([a-f0-9]{64})\/(.+)$/.exec(pathname);
+  if ((method === "GET" || method === "HEAD") && immutableReadMatch) {
+    const storage = runtime.storage;
+    if (!storage) return unavailable("storage_unavailable", "Run402 Core storage is not configured.");
+    try {
+      const projectId = immutableReadMatch[1];
+      const sha256 = immutableReadMatch[2];
+      const key = normalizeStorageKey(immutableReadMatch[3]);
+      const version = await storage.getImmutableVersion({ projectId, key, sha256 });
+      if (!version) return storageNotFound();
+      const signedOk = await verifyOptionalSignedRead(runtime, query, projectId, key, sha256);
+      if (version.visibility !== "public" && !signedOk) return storageNotFound();
+      return await serveCas(runtime, {
+        sha256: version.sha256,
+        contentType: version.content_type,
+        visibility: version.visibility,
+        immutable: true,
+        head: method === "HEAD",
+      });
+    } catch (error) {
+      return storageRouteError(error);
+    }
+  }
+
+  const signedReadMatch = /^\/projects\/v1\/([^/]+)\/storage\/signed\/(.+)$/.exec(pathname);
+  if ((method === "GET" || method === "HEAD") && signedReadMatch) {
+    const storage = runtime.storage;
+    if (!storage) return unavailable("storage_unavailable", "Run402 Core storage is not configured.");
+    try {
+      const projectId = signedReadMatch[1];
+      const key = normalizeStorageKey(signedReadMatch[2]);
+      const sha256 = query.get("sha256");
+      const signedOk = await verifyOptionalSignedRead(runtime, query, projectId, key, sha256);
+      if (!signedOk) return storageNotFound();
+      if (sha256) {
+        const version = await storage.getImmutableVersion({ projectId, key, sha256 });
+        if (!version) return storageNotFound();
+        return await serveCas(runtime, {
+          sha256: version.sha256,
+          contentType: version.content_type,
+          visibility: version.visibility,
+          immutable: true,
+          head: method === "HEAD",
+        });
+      }
+      const object = await storage.getObject({ projectId, key });
+      if (!object) return storageNotFound();
+      return await serveCas(runtime, {
+        sha256: object.sha256,
+        contentType: object.content_type,
+        visibility: object.visibility,
+        immutable: object.immutable,
+        head: method === "HEAD",
+      });
+    } catch (error) {
+      return storageRouteError(error);
+    }
+  }
+
+  const publicReadMatch = /^\/projects\/v1\/([^/]+)\/storage\/public\/(.+)$/.exec(pathname);
+  if ((method === "GET" || method === "HEAD") && publicReadMatch) {
+    const storage = runtime.storage;
+    if (!storage) return unavailable("storage_unavailable", "Run402 Core storage is not configured.");
+    try {
+      const object = await storage.getObject({
+        projectId: publicReadMatch[1],
+        key: normalizeStorageKey(publicReadMatch[2]),
+      });
+      if (!object || object.visibility !== "public") return storageNotFound();
+      return await serveCas(runtime, {
+        sha256: object.sha256,
+        contentType: object.content_type,
+        visibility: object.visibility,
+        immutable: object.immutable,
+        head: method === "HEAD",
+      });
+    } catch (error) {
+      return storageRouteError(error);
+    }
+  }
+
+  const objectSignMatch = /^\/projects\/v1\/([^/]+)\/storage\/blob\/(.+)\/sign$/.exec(pathname);
+  if (method === "POST" && objectSignMatch) {
+    const storage = runtime.storage;
+    const signedReads = runtime.signedReads;
+    if (!storage || !signedReads) return unavailable("storage_unavailable", "Run402 Core storage is not configured.");
+    const auth = await requireProjectService(runtime, objectSignMatch[1], headers);
+    if ("status" in auth) return auth;
+    try {
+      const key = normalizeStorageKey(objectSignMatch[2]);
+      const object = await storage.getObject({ projectId: auth.project_id, key });
+      if (!object) return storageNotFound();
+      const signed = await signedReads.signRead({
+        projectId: auth.project_id,
+        key,
+        ttlSeconds: signedReadTtlInput(request.body),
+      });
+      return { status: 201, body: signed };
+    } catch (error) {
+      return storageRouteError(error);
+    }
+  }
+
+  const objectReadMatch = /^\/projects\/v1\/([^/]+)\/storage\/blob\/(.+)$/.exec(pathname);
+  if ((method === "GET" || method === "HEAD") && objectReadMatch) {
+    const storage = runtime.storage;
+    if (!storage) return unavailable("storage_unavailable", "Run402 Core storage is not configured.");
+    const auth = await requireProjectService(runtime, objectReadMatch[1], headers);
+    if ("status" in auth) return auth;
+    try {
+      const object = await storage.getObject({
+        projectId: auth.project_id,
+        key: normalizeStorageKey(objectReadMatch[2]),
+      });
+      if (!object) return storageNotFound();
+      return await serveCas(runtime, {
+        sha256: object.sha256,
+        contentType: object.content_type,
+        visibility: object.visibility,
+        immutable: object.immutable,
+        head: method === "HEAD",
+      });
+    } catch (error) {
+      return storageRouteError(error);
+    }
+  }
+
+  if (method === "DELETE" && objectReadMatch) {
+    const storage = runtime.storage;
+    if (!storage) return unavailable("storage_unavailable", "Run402 Core storage is not configured.");
+    const auth = await requireProjectService(runtime, objectReadMatch[1], headers);
+    if ("status" in auth) return auth;
+    try {
+      const deleted = await storage.deleteObject({
+        projectId: auth.project_id,
+        key: normalizeStorageKey(objectReadMatch[2]),
+      });
+      return deleted
+        ? { status: 200, body: { deleted: true } }
+        : storageNotFound();
+    } catch (error) {
+      return storageRouteError(error);
+    }
   }
 
   if (method === "POST" && pathname === "/auth/v1/dev-tokens") {
@@ -241,7 +550,7 @@ export async function requestHandler(
   runtime: CoreGatewayRuntime = {},
 ): Promise<void> {
   const url = new URL(req.url || "/", "http://localhost");
-  const result = await safeRequest(req, url.pathname, runtime);
+  const result = await safeRequest(req, `${url.pathname}${url.search}`, runtime);
   res.statusCode = result.status;
   for (const [name, value] of Object.entries(result.headers ?? {})) {
     res.setHeader(name, value);
@@ -289,6 +598,175 @@ function unavailable(error: string, message: string): CoreGatewayResult {
   };
 }
 
+async function requireProjectService(
+  runtime: CoreGatewayRuntime,
+  projectId: string,
+  headers: Record<string, string | undefined>,
+): Promise<CoreProject | CoreGatewayResult> {
+  const projects = runtime.projects;
+  if (!projects) return unavailable("project_catalog_unavailable", "Run402 Core project catalog is not configured.");
+  const project = await projects.inspect(projectId);
+  if (!project) return { status: 404, body: { error: "project_not_found", message: `Run402 Core project not found: ${projectId}` } };
+  const token = serviceTokenFromHeaders(headers);
+  if (token !== project.service_key) {
+    return { status: 401, body: { error: "authentication_required", message: "A project service key is required." } };
+  }
+  return project;
+}
+
+function serviceTokenFromHeaders(headers: Record<string, string | undefined>): string | null {
+  const apikey = headers.apikey;
+  if (apikey) return apikey;
+  const authorization = headers.authorization;
+  if (!authorization) return null;
+  const match = /^Bearer\s+(.+)$/i.exec(authorization);
+  return match?.[1] ?? null;
+}
+
+function normalizeHeaders(headers: CoreGatewayRequest["headers"]): Record<string, string | undefined> {
+  const out: Record<string, string | undefined> = {};
+  for (const [name, value] of Object.entries(headers ?? {})) {
+    out[name.toLowerCase()] = Array.isArray(value) ? value[0] : value;
+  }
+  return out;
+}
+
+function storageUploadInput(body: unknown, maxObjectBytes: number): {
+  key: string;
+  sizeBytes: number;
+  sha256: string;
+  contentType: string;
+  visibility: "public" | "private";
+  immutable: boolean;
+  ttlSeconds?: number;
+} {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    throw new RangeError("Storage upload body must be a JSON object.");
+  }
+  const record = body as Record<string, unknown>;
+  const ttl = record.ttl_seconds;
+  if (ttl !== undefined && (typeof ttl !== "number" || !Number.isFinite(ttl))) {
+    throw new RangeError("ttl_seconds must be a number.");
+  }
+  const immutable = record.immutable === undefined ? false : expectBoolean(record.immutable, "immutable");
+  return {
+    key: normalizeStorageKey(record.key),
+    sizeBytes: normalizeStorageSize(record.size_bytes ?? record.size, maxObjectBytes),
+    sha256: normalizeSha256Hex(record.sha256),
+    contentType: normalizeStorageContentType(record.content_type ?? record.contentType),
+    visibility: normalizeStorageVisibility(record.visibility),
+    immutable,
+    ...(typeof ttl === "number" ? { ttlSeconds: ttl } : {}),
+  };
+}
+
+function signedReadTtlInput(body: unknown): number | undefined {
+  if (body === undefined || body === null) return undefined;
+  if (typeof body !== "object" || Array.isArray(body)) {
+    throw new RangeError("Signed-read body must be a JSON object.");
+  }
+  const ttl = (body as Record<string, unknown>).ttl_seconds;
+  if (ttl === undefined) return undefined;
+  if (typeof ttl !== "number" || !Number.isFinite(ttl)) {
+    throw new RangeError("ttl_seconds must be a number.");
+  }
+  return ttl;
+}
+
+function requestBodyBytes(body: unknown): Uint8Array {
+  if (body instanceof Uint8Array) return body;
+  if (typeof body === "string") return Buffer.from(body, "utf8");
+  if (typeof body === "object" && body !== null && !Array.isArray(body)) {
+    const bytesBase64 = (body as Record<string, unknown>).bytes_base64 ?? (body as Record<string, unknown>).bytesBase64;
+    if (typeof bytesBase64 === "string") return Buffer.from(bytesBase64, "base64");
+  }
+  throw new RangeError("Upload byte body must be raw bytes or { bytes_base64 }.");
+}
+
+async function verifyOptionalSignedRead(
+  runtime: CoreGatewayRuntime,
+  query: URLSearchParams,
+  projectId: string,
+  key: string,
+  sha256?: string | null,
+): Promise<boolean> {
+  const signedReads = runtime.signedReads;
+  if (!signedReads) return false;
+  const signature = query.get("signature");
+  const expires = query.get("expires");
+  if (!signature || !expires) return false;
+  const expiresAtEpochSeconds = Number(expires);
+  if (!Number.isFinite(expiresAtEpochSeconds)) return false;
+  return await signedReads.verifyRead({
+    projectId,
+    key,
+    expiresAtEpochSeconds,
+    signature,
+    sha256: sha256 ?? null,
+  });
+}
+
+async function serveCas(
+  runtime: CoreGatewayRuntime,
+  input: {
+    sha256: string;
+    contentType: string;
+    visibility: "public" | "private";
+    immutable: boolean;
+    head: boolean;
+  },
+): Promise<CoreGatewayResult> {
+  const content = runtime.content;
+  if (!content?.readCas) return unavailable("content_store_unavailable", "Run402 Core content store is not configured.");
+  const stored = await content.readCas(input.sha256);
+  if (!stored) {
+    return {
+      status: 409,
+      body: {
+        error: "content_digest_missing",
+        message: `Storage content ${input.sha256} is missing from the local content store.`,
+      },
+    };
+  }
+  return {
+    status: 200,
+    raw: true,
+    body: input.head ? new Uint8Array() : stored.bytes,
+    headers: {
+      "Content-Type": input.contentType || stored.contentType,
+      "Content-Length": String(stored.bytes.byteLength),
+      "ETag": `"sha256-${input.sha256}"`,
+      "X-Run402-Content-Sha256": input.sha256,
+      "Content-Digest": `sha-256=:${Buffer.from(input.sha256, "hex").toString("base64")}:`,
+      "Cache-Control": cacheControlForStorage(input.visibility, input.immutable),
+    },
+  };
+}
+
+function cacheControlForStorage(visibility: "public" | "private", immutable: boolean): string {
+  if (visibility === "private") return "private, no-store";
+  return immutable
+    ? "public, max-age=31536000, immutable"
+    : "public, max-age=300, stale-while-revalidate=3600";
+}
+
+function storageRouteError(error: unknown): CoreGatewayResult {
+  if (error instanceof StorageValidationError) {
+    return { status: error.status, body: storageErrorEnvelope(error) };
+  }
+  if (error instanceof ApplyInvariantError) {
+    return { status: error.status, body: applyInvariantEnvelope(error) };
+  }
+  if (error instanceof RangeError) {
+    return { status: 400, body: { error: "invalid_request", message: error.message } };
+  }
+  throw error;
+}
+
+function storageNotFound(): CoreGatewayResult {
+  return { status: 404, body: { error: "storage_not_found", message: "Storage object was not found." } };
+}
+
 if (import.meta.url === `file://${process.argv[1]}`) {
   startServer().catch((error: unknown) => {
     console.error(error);
@@ -298,14 +776,15 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 
 async function safeRequest(
   req: IncomingMessage,
-  pathname: string,
+  pathnameWithQuery: string,
   runtime: CoreGatewayRuntime,
 ): Promise<CoreGatewayResult> {
   try {
     return await coreGatewayResponse({
       method: req.method,
-      pathname,
-      body: await readJsonBody(req),
+      pathname: pathnameWithQuery,
+      headers: req.headers,
+      body: await readRequestBody(req, pathnameWithQuery),
     }, runtime);
   } catch (error) {
     if (error instanceof RangeError) {
@@ -321,9 +800,16 @@ async function safeRequest(
   }
 }
 
-async function readJsonBody(req: IncomingMessage): Promise<unknown> {
+async function readRequestBody(req: IncomingMessage, pathnameWithQuery: string): Promise<unknown> {
   if (req.method === "GET" || req.method === "HEAD") {
     return undefined;
+  }
+  if (req.method === "PUT" && /^\/projects\/v1\/[^/]+\/storage\/uploads\/[^/]+\/bytes(?:\?|$)/.test(pathnameWithQuery)) {
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    return Buffer.concat(chunks);
   }
 
   let raw = "";
@@ -571,10 +1057,25 @@ function expectInteger(value: unknown, name: string): number {
   return value;
 }
 
+function expectQueryInteger(value: string | null, name: string): number {
+  if (!value) throw new RangeError(`${name} must be present.`);
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new RangeError(`${name} must be a non-negative integer.`);
+  }
+  return parsed;
+}
+
+function expectBoolean(value: unknown, name: string): boolean {
+  if (typeof value !== "boolean") {
+    throw new RangeError(`${name} must be a boolean.`);
+  }
+  return value;
+}
+
 function unsupportedFeatureForPath(pathname: string): ConstructorParameters<typeof UnsupportedCapabilityError>[0] | null {
   if (pathname.startsWith("/functions")) return "functions.node";
   if (pathname.startsWith("/ssr")) return "astro.ssr";
-  if (pathname.startsWith("/storage")) return "storage.user-api";
   if (pathname.startsWith("/export")) return "export.project-archive";
   if (pathname.startsWith("/import")) return "import.project-archive";
   if (pathname.startsWith("/auth/oauth")) return "auth.hosted-oauth";

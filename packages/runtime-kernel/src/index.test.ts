@@ -15,6 +15,10 @@ import {
   validateProjectId,
   runtimeCapabilities,
   runtimeHealth,
+  normalizeStorageKey,
+  StorageValidationError,
+  createStorageReadSignature,
+  verifyStorageReadSignature,
   unsupportedCapabilityEnvelope,
   type CoreProject,
   type ProjectCatalogPort,
@@ -28,7 +32,10 @@ test("runtime capability document advertises first-slice boundaries", () => {
   assert.equal(capabilities.runtime_contract_version, RUNTIME_KERNEL_CONTRACT_VERSION);
   assert.ok(capabilities.supported_features.includes("projects.create.local"));
   assert.ok(capabilities.supported_features.includes("database.rest.postgrest"));
+  assert.ok(capabilities.supported_features.includes("storage.objects.local"));
+  assert.ok(capabilities.supported_features.includes("site.static.exact-alias-routes"));
   assert.ok(capabilities.unsupported_features.some((entry) => entry.feature === "functions.node"));
+  assert.equal(capabilities.unsupported_features.some((entry) => entry.feature === "storage.user-api"), false);
   assert.ok(capabilities.unsupported_features.every((entry) => entry.error === "unsupported_capability"));
 });
 
@@ -55,6 +62,56 @@ test("unsupported capability errors have stable envelope", () => {
     message: "Unsupported runtime capability: functions.node",
     capability: "functions.node",
   });
+});
+
+test("storage key validation rejects traversal and internal namespaces", () => {
+  assert.equal(normalizeStorageKey("images/logo.png"), "images/logo.png");
+  assert.throws(
+    () => normalizeStorageKey("../secret.txt"),
+    (error) => error instanceof StorageValidationError && error.code === "invalid_storage_key",
+  );
+  assert.throws(
+    () => normalizeStorageKey("_cas/aa/object"),
+    (error) => error instanceof StorageValidationError && error.code === "invalid_storage_key",
+  );
+  assert.throws(
+    () => normalizeStorageKey("images%2Flogo.png"),
+    (error) => error instanceof StorageValidationError && error.code === "invalid_storage_key",
+  );
+});
+
+test("storage signed-read signatures verify expiry and payload", () => {
+  const signature = createStorageReadSignature({
+    secret: "secret",
+    projectId: "prj_0000000000000001",
+    key: "private/report.pdf",
+    expiresAtEpochSeconds: 100,
+  });
+
+  assert.equal(verifyStorageReadSignature({
+    secret: "secret",
+    projectId: "prj_0000000000000001",
+    key: "private/report.pdf",
+    expiresAtEpochSeconds: 100,
+    signature,
+    nowEpochSeconds: 99,
+  }), true);
+  assert.equal(verifyStorageReadSignature({
+    secret: "secret",
+    projectId: "prj_0000000000000001",
+    key: "private/other.pdf",
+    expiresAtEpochSeconds: 100,
+    signature,
+    nowEpochSeconds: 99,
+  }), false);
+  assert.equal(verifyStorageReadSignature({
+    secret: "secret",
+    projectId: "prj_0000000000000001",
+    key: "private/report.pdf",
+    expiresAtEpochSeconds: 100,
+    signature,
+    nowEpochSeconds: 101,
+  }), false);
 });
 
 test("project service normalizes default names and delegates creation", async () => {
@@ -262,6 +319,7 @@ class MemoryProjectCatalog implements ProjectCatalogPort {
       endpoints: {
         rest_url: "http://127.0.0.1:4300",
         static_base_url: "http://127.0.0.1:4020/projects/prj_0000000000000001/static",
+        storage_base_url: "http://127.0.0.1:4020/projects/prj_0000000000000001/storage",
       },
       active_release_id: null,
       capabilities: runtimeCapabilities("test"),
@@ -310,6 +368,7 @@ class MemoryRuntimePorts implements RuntimeKernelPorts {
         endpoints: {
           rest_url: "http://127.0.0.1:4300",
           static_base_url: "http://127.0.0.1:4020/projects/v1/prj_0000000000000001/static",
+          storage_base_url: "http://127.0.0.1:4020/projects/v1/prj_0000000000000001/storage",
         },
         active_release_id: null,
         capabilities: runtimeCapabilities("test"),

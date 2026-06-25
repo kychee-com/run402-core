@@ -17,6 +17,14 @@ export const SUPPORTED_RUNTIME_FEATURES = [
   "auth.jwt.local-test-tokens",
   "rls.claim-mapping",
   "site.static.explicit-public-paths",
+  "site.static.implicit-public-paths",
+  "site.static.exact-alias-routes",
+  "site.static.route-manifest",
+  "storage.objects.local",
+  "storage.upload-sessions.local",
+  "storage.visibility.public-private",
+  "storage.immutable-local-urls",
+  "storage.signed-read.local",
 ] as const;
 
 export const UNSUPPORTED_RUNTIME_FEATURES = [
@@ -24,7 +32,6 @@ export const UNSUPPORTED_RUNTIME_FEATURES = [
   "site.patch",
   "functions.node",
   "astro.ssr",
-  "storage.user-api",
   "storage.s3-compatible",
   "assets.images",
   "subdomains.managed",
