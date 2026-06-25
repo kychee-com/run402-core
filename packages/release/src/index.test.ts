@@ -915,6 +915,51 @@ describe("ReleaseSpec validation and digest identities", () => {
     );
   });
 
+  it("accepts content types with standard parameters", () => {
+    assert.doesNotThrow(() =>
+      validateReleaseSpec({
+        project: "p",
+        site: {
+          replace: {
+            "index.html": {
+              sha256: "aa".repeat(32),
+              size: 10,
+              contentType: "text/html; charset=utf-8",
+            },
+          },
+        },
+        functions: {
+          replace: {
+            app: {
+              runtime: "node22",
+              source: {
+                sha256: "bb".repeat(32),
+                size: 20,
+                contentType: "text/javascript; charset=utf-8",
+              },
+            },
+          },
+        },
+      }),
+    );
+    assert.throws(
+      () =>
+        validateReleaseSpec({
+          project: "p",
+          site: {
+            replace: {
+              "index.html": {
+                sha256: "aa".repeat(32),
+                size: 10,
+                contentType: "text/html\ncharset=utf-8",
+              },
+            },
+          },
+        }),
+      ReleaseSpecValidationError,
+    );
+  });
+
   it("canonical JSON sorts object keys and rejects non-finite numbers", () => {
     assert.equal(canonicalizeJson({ b: 1, a: true }), '{"a":true,"b":1}');
     assert.throws(() => canonicalizeJson({ n: Number.NaN }), /Cannot canonicalize/);

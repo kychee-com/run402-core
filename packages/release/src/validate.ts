@@ -31,7 +31,7 @@ const SUBDOMAIN_NAME = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const SQL_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const LOCALE_TAG = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const COOKIE_DETECT = /^cookie:[A-Za-z0-9._-]{1,128}$/;
-const CONTENT_TYPE = /^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+$/;
+const TOKEN = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/;
 
 export function parseReleaseSpec(input: unknown): ReleaseSpec {
   if (!isRecord(input)) {
@@ -366,9 +366,51 @@ function validateContentRef(value: unknown, resource: string): void {
   if (typeof ref.size !== "number" || !Number.isInteger(ref.size) || ref.size < 0) {
     throw invalid(`${resource}.size`, "size must be a non-negative integer");
   }
-  if (ref.contentType !== undefined && (typeof ref.contentType !== "string" || !CONTENT_TYPE.test(ref.contentType))) {
+  if (ref.contentType !== undefined && (typeof ref.contentType !== "string" || !isContentType(ref.contentType))) {
     throw invalid(`${resource}.contentType`, "contentType must be a MIME type");
   }
+}
+
+function isContentType(value: string): boolean {
+  if (value.length === 0 || /[\u0000-\u001f\u007f]/.test(value)) return false;
+  const [rawMediaType = "", ...params] = value.split(";");
+  const mediaType = rawMediaType.trim();
+  const slashIndex = mediaType.indexOf("/");
+  if (slashIndex <= 0 || slashIndex !== mediaType.lastIndexOf("/") || slashIndex === mediaType.length - 1) {
+    return false;
+  }
+  if (!TOKEN.test(mediaType.slice(0, slashIndex)) || !TOKEN.test(mediaType.slice(slashIndex + 1))) {
+    return false;
+  }
+  for (const rawParam of params) {
+    const param = rawParam.trim();
+    const eqIndex = param.indexOf("=");
+    if (eqIndex <= 0) return false;
+    const name = param.slice(0, eqIndex).trim();
+    const paramValue = param.slice(eqIndex + 1).trim();
+    if (!TOKEN.test(name)) return false;
+    if (paramValue.startsWith("\"")) {
+      if (!isQuotedString(paramValue)) return false;
+    } else if (!TOKEN.test(paramValue)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function isQuotedString(value: string): boolean {
+  if (value.length < 2 || !value.endsWith("\"")) return false;
+  for (let i = 1; i < value.length - 1; i += 1) {
+    const code = value.charCodeAt(i);
+    if (code === 0x22 || code === 0x7f || code < 0x20 || code > 0x7e) return false;
+    if (code === 0x5c) {
+      i += 1;
+      if (i >= value.length - 1) return false;
+      const escaped = value.charCodeAt(i);
+      if (escaped < 0x20 || escaped > 0x7e || escaped === 0x7f) return false;
+    }
+  }
+  return true;
 }
 
 function validateStringArray(value: unknown, resource: string, regex?: RegExp): asserts value is string[] {
