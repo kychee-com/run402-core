@@ -1,0 +1,51 @@
+{
+  "name": "@run402/runtime-kernel",
+  "version": "0.1.2",
+  "description": "Public Run402 Core runtime kernel contracts, capabilities, and application services.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "lint": "tsc --noEmit",
+    "test": "node --test --import tsx 'src/**/*.test.ts'"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@run402/release": "0.1.1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kychee-com/run402-core.git",
+    "directory": "packages/runtime-kernel"
+  },
+  "homepage": "https://run402.com",
+  "bugs": "https://github.com/kychee-com/run402-core/issues",
+  "author": "Kychee Technologies",
+  "license": "Apache-2.0",
+  "keywords": [
+    "run402",
+    "core",
+    "runtime",
+    "postgres",
+    "postgrest",
+    "ai-agent"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

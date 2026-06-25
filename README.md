@@ -2,23 +2,23 @@
 
 Run402 Core is the open-source server/runtime core for Run402.
 
-Phase 0 contains the source for `@run402/functions`, the in-function runtime helper package that Run402 Cloud bundles into deployed functions.
-
-The next Core slice is `@run402/release`, the public home for release manifest semantics. It defines the boundary for parsing, validating, canonicalizing, materializing, and diffing release manifests before Run402 Cloud performs managed operations.
+The current Core runtime-kernel slice is a Developer Preview single-node reference runtime. It can create a local project, stage digest-checked static content, plan and commit a supported ReleaseSpec, run inline PostgreSQL migrations, serve a PostgREST/RLS fixture, and serve active-release static content.
 
 ## What Is Here Today
 
 - `packages/functions` - `@run402/functions`, the helper library for deployed Run402 functions.
 - `packages/release` - `@run402/release`, the release manifest semantics package.
-- Package tests and a tarball smoke test.
-- Public architecture and Cloud/Core boundary docs.
-- CI for clean install, build, tests, and tarball verification.
+- `packages/runtime-kernel` - public Core runtime contracts and application services.
+- `apps/core-gateway` - public Core gateway composition root.
+- `docker-compose.yml` - local Core, Postgres, and PostgREST stack.
+- `fixtures/runtime-kernel-static-rest` - canonical conformance fixture.
+- CI for clean install, lint, build, tests, tarball verification, boundary checks, Compose boot, and Core conformance.
 
 ## What Is Not Here Yet
 
-This repo is not a complete self-hosted Run402 distribution. It does not include Docker Compose, local Postgres/PostgREST, export/import, fleet scheduling, Cloud billing operations, monitoring, backups, abuse controls, or global routing.
+This repo is not a complete production self-hosted Run402 distribution. It does not include export/import, functions, Astro SSR, general storage API, fleet scheduling, Cloud billing operations, monitoring, backups, abuse controls, TLS automation, HA, or global routing.
 
-Those are separate phases. The promise of this first repo is smaller and more concrete: a production-used runtime package is public, buildable, testable, and suitable for Run402 Cloud to consume directly.
+Those are separate phases. The promise of this slice is smaller and concrete: the supported static + Postgres REST runtime path is public, buildable, testable, and suitable for Run402 Cloud to consume directly.
 
 ## Packages
 
@@ -56,15 +56,39 @@ Current package scope:
 | Run a local control plane | No |
 | Export/import a Cloud project | No |
 
+### `@run402/runtime-kernel`
+
+Public Core runtime contracts, capability document, project services, and apply plan/commit services.
+
+Current runtime-kernel scope:
+
+| Capability | Included |
+| --- | ---: |
+| Local project create/inspect | Yes |
+| Supported ReleaseSpec plan/commit | Yes |
+| Inline PostgreSQL migrations | Yes |
+| PostgREST/RLS fixture | Yes |
+| Static content staging and serving | Yes |
+| Deterministic dev JWTs | Yes |
+| Functions / SSR / storage API / export-import | No |
+
 ## Development
 
 ```bash
 npm ci
+npm run lint
 npm run build
 npm test
 npm run test:functions:smoke
 npm run test:release:smoke
+npm run core:boundary
+docker compose up -d --build core
+npm run core:health
+npm run core:conformance
+docker compose down -v
 ```
+
+See [docs/runtime-kernel/quickstart.md](./docs/runtime-kernel/quickstart.md), [docs/runtime-kernel/capabilities.md](./docs/runtime-kernel/capabilities.md), and [docs/runtime-kernel/security-defaults.md](./docs/runtime-kernel/security-defaults.md).
 
 ## Cloud Vs Core
 

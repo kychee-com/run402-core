@@ -1,0 +1,28 @@
+{
+  "project": "$PROJECT_ID",
+  "base": { "release": "current" },
+  "database": {
+    "migrations": [
+      {
+        "id": "001_smoke_todos",
+        "checksum": "$MIGRATION_SQL_SHA256",
+        "sql": "$MIGRATION_SQL"
+      }
+    ]
+  },
+  "site": {
+    "replace": {
+      "index.html": {
+        "sha256": "$INDEX_HTML_SHA256",
+        "size": "$INDEX_HTML_SIZE",
+        "contentType": "text/html"
+      }
+    },
+    "public_paths": {
+      "mode": "explicit",
+      "replace": {
+        "/": { "asset": "index.html" }
+      }
+    }
+  }
+}

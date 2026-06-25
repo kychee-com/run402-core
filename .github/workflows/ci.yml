@@ -38,3 +38,26 @@ jobs:
 
       - name: Release tarball smoke
         run: npm run test:release:smoke
+
+      - name: Core boundary check
+        run: npm run core:boundary
+
+      - name: Core Compose boot
+        run: docker compose up -d postgres postgrest core
+
+      - name: Core health
+        run: npm run core:health
+
+      - name: Core project smoke
+        run: npm run core:smoke
+
+      - name: Core apply smoke
+        run: npm run core:conformance
+
+      - name: Core Compose logs
+        if: failure()
+        run: docker compose logs
+
+      - name: Core Compose down
+        if: always()
+        run: docker compose down -v

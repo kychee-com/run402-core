@@ -1,0 +1,26 @@
+{
+  "name": "@run402/core-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Run402 Core gateway composition root for the public runtime kernel.",
+  "type": "module",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "lint": "tsc --noEmit",
+    "start": "node dist/server.js",
+    "test": "node --test --import tsx 'src/**/*.test.ts'"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@run402/runtime-kernel": "0.1.2",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.11.10"
+  },
+  "license": "Apache-2.0"
+}
