@@ -1,0 +1,25 @@
+{
+  "name": "run402-core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Open-source Run402 server/runtime core.",
+  "workspaces": [
+    "packages/functions"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "test": "npm run test --workspaces",
+    "test:functions": "npm run test -w packages/functions",
+    "test:functions:smoke": "node packages/functions/test/smoke-tarball.mjs",
+    "lint": "tsc --noEmit -p packages/functions/tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.7.0"
+  },
+  "overrides": {
+    "esbuild": "0.28.1"
+  }
+}
