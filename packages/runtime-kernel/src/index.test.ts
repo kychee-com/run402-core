@@ -6,6 +6,9 @@ import {
   createCoreProject,
   commitApplyPlan,
   createApplyPlan,
+  AstroSsrUnsupportedFeatureError,
+  CORE_ASTRO_SSR_FALLBACK_PATTERN,
+  CORE_ASTRO_SSR_OUTPUT_CONTRACT_VERSION,
   CORE_FUNCTION_DEFAULT_EXECUTOR,
   CORE_FUNCTION_DEPENDENCY_MODE,
   emptyCoreReleaseState,
@@ -47,13 +50,20 @@ test("runtime capability document advertises first-slice boundaries", () => {
   assert.ok(capabilities.supported_features.includes("site.static.exact-alias-routes"));
   assert.ok(capabilities.supported_features.includes("functions.node"));
   assert.ok(capabilities.supported_features.includes("functions.routed-http.local"));
+  assert.ok(capabilities.supported_features.includes("astro.ssr"));
+  assert.ok(capabilities.supported_features.includes("astro.ssr.run402-output-v1"));
   assert.equal(capabilities.functions_runtime.maturity, "developer_preview");
+  assert.equal(capabilities.astro_ssr_runtime.maturity, "developer_preview");
+  assert.equal(capabilities.astro_ssr_runtime.output_contract_version, CORE_ASTRO_SSR_OUTPUT_CONTRACT_VERSION);
+  assert.equal(capabilities.astro_ssr_runtime.fallback.pattern, CORE_ASTRO_SSR_FALLBACK_PATTERN);
   assert.equal(capabilities.functions_runtime.default_executor, CORE_FUNCTION_DEFAULT_EXECUTOR);
   assert.equal(capabilities.functions_runtime.hostile_code_isolation, false);
   assert.equal(capabilities.functions_runtime.dependency_policy.mode, CORE_FUNCTION_DEPENDENCY_MODE);
   assert.equal(capabilities.functions_runtime.dependency_policy.npm_install_supported, false);
   assert.ok(capabilities.unsupported_features.some((entry) => entry.feature === "functions.external-npm-dependencies"));
+  assert.ok(capabilities.unsupported_features.some((entry) => entry.feature === "astro.streaming"));
   assert.equal(capabilities.unsupported_features.some((entry) => entry.feature === "functions.node"), false);
+  assert.equal(capabilities.unsupported_features.some((entry) => entry.feature === "astro.ssr"), false);
   assert.equal(capabilities.unsupported_features.some((entry) => entry.feature === "storage.user-api"), false);
   assert.ok(capabilities.unsupported_features.every((entry) => entry.error === "unsupported_capability"));
 });
@@ -764,6 +774,93 @@ test("function apply rejects external deps and unsafe role gate config", async (
   );
 });
 
+test("astro ssr apply accepts only the public output contract", async () => {
+  const source = Buffer.from("export default async function handler(request) { return new Response('ssr'); }\n");
+  const sourceSha = sha256Hex(source);
+  const ports = new MemoryRuntimePorts({ contentPresent: true });
+
+  const plan = await createApplyPlan(ports, {
+    spec: astroSsrFunctionSpec(sourceSha, source.byteLength),
+  });
+
+  assert.equal(plan.noop, false);
+  assert.equal(plan.function_effects?.bundles[0]?.name, "ssr");
+  assert.equal(plan.function_effects?.bundles[0]?.class, "ssr");
+  assert.deepEqual(plan.function_effects?.bundles[0]?.capabilities, [CORE_ASTRO_SSR_OUTPUT_CONTRACT_VERSION]);
+  assert.deepEqual(plan.function_effects?.astro_ssr_fallback, {
+    function_name: "ssr",
+    output_contract_version: CORE_ASTRO_SSR_OUTPUT_CONTRACT_VERSION,
+    pattern: CORE_ASTRO_SSR_FALLBACK_PATTERN,
+  });
+
+  const result = await commitApplyPlan(ports, { plan_id: plan.plan_id });
+  assert.equal(result.status, "committed");
+});
+
+test("astro ssr apply rejects arbitrary adapter output and multiple fallbacks", async () => {
+  await assert.rejects(
+    createApplyPlan(new MemoryRuntimePorts(), {
+      spec: {
+        ...astroSsrFunctionSpec("a".repeat(64), 12),
+        functions: {
+          replace: {
+            ssr: {
+              runtime: "node22",
+              source: { sha256: "a".repeat(64), size: 12 },
+              class: "ssr",
+            },
+          },
+        },
+      },
+    }),
+    (error) => error instanceof AstroSsrUnsupportedFeatureError && error.code === "astro_ssr_unsupported_feature",
+  );
+
+  await assert.rejects(
+    createApplyPlan(new MemoryRuntimePorts(), {
+      spec: {
+        ...astroSsrFunctionSpec("b".repeat(64), 12),
+        functions: {
+          replace: {
+            ssr: {
+              runtime: "node22",
+              source: { sha256: "b".repeat(64), size: 12 },
+              class: "ssr",
+              capabilities: [CORE_ASTRO_SSR_OUTPUT_CONTRACT_VERSION],
+            },
+            alt: {
+              runtime: "node22",
+              source: { sha256: "b".repeat(64), size: 12 },
+              class: "ssr",
+              capabilities: [CORE_ASTRO_SSR_OUTPUT_CONTRACT_VERSION],
+            },
+          },
+        },
+      },
+    }),
+    (error) => error instanceof AstroSsrUnsupportedFeatureError && error.details.feature === "multiple_ssr_targets",
+  );
+
+  await assert.rejects(
+    createApplyPlan(new MemoryRuntimePorts(), {
+      spec: {
+        ...astroSsrFunctionSpec("c".repeat(64), 12),
+        functions: {
+          replace: {
+            ssr: {
+              runtime: "node22",
+              source: { sha256: "c".repeat(64), size: 12 },
+              class: "ssr",
+              capabilities: [CORE_ASTRO_SSR_OUTPUT_CONTRACT_VERSION, "astro.streaming"],
+            },
+          },
+        },
+      },
+    }),
+    (error) => error instanceof AstroSsrUnsupportedFeatureError && error.details.feature === "astro.streaming",
+  );
+});
+
 test("function apply rejects unsupported runtimes and commit digest mismatches", async () => {
   await assert.rejects(
     createApplyPlan(new MemoryRuntimePorts(), {
@@ -1138,6 +1235,30 @@ function prebundledCurrentFunctionSpec(sha256: string, size: number) {
         pattern: "/api/*",
         target: { type: "function", name: "api" },
       }],
+    },
+  };
+}
+
+function astroSsrFunctionSpec(sha256: string, size: number) {
+  return {
+    project: "prj_0000000000000001",
+    base: { release: "empty" },
+    functions: {
+      replace: {
+        ssr: {
+          runtime: "node22",
+          source: {
+            sha256,
+            size,
+            contentType: "application/javascript",
+          },
+          class: "ssr",
+          capabilities: [CORE_ASTRO_SSR_OUTPUT_CONTRACT_VERSION],
+        },
+      },
+    },
+    routes: {
+      replace: [],
     },
   };
 }

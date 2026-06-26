@@ -3,8 +3,11 @@ import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import {
   applyInvariantEnvelope,
   ApplyInvariantError,
+  AstroSsrUnsupportedFeatureError,
   commitApplyPlan,
   createApplyPlan,
+  CORE_ASTRO_SSR_FALLBACK_PATTERN,
+  CORE_ASTRO_SSR_OUTPUT_CONTRACT_VERSION,
   createCoreProject,
   DynamicRuntimeUnavailableError,
   inspectCoreProject,
@@ -1249,38 +1252,82 @@ async function staticResponse(
     };
   }
   const route = routeForPath(active.state.routes.entries, publicPath);
-  if (route) {
+  if (route?.target.type === "static") {
     if (!routeMethodAllows(route, request.method)) return methodNotAllowed(route);
-    if (route.target.type === "function") {
-      const functionRoute = route as RouteEntry & { target: { type: "function"; name: string } };
-      return await invokeRoutedFunction(runtime, {
-        projectId,
-        releaseId: active.release_id,
-        route: functionRoute,
-        publicPath,
-        rawQuery: request.rawQuery,
-        method: request.method,
-        headers: request.headers,
-        body: request.body,
-        locale: active.state.i18n?.defaultLocale ?? null,
-        defaultLocale: active.state.i18n?.defaultLocale ?? null,
-      });
+    const entry = active.state.static_manifest?.files[route.pattern];
+    if (entry) return await serveStaticEntry(runtime, projectId, active.state, publicPath, entry, request.method);
+  }
+
+  const directEntry = active.state.static_manifest?.files[publicPath];
+  if (directEntry?.direct) {
+    if (request.method !== "GET" && request.method !== "HEAD") {
+      return staticAssetMethodNotAllowed(publicPath);
     }
+    return await serveStaticEntry(runtime, projectId, active.state, publicPath, directEntry, request.method);
   }
-  if (request.method !== "GET" && request.method !== "HEAD") {
-    return await staticMethodResponse(runtime, projectId, rawPath, request.method);
+
+  if (route?.target.type === "function") {
+    if (!routeMethodAllows(route, request.method)) return methodNotAllowed(route);
+    const functionRoute = route as RouteEntry & { target: { type: "function"; name: string } };
+    return await invokeRoutedFunction(runtime, {
+      projectId,
+      releaseId: active.release_id,
+      route: functionRoute,
+      publicPath,
+      rawQuery: request.rawQuery,
+      method: request.method,
+      headers: request.headers,
+      body: request.body,
+      locale: active.state.i18n?.defaultLocale ?? null,
+      defaultLocale: active.state.i18n?.defaultLocale ?? null,
+    });
   }
-  const entry = active.state.static_manifest?.files[route?.target.type === "static" ? route.pattern : publicPath];
-  if (!entry) {
-    return {
-      status: 404,
-      body: {
-        error: "static_not_found",
-        message: `Static path not found: ${publicPath}`,
-      },
-    };
+
+  const ssrFallback = astroSsrFallbackRoute(active.state);
+  if (ssrFallback) {
+    if (isUpgradeRequest(request.headers)) {
+      const requestId = newFunctionRequestId();
+      const error = new AstroSsrUnsupportedFeatureError("http_upgrade", "Core Astro SSR Developer Preview does not support WebSocket or HTTP upgrade requests.", {
+        route_pattern: CORE_ASTRO_SSR_FALLBACK_PATTERN,
+        function_name: ssrFallback.target.name,
+      });
+      return withRequestIdHeader({ status: error.status, body: runtimeKernelErrorEnvelope(error) }, requestId);
+    }
+    return await invokeRoutedFunction(runtime, {
+      projectId,
+      releaseId: active.release_id,
+      route: ssrFallback,
+      publicPath,
+      rawQuery: request.rawQuery,
+      method: request.method,
+      headers: request.headers,
+      body: request.body,
+      locale: active.state.i18n?.defaultLocale ?? null,
+      defaultLocale: active.state.i18n?.defaultLocale ?? null,
+    });
   }
-  const sha256 = staticEntrySha256(active.state, publicPath, entry);
+
+  return {
+    status: 404,
+    body: {
+      error: "static_not_found",
+      message: `Static path not found: ${publicPath}`,
+    },
+  };
+}
+
+async function serveStaticEntry(
+  runtime: CoreGatewayRuntime,
+  projectId: string,
+  release: PortableReleaseState,
+  publicPath: string,
+  entry: StaticManifestFileEntry,
+  method: string,
+): Promise<CoreGatewayResult> {
+  if (!runtime.content) {
+    return unavailable("runtime_kernel_unavailable", "Run402 Core runtime kernel is not fully configured.");
+  }
+  const sha256 = staticEntrySha256(release, publicPath, entry);
   const content = await runtime.content.readStatic(projectId, sha256);
   if (!content) {
     return {
@@ -1294,7 +1341,7 @@ async function staticResponse(
   return {
     status: 200,
     raw: true,
-    body: request.method === "HEAD" ? new Uint8Array() : content.bytes,
+    body: method === "HEAD" ? new Uint8Array() : content.bytes,
     headers: {
       "Content-Type": entry.content_type || content.contentType,
       "Content-Length": String(content.bytes.byteLength),
@@ -1322,14 +1369,7 @@ async function staticMethodResponse(
   if (route) return methodNotAllowed(route);
   const entry = active.state.static_manifest?.files[publicPath];
   if (entry && method !== "GET" && method !== "HEAD") {
-    return {
-      status: 405,
-      headers: { Allow: "GET, HEAD" },
-      body: {
-        error: "method_not_allowed",
-        message: `Static path ${publicPath} supports only GET and HEAD.`,
-      },
-    };
+    return staticAssetMethodNotAllowed(publicPath);
   }
   return {
     status: 404,
@@ -1337,6 +1377,32 @@ async function staticMethodResponse(
       error: "static_not_found",
       message: `Static path not found: ${publicPath}`,
     },
+  };
+}
+
+function staticAssetMethodNotAllowed(publicPath: string): CoreGatewayResult {
+  return {
+    status: 405,
+    headers: { Allow: "GET, HEAD" },
+    body: {
+      error: "method_not_allowed",
+      message: `Static path ${publicPath} supports only GET and HEAD.`,
+    },
+  };
+}
+
+function astroSsrFallbackRoute(state: PortableReleaseState): RouteEntry & { target: { type: "function"; name: string } } | null {
+  const target = state.functions.find((entry) =>
+    entry.class === "ssr" &&
+    Array.isArray(entry.capabilities) &&
+    entry.capabilities.includes(CORE_ASTRO_SSR_OUTPUT_CONTRACT_VERSION));
+  if (!target) return null;
+  return {
+    pattern: CORE_ASTRO_SSR_FALLBACK_PATTERN,
+    kind: "prefix",
+    prefix: "/",
+    methods: null,
+    target: { type: "function", name: target.name },
   };
 }
 
@@ -1452,6 +1518,7 @@ async function invokeRoutedFunction(
           releaseId: input.releaseId,
           requestId,
           functionName: input.route.target.name,
+          routePattern: input.route.pattern,
           actor: gate.actor,
           role: gate.role,
         }),
@@ -1978,6 +2045,7 @@ function routedRequestHeaders(
     releaseId: string;
     requestId: string;
     functionName: string;
+    routePattern: string;
     actor?: CoreFunctionActorContext | null;
     role?: string | null;
   },
@@ -1995,6 +2063,7 @@ function routedRequestHeaders(
   out.push(["x-run402-release-id", context.releaseId]);
   out.push(["x-run402-request-id", context.requestId]);
   out.push(["x-run402-function-name", context.functionName]);
+  out.push(["x-run402-route-pattern", context.routePattern]);
   if (context.actor) out.push(["x-run402-user-id", context.actor.id]);
   if (context.role) out.push(["x-run402-user-role", context.role]);
   return out;
@@ -2026,6 +2095,12 @@ function protoHeader(headers: CoreGatewayRequest["headers"]): "http" | "https" {
 
 function cookieHeader(headers: CoreGatewayRequest["headers"]): string | null {
   return firstHeader(headers, "cookie") ?? null;
+}
+
+function isUpgradeRequest(headers: CoreGatewayRequest["headers"]): boolean {
+  const upgrade = firstHeader(headers, "upgrade");
+  const connection = firstHeader(headers, "connection");
+  return Boolean(upgrade) || /\bupgrade\b/i.test(connection ?? "");
 }
 
 function firstHeader(headers: CoreGatewayRequest["headers"], name: string): string | undefined {

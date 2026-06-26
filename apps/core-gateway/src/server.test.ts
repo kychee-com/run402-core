@@ -7,6 +7,7 @@ import {
   emptyCoreReleaseState,
   verifyStorageReadSignature,
   verifyContentRefBytes,
+  CORE_ASTRO_SSR_OUTPUT_CONTRACT_VERSION,
   CORE_FUNCTION_DEPENDENCY_MODE,
   CORE_FUNCTION_RESOURCE_DEFAULTS,
   LocalExecutorError,
@@ -592,6 +593,176 @@ test("dynamic static routes reject oversized request bodies before invoking func
   assert.equal(executor.last, null);
 });
 
+test("astro ssr fallback runs after static assets and function routes", async () => {
+  const catalog = new MemoryProjectCatalog();
+  const project = await catalog.create({ name: "astro ssr app" });
+  const content = new MemoryContentStore();
+  const login = Buffer.from("<h1>Login static</h1>");
+  const asset = Buffer.from("asset bytes");
+  const pre = Buffer.from("<h1>Prerendered</h1>");
+  const loginSha = sha256Hex(login);
+  const assetSha = sha256Hex(asset);
+  const preSha = sha256Hex(pre);
+  await content.putStatic({ sha256: loginSha, bytes: login, contentType: "text/html" });
+  await content.putStatic({ sha256: assetSha, bytes: asset, contentType: "text/plain" });
+  await content.putStatic({ sha256: preSha, bytes: pre, contentType: "text/html" });
+
+  const state: PortableReleaseState = {
+    ...emptyCoreReleaseState(),
+    site: {
+      paths: [
+        { path: "login.html", content_sha256: loginSha, content_type: "text/html", size_bytes: login.byteLength },
+        { path: "assets/app.txt", content_sha256: assetSha, content_type: "text/plain", size_bytes: asset.byteLength },
+        { path: "dashboard.html", content_sha256: preSha, content_type: "text/html", size_bytes: pre.byteLength },
+      ],
+    },
+    static_manifest: {
+      version: STATIC_MANIFEST_VERSION,
+      public_path_mode: "explicit",
+      files: {
+        "/login": {
+          sha256: loginSha,
+          size: login.byteLength,
+          content_type: "text/html",
+          cache_class: "html",
+          cache_class_source: "declared",
+          asset_path: "login.html",
+          direct: false,
+          authority: "route_static_alias",
+          methods: ["GET", "HEAD"],
+        },
+        "/assets/app.txt": {
+          sha256: assetSha,
+          size: asset.byteLength,
+          content_type: "text/plain",
+          cache_class: "revalidating_asset",
+          cache_class_source: "declared",
+          asset_path: "assets/app.txt",
+          direct: true,
+          authority: "explicit_public_path",
+        },
+        "/dashboard": {
+          sha256: preSha,
+          size: pre.byteLength,
+          content_type: "text/html",
+          cache_class: "html",
+          cache_class_source: "declared",
+          asset_path: "dashboard.html",
+          direct: true,
+          authority: "explicit_public_path",
+        },
+      },
+    },
+    functions: [
+      portableFunction("api", "standard"),
+      portableFunction("ssr", "ssr", [CORE_ASTRO_SSR_OUTPUT_CONTRACT_VERSION]),
+    ],
+    routes: {
+      manifest_sha256: "route-manifest-test",
+      entries: [
+        {
+          pattern: "/login",
+          kind: "exact",
+          prefix: null,
+          methods: ["GET", "HEAD"],
+          target: { type: "static", file: "login.html" },
+        },
+        {
+          pattern: "/api/*",
+          kind: "prefix",
+          prefix: "/api/",
+          methods: ["GET", "POST"],
+          target: { type: "function", name: "api" },
+        },
+      ],
+    },
+  };
+  const apiBundle = functionBundle("1".repeat(64), 12);
+  const ssrBundle = functionBundle("2".repeat(64), 12);
+  ssrBundle.name = "ssr";
+  ssrBundle.class = "ssr";
+  ssrBundle.capabilities = [CORE_ASTRO_SSR_OUTPUT_CONTRACT_VERSION];
+  const executor = new MemoryFunctionExecutor();
+  const runtime = {
+    projects: catalog,
+    releases: new MemoryReleaseState(state),
+    content,
+    functionBundles: new MemoryFunctionBundles({ api: apiBundle, ssr: ssrBundle }),
+    functionExecutor: executor,
+  };
+
+  const loginRead = await coreGatewayResponse({
+    method: "GET",
+    pathname: `/projects/v1/${project.project_id}/static/login`,
+  }, runtime);
+  assert.equal(loginRead.status, 200);
+  assert.equal(Buffer.from(loginRead.body as Uint8Array).toString("utf8"), "<h1>Login static</h1>");
+  assert.equal(executor.last, null);
+
+  const assetRead = await coreGatewayResponse({
+    method: "GET",
+    pathname: `/projects/v1/${project.project_id}/static/assets/app.txt`,
+  }, runtime);
+  assert.equal(assetRead.status, 200);
+  assert.equal(Buffer.from(assetRead.body as Uint8Array).toString("utf8"), "asset bytes");
+  assert.equal(executor.last, null);
+
+  const prerenderedRead = await coreGatewayResponse({
+    method: "GET",
+    pathname: `/projects/v1/${project.project_id}/static/dashboard`,
+  }, runtime);
+  assert.equal(prerenderedRead.status, 200);
+  assert.equal(Buffer.from(prerenderedRead.body as Uint8Array).toString("utf8"), "<h1>Prerendered</h1>");
+  assert.equal(executor.last, null);
+
+  const apiRead = await coreGatewayResponse({
+    method: "GET",
+    pathname: `/projects/v1/${project.project_id}/static/api/users`,
+  }, runtime);
+  assert.equal(apiRead.status, 201);
+  assert.equal(executor.last?.functionName, "api");
+  assert.equal(executor.last?.bundle.class, "standard");
+
+  executor.last = null;
+  const ssrRead = await coreGatewayResponse({
+    method: "POST",
+    pathname: `/projects/v1/${project.project_id}/static/settings?tab=billing`,
+    headers: {
+      host: "app.local",
+      cookie: "sid=abc",
+      "x-run402-function-name": "spoofed",
+    },
+    body: "body",
+  }, runtime);
+  assert.equal(ssrRead.status, 201);
+  assert.equal(executor.last?.functionName, "ssr");
+  assert.equal(executor.last?.bundle.class, "ssr");
+  assert.equal(executor.last?.request?.path, "/settings");
+  assert.equal(executor.last?.request?.rawQuery, "tab=billing");
+  assert.equal(executor.last?.request?.url, "http://app.local/settings?tab=billing");
+  assert.equal(executor.last?.request?.context.routePattern, "/*");
+  assert.equal(executor.last?.request?.headers.some(([name, value]) => name === "x-run402-function-name" && value === "spoofed"), false);
+  assert.equal(executor.last?.request?.headers.some(([name, value]) => name === "x-run402-route-pattern" && value === "/*"), true);
+
+  const ssrHead = await coreGatewayResponse({
+    method: "HEAD",
+    pathname: `/projects/v1/${project.project_id}/static/settings`,
+  }, runtime);
+  assert.equal(ssrHead.status, 201);
+  assert.equal((ssrHead.body as Uint8Array).byteLength, 0);
+  assert.equal(ssrHead.headers?.["Content-Length"], "2");
+
+  executor.last = null;
+  const upgrade = await coreGatewayResponse({
+    method: "GET",
+    pathname: `/projects/v1/${project.project_id}/static/socket`,
+    headers: { connection: "Upgrade", upgrade: "websocket" },
+  }, runtime);
+  assert.equal(upgrade.status, 422);
+  assert.equal((upgrade.body as { error?: string }).error, "astro_ssr_unsupported_feature");
+  assert.equal(executor.last, null);
+});
+
 test("direct function invoke requires service auth and enforces auth gates before dispatch", async () => {
   const catalog = new MemoryProjectCatalog();
   const project = await catalog.create({ name: "functions app" });
@@ -1026,14 +1197,16 @@ async function devAuthorization(
 }
 
 class MemoryFunctionBundles {
-  readonly #bundle: CoreFunctionBundleMetadata;
+  readonly #bundles: Map<string, CoreFunctionBundleMetadata>;
 
-  constructor(bundle: CoreFunctionBundleMetadata) {
-    this.#bundle = bundle;
+  constructor(bundle: CoreFunctionBundleMetadata | Record<string, CoreFunctionBundleMetadata>) {
+    this.#bundles = "name" in bundle
+      ? new Map([[bundle.name, bundle]])
+      : new Map(Object.entries(bundle));
   }
 
-  async getFunctionBundle(): Promise<CoreFunctionBundleMetadata> {
-    return this.#bundle;
+  async getFunctionBundle(input: { functionName: string }): Promise<CoreFunctionBundleMetadata | null> {
+    return this.#bundles.get(input.functionName) ?? null;
   }
 }
 
@@ -1185,6 +1358,26 @@ function functionBundle(sha256: string, size: number): CoreFunctionBundleMetadat
     require_role: null,
     class: "standard",
     capabilities: [],
+  };
+}
+
+function portableFunction(
+  name: string,
+  fnClass: "standard" | "ssr",
+  capabilities: string[] = [],
+): PortableReleaseState["functions"][number] {
+  return {
+    name,
+    code_hash: `${name.padEnd(64, "0").slice(0, 64)}`,
+    runtime: "node22",
+    timeout_seconds: 10,
+    memory_mb: 128,
+    schedule: null,
+    deps: [],
+    require_auth: false,
+    require_role: null,
+    class: fnClass,
+    capabilities,
   };
 }
 

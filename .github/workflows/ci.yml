@@ -73,6 +73,14 @@ jobs:
         env:
           CORE_CONFORMANCE_RESTART: "1"
 
+      - name: Core Astro SSR runtime conformance
+        run: npm run core:astro-ssr
+
+      - name: Core Astro SSR runtime restart persistence
+        run: npm run core:astro-ssr
+        env:
+          CORE_CONFORMANCE_RESTART: "1"
+
       - name: Core Compose logs
         if: failure()
         run: docker compose logs

@@ -41,6 +41,7 @@ export interface LocalFunctionExecutorOptions {
 interface RunnerPayload {
   module_path: string;
   entrypoint: string;
+  function_class: CoreFunctionBundleMetadata["class"];
   invocation: CoreFunctionInvocationInput;
   env: Record<string, string>;
   response_body_limit_bytes: number;
@@ -90,6 +91,7 @@ export class LocalFunctionExecutor {
       const payload: RunnerPayload = {
         module_path: modulePath,
         entrypoint: input.bundle.entrypoint,
+        function_class: input.bundle.class,
         invocation: {
           projectId: input.projectId,
           releaseId: input.releaseId,

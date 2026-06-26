@@ -14,6 +14,7 @@ import type {
 interface RunnerPayload {
   module_path: string;
   entrypoint: string;
+  function_class: "standard" | "ssr";
   invocation: CoreFunctionInvocationInput;
   env: Record<string, string>;
   response_body_limit_bytes: number;
@@ -53,16 +54,17 @@ main().catch((error: unknown) => {
 });
 
 async function main(): Promise<void> {
-  payload = JSON.parse(await readStdin()) as RunnerPayload;
-  for (const [name, value] of Object.entries(payload.env)) {
+  const currentPayload = JSON.parse(await readStdin()) as RunnerPayload;
+  payload = currentPayload;
+  for (const [name, value] of Object.entries(currentPayload.env)) {
     process.env[name] = value;
   }
 
-  const moduleUrl = pathToFileURL(payload.module_path).href;
+  const moduleUrl = pathToFileURL(currentPayload.module_path).href;
   const mod = await import(moduleUrl);
-  const handler = selectHandler(mod, payload.entrypoint);
-  const value = await runWithContext(contextFromInvocation(payload.invocation), async () => {
-    return await handler(payload?.invocation.request ?? payload?.invocation);
+  const handler = selectHandler(mod, currentPayload.entrypoint);
+  const value = await runWithContext(contextFromInvocation(currentPayload.invocation), async () => {
+    return await handler(handlerInput(currentPayload));
   });
   const response = await normalizeResponse(value);
   writeControl({
@@ -70,6 +72,27 @@ async function main(): Promise<void> {
     response,
     logs,
   });
+}
+
+function handlerInput(current: RunnerPayload): unknown {
+  if (current.function_class !== "ssr") {
+    return current.invocation.request ?? current.invocation;
+  }
+  if (!current.invocation.request) {
+    throw new Error("Astro SSR invocation requires routed HTTP request metadata.");
+  }
+  return webRequestFromRouted(current.invocation.request);
+}
+
+function webRequestFromRouted(request: RoutedHttpRequestV1): Request {
+  const init: RequestInit = {
+    method: request.method,
+    headers: new Headers(request.headers),
+  };
+  if (request.method !== "GET" && request.method !== "HEAD" && request.body) {
+    init.body = Buffer.from(request.body.data, "base64");
+  }
+  return new Request(request.url, init);
 }
 
 function selectHandler(mod: Record<string, unknown>, entrypoint: string): (event: unknown) => Promise<unknown> | unknown {
@@ -83,12 +106,13 @@ function selectHandler(mod: Record<string, unknown>, entrypoint: string): (event
 }
 
 async function normalizeResponse(value: unknown): Promise<RoutedHttpResponseV1> {
-  if (isRoutedResponse(value)) return value;
   if (value instanceof Response) {
     const bytes = Buffer.from(await value.arrayBuffer());
+    const responseHeaders = responseHeadersToList(value.headers);
     return {
       status: value.status,
-      headers: headersToList(value.headers),
+      headers: responseHeaders.headers,
+      cookies: responseHeaders.cookies,
       body: {
         encoding: "base64",
         data: bytes.toString("base64"),
@@ -96,6 +120,7 @@ async function normalizeResponse(value: unknown): Promise<RoutedHttpResponseV1> 
       },
     };
   }
+  if (isRoutedResponse(value)) return value;
   const bytes = Buffer.from(JSON.stringify(value ?? null), "utf8");
   return {
     status: 200,
@@ -164,8 +189,20 @@ function headersRecord(headers: RoutedHttpHeaderList): Record<string, string | s
   return out;
 }
 
-function headersToList(headers: Headers): RoutedHttpHeaderList {
-  return [...headers.entries()];
+function responseHeadersToList(headers: Headers): { headers: RoutedHttpHeaderList; cookies: string[] } {
+  const out: RoutedHttpHeaderList = [];
+  const cookies: string[] = [];
+  const getSetCookie = (headers as Headers & { getSetCookie?: () => string[] }).getSetCookie;
+  const setCookies = typeof getSetCookie === "function" ? getSetCookie.call(headers) : [];
+  for (const [name, value] of headers.entries()) {
+    if (name.toLowerCase() === "set-cookie") {
+      if (setCookies.length === 0) cookies.push(value);
+      continue;
+    }
+    out.push([name, value]);
+  }
+  cookies.push(...setCookies);
+  return { headers: out, cookies };
 }
 
 function installLogCapture(stream: "stdout" | "stderr"): void {

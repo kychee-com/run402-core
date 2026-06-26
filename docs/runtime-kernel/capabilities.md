@@ -29,12 +29,17 @@
 - structured local function logs, generated request IDs, timestamp/request-id/tail filters, retention pruning, and best-effort stdout/stderr redaction
 - function route targets that fail closed with typed dynamic-runtime errors when the worker executor is not configured
 - machine-readable functions isolation profile, resource defaults, dependency policy, and known exclusions
+- Astro SSR Developer Preview for `astro.ssr.v1`
+- one Node 22 ESM SSR target with Web `Request` input and buffered Web `Response` output
+- SSR fallback after static aliases, public assets, prerendered HTML, and function routes
+- inherited function runtime request IDs, logs, required secrets, env allowlist, timeout, body/response caps, and trusted-local-code isolation profile
 
 ## Explicitly Unsupported
 
 Unsupported required capabilities fail with `unsupported_capability`.
 
-- Astro SSR
+- full Astro support and arbitrary Astro adapters
+- Astro streaming-to-client, WebSockets, HTTP upgrade, ISR/cache, edge runtime, Cloud globals, and Cloud routing hooks
 - external npm dependency installation for functions
 - function schedules and background jobs
 - hostile-code isolation and public multi-tenant function hosting
@@ -51,4 +56,4 @@ Unsupported required capabilities fail with `unsupported_capability`.
 
 ## Route Subset
 
-The current server serves active-release entries from `site.public_paths` explicit or implicit mode, exact static alias routes, and supported function targets. SSR targets remain unsupported. Core does not provide global routing compatibility, custom domains, CDN invalidation, SPA fallback, or managed edge operations in this slice.
+The current server serves active-release entries from `site.public_paths` explicit or implicit mode, exact static alias routes, supported function targets, and one `astro.ssr.v1` fallback. Resolution order is explicit static alias, public static asset path, prerendered static HTML, dynamic function route, Astro SSR fallback, then 404. Core does not provide global routing compatibility, custom domains, CDN invalidation, arbitrary SPA fallback, or managed edge operations in this slice.

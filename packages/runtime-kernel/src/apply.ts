@@ -21,16 +21,20 @@ import type {
   RuntimeKernelPorts,
 } from "./ports.js";
 import {
+  AstroSsrUnsupportedFeatureError,
   DependencyInstallRejectedError,
   FunctionBundleValidationError,
   MissingRequiredSecretError,
   UnsupportedCapabilityError,
 } from "./errors.js";
 import {
+  CORE_ASTRO_SSR_FALLBACK_PATTERN,
+  CORE_ASTRO_SSR_OUTPUT_CONTRACT_VERSION,
   CORE_FUNCTION_DEPENDENCY_MODE,
   CORE_FUNCTION_RESOURCE_DEFAULTS,
   emptyFunctionApplyEffects,
   functionMemoryBytes,
+  isAstroSsrFunction,
   normalizeFunctionEntrypoint,
   type CoreDynamicFunctionRoute,
   type CoreFunctionApplyEffects,
@@ -288,8 +292,15 @@ function validateFunctionSubset(spec: ReleaseSpec): void {
     throw new UnsupportedCapabilityError("functions.patch");
   }
 
+  let ssrCount = 0;
   for (const [name, fn] of Object.entries(spec.functions.replace)) {
     validateCoreFunctionSpec(name, fn);
+    if (fn.class === "ssr") ssrCount += 1;
+  }
+  if (ssrCount > 1) {
+    throw new AstroSsrUnsupportedFeatureError("multiple_ssr_targets", "Core Astro SSR Developer Preview supports one fallback target per release.", {
+      ssr_target_count: ssrCount,
+    });
   }
 }
 
@@ -322,8 +333,26 @@ function validateCoreFunctionSpec(name: string, fn: FunctionSpec): void {
   if (fn.schedule) {
     throw new UnsupportedCapabilityError("functions.scheduled");
   }
-  if (fn.class && fn.class !== "standard") {
-    throw new UnsupportedCapabilityError("astro.ssr");
+  if (fn.class === "ssr") {
+    if (!fn.capabilities?.includes(CORE_ASTRO_SSR_OUTPUT_CONTRACT_VERSION)) {
+      throw new AstroSsrUnsupportedFeatureError("unsupported_output_contract", `SSR function ${name} must declare capability ${CORE_ASTRO_SSR_OUTPUT_CONTRACT_VERSION}.`, {
+        function_name: name,
+        required_capability: CORE_ASTRO_SSR_OUTPUT_CONTRACT_VERSION,
+      });
+    }
+    const unsupportedAstroCapability = fn.capabilities.find((capability) =>
+      capability.startsWith("astro.") && capability !== CORE_ASTRO_SSR_OUTPUT_CONTRACT_VERSION);
+    if (unsupportedAstroCapability) {
+      throw new AstroSsrUnsupportedFeatureError(unsupportedAstroCapability, `SSR function ${name} declares unsupported Astro capability ${unsupportedAstroCapability}.`, {
+        function_name: name,
+        capability: unsupportedAstroCapability,
+      });
+    }
+  } else if (fn.capabilities?.some((capability) => capability.startsWith("astro."))) {
+    throw new AstroSsrUnsupportedFeatureError("class_mismatch", `Function ${name} declares Astro SSR capabilities but is not class ssr.`, {
+      function_name: name,
+      class: fn.class ?? "standard",
+    });
   }
   if (fn.requireRole?.cacheTtl && fn.requireRole.cacheTtl > 0) {
     throw new FunctionBundleValidationError("role_cache_unsupported", `Function ${name} requireRole.cacheTtl must be 0 in Core Developer Preview.`, {
@@ -371,9 +400,17 @@ function planFunctionEffects(
       methods: route.methods,
       function_name: route.target.name,
     }));
+  const ssrTarget = target.functions.find(isAstroSsrFunction);
   return {
     bundles,
     dynamic_routes: dynamicRoutes,
+    astro_ssr_fallback: ssrTarget
+      ? {
+          function_name: ssrTarget.name,
+          output_contract_version: CORE_ASTRO_SSR_OUTPUT_CONTRACT_VERSION,
+          pattern: CORE_ASTRO_SSR_FALLBACK_PATTERN,
+        }
+      : null,
     required_secrets: requiredSecrets,
     dependency_mode: CORE_FUNCTION_DEPENDENCY_MODE,
     noop: stableFunctionSlice(base) === stableFunctionSlice(target),
@@ -409,7 +446,7 @@ function bundleMetadataFromSpec(
     memory_bytes: functionMemoryBytes({ memory_mb: spec.config?.memoryMb ?? 128 }),
     require_auth: spec.requireAuth === true,
     require_role: requireRole,
-    class: "standard",
+    class: spec.class ?? "standard",
     capabilities: spec.capabilities ? [...spec.capabilities].sort() : [],
   };
 }
@@ -422,6 +459,7 @@ function isEmptyFunctionEffects(effects: CoreFunctionApplyEffects): boolean {
   return effects.noop &&
     effects.bundles.length === 0 &&
     effects.dynamic_routes.length === 0 &&
+    effects.astro_ssr_fallback === null &&
     effects.required_secrets.length === 0;
 }
 
@@ -431,6 +469,7 @@ function stableFunctionSlice(state: PortableReleaseState): string {
     dynamic_routes: state.routes.entries
       .filter((entry) => entry.target.type === "function")
       .sort((a, b) => a.pattern.localeCompare(b.pattern) || (a.methods ?? []).join(",").localeCompare((b.methods ?? []).join(","))),
+    astro_ssr_fallback: state.functions.find(isAstroSsrFunction)?.name ?? null,
     secrets: [...state.secrets.keys].sort(),
   });
 }

@@ -14,6 +14,7 @@ npm run core:health
 npm run core:conformance
 CORE_CONFORMANCE_RESTART=1 npm run core:storage-routing
 CORE_CONFORMANCE_RESTART=1 npm run core:functions
+CORE_CONFORMANCE_RESTART=1 npm run core:astro-ssr
 ```
 
 ## What The Conformance Fixture Proves
@@ -30,6 +31,7 @@ CORE_CONFORMANCE_RESTART=1 npm run core:functions
 - verify public/private visibility, anonymous private denial, immutable URL retention, and restart persistence
 - verify exact static aliases, explicit public paths, HEAD/GET behavior, route miss/static lookup, private asset non-disclosure, route-conflict rejection, and unsupported dynamic-route failure
 - verify trusted-code Node function apply, routed HTTP fidelity, direct invoke, auth gates, role gates, local secrets, request IDs, logs/diagnostics, redaction, no-op reapply, stale-plan rejection, unsupported dynamic features, cleanup reporting, and worker restart persistence
+- verify limited Astro SSR apply, static/SSR/function precedence, Web Request/Response behavior, redirects, multiple cookies, binary response bytes, HEAD behavior, required secrets, request IDs, logs/diagnostics, unsupported upgrade failure, no-op reapply, stale-plan rejection, cleanup reporting, and worker restart persistence
 
 ## Stop
 

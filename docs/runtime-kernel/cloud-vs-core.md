@@ -47,3 +47,11 @@ Core must not run project code inside the gateway/control-plane process. The sup
 Cloud remains proprietary for Lambda/ECS/fleet execution, managed log operations, global routing, billing/quota/abuse controls, production secret custody, backups, monitoring, compliance, and support. Cloud may consume or verify public function semantics, but public Core must not expose Cloud provider identifiers or operational internals.
 
 Open-source Core reduces lock-in risk because the supported application runtime slice can execute outside Run402 Cloud. Run402 Cloud allowance and spend controls reduce financial-risk exposure. These are separate trust claims.
+
+## Astro SSR Developer Preview
+
+Core now exposes a limited Astro SSR portability contract: `astro.ssr.v1`, one Node 22 ESM SSR target, Web `Request` input, buffered Web `Response` output, static assets served by Core static routes, and SSR fallback through the same dynamic worker boundary as functions.
+
+The logical precedence contract is public: static aliases, public assets, prerendered HTML, function routes, SSR fallback, then 404. Cloud may use different production routing infrastructure, but accepted requests in the supported fixture should resolve to the same logical winner.
+
+Cloud remains proprietary for managed SSR production operations: Lambda/ECS or equivalent fleet execution, global routing, managed logs, quotas, billing, abuse controls, backups, monitoring, compliance, and support. Core does not support arbitrary Astro adapters, streaming, WebSockets, ISR/cache, edge runtime, Cloud globals, export/import, or Cloud import in this child change.

@@ -10,6 +10,7 @@ const checkedRoots = [
   "apps/core-gateway",
   "packages/runtime-kernel",
   "docker",
+  "fixtures/astro-ssr-core",
   "fixtures/functions-runtime-core",
   "fixtures/runtime-kernel-static-rest",
   "fixtures/storage-routing-core",
@@ -60,6 +61,12 @@ const requiredRedactionFixtureMarkers = [
   "API_TOKEN=",
   "api_key=",
 ];
+const requiredAstroSsrFixtureMarkers = [
+  "astro.ssr.v1",
+  "static public asset wins before Astro SSR",
+  "x-run402-route-pattern",
+  "SESSION_SECRET",
+];
 
 const failures = [];
 const packageManifests = [];
@@ -94,6 +101,16 @@ const redactionFixture = await readFile(path.join(root, "fixtures/functions-runt
 for (const marker of requiredRedactionFixtureMarkers) {
   if (!redactionFixture.includes(marker)) {
     failures.push(`functions redaction fixture is missing marker: ${marker}`);
+  }
+}
+const astroSsrFixtureText = await Promise.all([
+  readFile(path.join(root, "scripts/core-astro-ssr-smoke.mjs"), "utf8"),
+  readFile(path.join(root, "fixtures/astro-ssr-core/functions/ssr.mjs"), "utf8"),
+  readFile(path.join(root, "fixtures/astro-ssr-core/site/assets/app.txt"), "utf8"),
+]).then((parts) => parts.join("\n"));
+for (const marker of requiredAstroSsrFixtureMarkers) {
+  if (!astroSsrFixtureText.includes(marker)) {
+    failures.push(`Astro SSR fixture is missing marker: ${marker}`);
   }
 }
 

@@ -65,6 +65,52 @@ test("local function executor runs a prebundled source ref with scrubbed env", a
   }
 });
 
+test("local function executor normalizes SSR Web Request and Web Response", async () => {
+  const fixture = await createExecutorFixture(`
+    export default async function handler(request) {
+      const body = await request.text();
+      const headers = new Headers({ "content-type": "text/plain; charset=utf-8" });
+      headers.append("set-cookie", "a=1; Path=/");
+      headers.append("set-cookie", "b=2; Path=/");
+      return new Response(request.method + " " + new URL(request.url).pathname + " " + body, {
+        status: 207,
+        headers
+      });
+    }
+  `);
+  fixture.bundle.class = "ssr";
+  fixture.bundle.capabilities = ["astro.ssr.v1"];
+  try {
+    const result = await fixture.executor.invoke({
+      projectId: PROJECT_ID,
+      releaseId: RELEASE_ID,
+      functionName: "ssr",
+      invocationKind: "routed_http",
+      requestId: "req_ssr_1",
+      bundle: fixture.bundle,
+      request: {
+        ...routedRequest("req_ssr_1", "/settings"),
+        method: "POST",
+        url: "http://localhost/settings?tab=billing",
+        rawQuery: "tab=billing",
+        body: {
+          encoding: "base64",
+          data: Buffer.from("hello").toString("base64"),
+          size: 5,
+        },
+      },
+    });
+
+    assert.equal(result.requestId, "req_ssr_1");
+    assert.equal(result.response.status, 207);
+    assert.equal(Buffer.from(result.response.body?.data ?? "", "base64").toString("utf8"), "POST /settings hello");
+    assert.equal(result.response.cookies?.some((cookie) => cookie.startsWith("a=1;")), true);
+    assert.equal(result.response.cookies?.some((cookie) => cookie.startsWith("b=2;")), true);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test("local function executor rejects busy and timed-out invocations", async () => {
   const busy = await createExecutorFixture(`
     export default async function handler() {

@@ -15,6 +15,8 @@ export const CORE_FUNCTION_RUNTIME_MATURITY = "developer_preview" as const;
 export const CORE_FUNCTION_SECURITY_PROFILE = "trusted_local_code" as const;
 export const CORE_FUNCTION_DEFAULT_EXECUTOR = "docker_compose_worker" as const;
 export const CORE_FUNCTION_DEPENDENCY_MODE = "prebundled_no_external_deps" as const;
+export const CORE_ASTRO_SSR_OUTPUT_CONTRACT_VERSION = "astro.ssr.v1" as const;
+export const CORE_ASTRO_SSR_FALLBACK_PATTERN = "/*" as const;
 
 export const CORE_FUNCTION_RESOURCE_DEFAULTS = {
   requestBodyLimitBytes: 6 * 1024 * 1024,
@@ -42,7 +44,6 @@ export const CORE_FUNCTION_FILESYSTEM_LAYOUT = {
 } as const;
 
 export const CORE_FUNCTION_KNOWN_EXCLUSIONS = [
-  "astro_ssr",
   "hostile_code_isolation",
   "public_multi_tenant_hosting",
   "cloud_grade_sandbox",
@@ -59,6 +60,22 @@ export const CORE_FUNCTION_KNOWN_EXCLUSIONS = [
   "background_jobs",
   "managed_jobs",
   "managed_kms",
+  "cloudwatch_logs",
+  "cloud_quota_enforcement",
+  "cloud_billing",
+  "cloud_abuse_controls",
+] as const;
+
+export const CORE_ASTRO_SSR_KNOWN_EXCLUSIONS = [
+  "full_astro_support",
+  "arbitrary_astro_adapters",
+  "streaming_to_client",
+  "websockets",
+  "http_upgrade",
+  "isr_cache",
+  "edge_runtime",
+  "cloud_globals",
+  "cloud_routing_hooks",
   "cloudwatch_logs",
   "cloud_quota_enforcement",
   "cloud_billing",
@@ -145,6 +162,35 @@ export interface CoreFunctionRuntimeCapability {
   known_exclusions: Array<(typeof CORE_FUNCTION_KNOWN_EXCLUSIONS)[number]>;
 }
 
+export interface CoreAstroSsrRuntimeCapability {
+  capability: "core-astro-ssr";
+  status: "supported";
+  maturity: typeof CORE_FUNCTION_RUNTIME_MATURITY;
+  output_contract_version: typeof CORE_ASTRO_SSR_OUTPUT_CONTRACT_VERSION;
+  supported_output: {
+    runtime: "node22";
+    module_format: "esm";
+    request: "web_request";
+    response: "web_response_buffered";
+    route: "fallback";
+  };
+  fallback: {
+    pattern: typeof CORE_ASTRO_SSR_FALLBACK_PATTERN;
+    precedence: readonly [
+      "explicit_static_alias",
+      "public_static_asset_path",
+      "prerendered_static_html",
+      "dynamic_function_route",
+      "astro_ssr_fallback",
+      "not_found",
+    ];
+  };
+  inherits_from_functions_runtime: true;
+  resource_defaults: typeof CORE_FUNCTION_RESOURCE_DEFAULTS;
+  isolation_profile: CoreFunctionIsolationProfile;
+  known_exclusions: Array<(typeof CORE_ASTRO_SSR_KNOWN_EXCLUSIONS)[number]>;
+}
+
 export interface CoreFunctionBundleMetadata {
   name: string;
   runtime: "node22";
@@ -160,7 +206,7 @@ export interface CoreFunctionBundleMetadata {
   memory_bytes: number;
   require_auth: boolean;
   require_role: RoleGateSpec | null;
-  class: "standard";
+  class: "standard" | "ssr";
   capabilities: string[];
 }
 
@@ -175,6 +221,11 @@ export interface CoreDynamicFunctionRoute {
 export interface CoreFunctionApplyEffects {
   bundles: CoreFunctionBundleMetadata[];
   dynamic_routes: CoreDynamicFunctionRoute[];
+  astro_ssr_fallback: {
+    function_name: string;
+    output_contract_version: typeof CORE_ASTRO_SSR_OUTPUT_CONTRACT_VERSION;
+    pattern: typeof CORE_ASTRO_SSR_FALLBACK_PATTERN;
+  } | null;
   required_secrets: string[];
   dependency_mode: typeof CORE_FUNCTION_DEPENDENCY_MODE;
   noop: boolean;
@@ -256,14 +307,52 @@ export function coreFunctionRuntimeCapability(): CoreFunctionRuntimeCapability {
   };
 }
 
+export function coreAstroSsrRuntimeCapability(): CoreAstroSsrRuntimeCapability {
+  return {
+    capability: "core-astro-ssr",
+    status: "supported",
+    maturity: CORE_FUNCTION_RUNTIME_MATURITY,
+    output_contract_version: CORE_ASTRO_SSR_OUTPUT_CONTRACT_VERSION,
+    supported_output: {
+      runtime: "node22",
+      module_format: "esm",
+      request: "web_request",
+      response: "web_response_buffered",
+      route: "fallback",
+    },
+    fallback: {
+      pattern: CORE_ASTRO_SSR_FALLBACK_PATTERN,
+      precedence: [
+        "explicit_static_alias",
+        "public_static_asset_path",
+        "prerendered_static_html",
+        "dynamic_function_route",
+        "astro_ssr_fallback",
+        "not_found",
+      ],
+    },
+    inherits_from_functions_runtime: true,
+    resource_defaults: CORE_FUNCTION_RESOURCE_DEFAULTS,
+    isolation_profile: CORE_FUNCTION_ISOLATION_PROFILE,
+    known_exclusions: [...CORE_ASTRO_SSR_KNOWN_EXCLUSIONS],
+  };
+}
+
 export function emptyFunctionApplyEffects(): CoreFunctionApplyEffects {
   return {
     bundles: [],
     dynamic_routes: [],
+    astro_ssr_fallback: null,
     required_secrets: [],
     dependency_mode: CORE_FUNCTION_DEPENDENCY_MODE,
     noop: true,
   };
+}
+
+export function isAstroSsrFunction(entry: Pick<PortableFunctionEntry, "class" | "capabilities">): boolean {
+  return entry.class === "ssr" &&
+    Array.isArray(entry.capabilities) &&
+    entry.capabilities.includes(CORE_ASTRO_SSR_OUTPUT_CONTRACT_VERSION);
 }
 
 export function normalizeFunctionEntrypoint(spec: FunctionSpec): string {

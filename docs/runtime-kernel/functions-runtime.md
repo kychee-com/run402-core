@@ -99,7 +99,7 @@ Temp-dir byte quotas and `node_modules` byte quotas are documented resource defa
 | role gates | `cacheTtl: 0` only; positive cache TTL rejected |
 | secrets | local metadata APIs, required-secret commit checks, target invocation injection, no readback |
 | logs | structured platform logs, capped stdout/stderr capture, service-key log reads, request-id/since/tail filters, retention pruning |
-| Astro SSR | unsupported; separate follow-up |
+| Astro SSR | supported only through `astro.ssr.v1`; see `docs/runtime-kernel/astro-ssr.md` |
 | schedules/background jobs | unsupported |
 | WebSockets/streaming | unsupported |
 
@@ -152,6 +152,7 @@ Boundary scans and code review must check source, package tarballs, source maps,
 - gateway signing keys, service keys, database admin URLs, npm tokens, AWS/GCP credentials, and raw host environment variables
 - request bodies and response bodies in platform diagnostics
 - sensitive headers such as `Authorization`, `Cookie`, `Set-Cookie`, payment headers, service keys, and inbound spoofed `x-run402-*`
+- Astro SSR adapter artifacts, source maps, manifests, env templates, package tarballs, container layers, provider identifiers, private paths, and Cloud-only strings
 
 Platform diagnostics must not intentionally include secrets. User-code stdout/stderr redaction is best-effort only; trusted code can print secrets it is allowed to read.
 

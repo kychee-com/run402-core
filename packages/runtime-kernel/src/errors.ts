@@ -58,6 +58,16 @@ export class FunctionBundleValidationError extends RuntimeKernelTypedError {
   }
 }
 
+export class AstroSsrUnsupportedFeatureError extends RuntimeKernelTypedError {
+  constructor(feature: string, message = `Unsupported Astro SSR feature: ${feature}`, details: RuntimeKernelTypedErrorDetails = {}) {
+    super("astro_ssr_unsupported_feature", 422, message, {
+      feature,
+      ...details,
+    });
+    this.name = "AstroSsrUnsupportedFeatureError";
+  }
+}
+
 export class DependencyInstallRejectedError extends RuntimeKernelTypedError {
   constructor(message: string, details: RuntimeKernelTypedErrorDetails = {}) {
     super("dependency_install_rejected", 422, message, details);

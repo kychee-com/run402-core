@@ -4,6 +4,8 @@ import {
   releasePackageInfo,
 } from "@run402/release";
 import {
+  coreAstroSsrRuntimeCapability,
+  type CoreAstroSsrRuntimeCapability,
   coreFunctionRuntimeCapability,
   type CoreFunctionRuntimeCapability,
 } from "./functions-runtime.js";
@@ -37,12 +39,22 @@ export const SUPPORTED_RUNTIME_FEATURES = [
   "functions.secrets.local",
   "functions.logs.local",
   "functions.trusted-local-code",
+  "astro.ssr",
+  "astro.ssr.run402-output-v1",
+  "astro.ssr.fallback.local",
+  "astro.ssr.static-precedence",
+  "astro.ssr.trusted-local-code",
 ] as const;
 
 export const UNSUPPORTED_RUNTIME_FEATURES = [
   "database.migrations.sql_ref",
   "site.patch",
-  "astro.ssr",
+  "astro.arbitrary-adapters",
+  "astro.streaming",
+  "astro.websockets",
+  "astro.isr-cache",
+  "astro.edge-runtime",
+  "astro.cloud-globals",
   "functions.hostile-code-isolation",
   "functions.external-npm-dependencies",
   "functions.scheduled",
@@ -91,6 +103,7 @@ export interface RuntimeCapabilityDocument {
     };
   };
   functions_runtime: CoreFunctionRuntimeCapability;
+  astro_ssr_runtime: CoreAstroSsrRuntimeCapability;
 }
 
 export function runtimeCapabilities(version = "0.1.1"): RuntimeCapabilityDocument {
@@ -120,5 +133,6 @@ export function runtimeCapabilities(version = "0.1.1"): RuntimeCapabilityDocumen
       },
     },
     functions_runtime: coreFunctionRuntimeCapability(),
+    astro_ssr_runtime: coreAstroSsrRuntimeCapability(),
   };
 }

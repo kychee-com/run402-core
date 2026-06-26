@@ -94,7 +94,7 @@ interface FunctionBundleRow {
   required_secrets: string[];
   require_auth: boolean;
   require_role: CoreFunctionBundleMetadata["require_role"];
-  class: "standard";
+  class: CoreFunctionBundleMetadata["class"];
   capabilities: string[];
   timeout_ms: number;
   memory_bytes: string | number;

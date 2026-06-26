@@ -17,7 +17,7 @@
   },
   "dependencies": {
     "@run402/functions": "3.5.1",
-    "@run402/runtime-kernel": "0.1.4",
+    "@run402/runtime-kernel": "0.1.5",
     "pg": "^8.13.1"
   },
   "devDependencies": {
