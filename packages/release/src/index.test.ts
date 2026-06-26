@@ -20,6 +20,8 @@ import {
   collectLegacyImmutableRisks,
   computeReleaseDiff,
   computeApplyRequestDigestHex,
+  computeMaterializedReleaseDigestHex,
+  computePortableManifestDigestHex,
   computeStaticManifestSha256,
   detectPreviousImmutableViolations,
   deriveFactRequirements,
@@ -32,16 +34,19 @@ import {
   emptyPortableReleaseState,
   materializeRelease,
   materializeRoutes,
+  normalizePortableManifest,
   normalizeManifestResponseHeaders,
   evaluateReleaseFacts,
   parseReleaseSpec,
   summarizeStaticManifest,
   validateReleaseSpec,
+  ReleaseCoreError,
   ReleaseSpecValidationError,
   ReleaseFactProtocolError,
   StaticManifestError,
   UnsupportedStaticManifestVersionError,
   type ReleaseSpec,
+  type PortableReleaseState,
   type PlanDiffEnvelope,
   type StaticManifest,
 } from "./index.js";
@@ -888,6 +893,7 @@ describe("ReleaseSpec validation and digest identities", () => {
   it("separates portable manifest digest from Cloud context", () => {
     const base: ReleaseSpec = {
       project: "p_a",
+      idempotency_key: "idem_a",
       base: { release: "current" },
       site: {
         replace: {
@@ -898,10 +904,19 @@ describe("ReleaseSpec validation and digest identities", () => {
     const moved: ReleaseSpec = {
       ...base,
       project: "p_b",
+      idempotency_key: "idem_b",
       base: { release_id: "rel_other" },
     };
     assert.notEqual(digestApplyRequest(base), digestApplyRequest(moved));
     assert.equal(digestPortableManifest(base), digestPortableManifest(moved));
+    assert.equal(computePortableManifestDigestHex(base), computePortableManifestDigestHex(moved));
+    assert.deepEqual(normalizePortableManifest(base), {
+      site: {
+        replace: {
+          "index.html": { sha256: "aa".repeat(32), size: 10, contentType: "text/html" },
+        },
+      },
+    });
   });
 
   it("rejects unknown fields and reserved checks", () => {
@@ -962,7 +977,18 @@ describe("ReleaseSpec validation and digest identities", () => {
 
   it("canonical JSON sorts object keys and rejects non-finite numbers", () => {
     assert.equal(canonicalizeJson({ b: 1, a: true }), '{"a":true,"b":1}');
+    assert.equal(canonicalizeJson({ b: undefined, a: [1, "x"] }), '{"a":[1,"x"]}');
     assert.throws(() => canonicalizeJson({ n: Number.NaN }), /Cannot canonicalize/);
+    assert.throws(
+      () => canonicalizeJson([undefined]),
+      (err) => err instanceof ReleaseCoreError &&
+        err.code === "RUN402_CORE_CANONICALIZE_UNSUPPORTED_VALUE",
+    );
+    assert.throws(
+      () => canonicalizeJson({ id: 1n }),
+      (err) => err instanceof ReleaseCoreError &&
+        err.code === "RUN402_CORE_CANONICALIZE_UNSUPPORTED_VALUE",
+    );
   });
 
   it("digests normalized portable state with identity prefix", () => {
@@ -972,5 +998,101 @@ describe("ReleaseSpec validation and digest identities", () => {
       digestEvaluatedPlan({ planner: "run402.release_planner.v1", ok: true }),
       /^run402-evaluated-plan-v1:[0-9a-f]{64}$/,
     );
+  });
+
+  it("materialized release digests are invariant to unordered state sets", () => {
+    const stateA: PortableReleaseState = {
+      ...emptyPortableReleaseState(),
+      site: {
+        paths: [
+          { path: "/z.html", content_sha256: SHA_B, size_bytes: 2, content_type: "text/html" },
+          { path: "/a.html", content_sha256: SHA_A, size_bytes: 1, content_type: "text/html" },
+        ],
+      },
+      functions: [
+        {
+          name: "worker",
+          code_hash: SHA_B,
+          runtime: "node22",
+          timeout_seconds: 10,
+          memory_mb: 128,
+          schedule: null,
+          deps: ["z", "a"],
+          require_auth: true,
+          require_role: {
+            table: "members",
+            idColumn: "user_id",
+            roleColumn: "role",
+            allowed: ["owner", "admin"],
+          },
+          capabilities: ["storage.write", "storage.read"],
+        },
+        {
+          name: "api",
+          code_hash: SHA_A,
+          runtime: "node22",
+          timeout_seconds: 30,
+          memory_mb: 256,
+          schedule: null,
+          deps: [],
+          require_auth: false,
+          require_role: null,
+        },
+      ],
+      secrets: { keys: ["ZED", "API_KEY"] },
+      subdomains: { names: ["www", "api"] },
+      migrations: [
+        { migration_id: "002_more", checksum_hex: "AB".repeat(32), transaction: "default" },
+        { migration_id: "001_init", checksum_hex: "CD".repeat(32), transaction: "none" },
+      ],
+    };
+    const stateB: PortableReleaseState = {
+      ...emptyPortableReleaseState(),
+      site: {
+        paths: [
+          { path: "/a.html", content_sha256: SHA_A, size_bytes: 1, content_type: "text/html" },
+          { path: "/z.html", content_sha256: SHA_B, size_bytes: 2, content_type: "text/html" },
+        ],
+      },
+      functions: [
+        {
+          name: "api",
+          code_hash: SHA_A,
+          runtime: "node22",
+          timeout_seconds: 30,
+          memory_mb: 256,
+          schedule: null,
+          deps: [],
+          require_auth: false,
+          require_role: null,
+        },
+        {
+          name: "worker",
+          code_hash: SHA_B,
+          runtime: "node22",
+          timeout_seconds: 10,
+          memory_mb: 128,
+          schedule: null,
+          deps: ["a", "z"],
+          require_auth: true,
+          require_role: {
+            table: "members",
+            idColumn: "user_id",
+            roleColumn: "role",
+            allowed: ["admin", "owner"],
+          },
+          capabilities: ["storage.read", "storage.write"],
+        },
+      ],
+      secrets: { keys: ["API_KEY", "ZED"] },
+      subdomains: { names: ["api", "www"] },
+      migrations: [
+        { migration_id: "001_init", checksum_hex: "cd".repeat(32), transaction: "none" },
+        { migration_id: "002_more", checksum_hex: "ab".repeat(32), transaction: "default" },
+      ],
+    };
+
+    assert.equal(computeMaterializedReleaseDigestHex(stateA), computeMaterializedReleaseDigestHex(stateB));
+    assert.equal(digestMaterializedRelease(stateA), digestMaterializedRelease(stateB));
   });
 });
