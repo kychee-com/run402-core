@@ -596,7 +596,7 @@ test("function activation failure leaves previous release active and plan planne
   assert.equal((await ports.plans.get(plan.plan_id))?.status, "planned");
 });
 
-test("function apply rejects external deps and positive role cache ttl", async () => {
+test("function apply rejects external deps and unsafe role gate config", async () => {
   await assert.rejects(
     createApplyPlan(new MemoryRuntimePorts(), {
       spec: {
@@ -637,6 +637,32 @@ test("function apply rejects external deps and positive role cache ttl", async (
       },
     }),
     (error) => error instanceof FunctionBundleValidationError && error.code === "role_cache_unsupported",
+  );
+
+  await assert.rejects(
+    createApplyPlan(new MemoryRuntimePorts(), {
+      spec: {
+        ...prebundledFunctionSpec("e".repeat(64), 12),
+        functions: {
+          replace: {
+            api: {
+              runtime: "node22",
+              source: { sha256: "e".repeat(64), size: 12 },
+              requireRole: {
+                table: "bad-name",
+                idColumn: "user_id",
+                roleColumn: "role",
+                allowed: ["admin"],
+                cacheTtl: 0,
+              },
+            },
+          },
+        },
+      },
+    }),
+    (error) =>
+      (error instanceof FunctionBundleValidationError && error.code === "role_gate_invalid_identifier") ||
+      (error instanceof Error && error.name === "ReleaseSpecValidationError"),
   );
 });
 

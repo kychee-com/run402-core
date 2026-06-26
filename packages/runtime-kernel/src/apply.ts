@@ -329,6 +329,16 @@ function validateCoreFunctionSpec(name: string, fn: FunctionSpec): void {
       cache_ttl: fn.requireRole.cacheTtl,
     });
   }
+  if (fn.requireRole) {
+    for (const field of ["table", "idColumn", "roleColumn"] as const) {
+      if (!isSafeSqlIdentifier(fn.requireRole[field])) {
+        throw new FunctionBundleValidationError("role_gate_invalid_identifier", `Function ${name} requireRole.${field} must be an unquoted SQL identifier.`, {
+          function_name: name,
+          field,
+        });
+      }
+    }
+  }
 }
 
 function planFunctionEffects(
@@ -418,6 +428,10 @@ function stableFunctionSlice(state: PortableReleaseState): string {
     dynamic_routes: state.routes.entries.filter((entry) => entry.target.type === "function"),
     secrets: state.secrets.keys,
   });
+}
+
+function isSafeSqlIdentifier(value: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
 }
 
 async function planStorageEffects(

@@ -117,6 +117,10 @@ function isRoutedResponse(value: unknown): value is RoutedHttpResponseV1 {
 function contextFromInvocation(invocation: CoreFunctionInvocationInput) {
   const request = invocation.request;
   const headers = headersRecord(request?.headers ?? []);
+  if (invocation.actor) {
+    headers["x-run402-user-id"] = invocation.actor.id;
+    if (invocation.actor.role) headers["x-run402-user-role"] = invocation.actor.role;
+  }
   return {
     requestId: invocation.requestId,
     projectId: invocation.projectId,
@@ -129,7 +133,17 @@ function contextFromInvocation(invocation: CoreFunctionInvocationInput) {
       url: request?.url ?? "run402://direct",
       headers,
     },
-    actor: null,
+    actor: invocation.actor ? {
+      id: invocation.actor.id,
+      projectId: invocation.projectId,
+      sessionId: `local:${invocation.actor.id}`,
+      email: "",
+      emailVerified: false,
+      authTime: Math.floor(Date.now() / 1000),
+      authzVersion: 0,
+      amr: [],
+      amrTimes: {},
+    } : null,
     invocationKind: invocation.invocationKind,
   };
 }

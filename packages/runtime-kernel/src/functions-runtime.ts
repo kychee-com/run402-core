@@ -186,7 +186,13 @@ export interface CoreFunctionInvocationInput {
   functionName: string;
   invocationKind: "routed_http" | "direct";
   requestId: string;
+  actor?: CoreFunctionActorContext | null;
   request?: RoutedHttpRequestV1;
+}
+
+export interface CoreFunctionActorContext {
+  id: string;
+  role: string | null;
 }
 
 export interface CoreFunctionInvocationResult {

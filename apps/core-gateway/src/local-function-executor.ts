@@ -95,6 +95,7 @@ export class LocalFunctionExecutor {
           functionName: input.functionName,
           invocationKind: input.invocationKind,
           requestId: input.requestId,
+          ...(input.actor ? { actor: input.actor } : {}),
           ...(input.request ? { request: input.request } : {}),
         },
         env: executorEnv(input),

@@ -588,7 +588,7 @@ test("dynamic static routes reject oversized request bodies before invoking func
   assert.equal(executor.last, null);
 });
 
-test("direct function invoke requires project service auth and fails closed for gated functions", async () => {
+test("direct function invoke requires service auth and enforces auth gates before dispatch", async () => {
   const catalog = new MemoryProjectCatalog();
   const project = await catalog.create({ name: "functions app" });
   const state = emptyCoreReleaseState();
@@ -599,6 +599,7 @@ test("direct function invoke requires project service auth and fails closed for 
     content: new MemoryContentStore(),
     functionBundles: new MemoryFunctionBundles(functionBundle("c".repeat(64), 12)),
     functionExecutor: executor,
+    jwtSecret: "test-jwt-secret",
   };
 
   const unauthorized = await coreGatewayResponse({
@@ -643,10 +644,133 @@ test("direct function invoke requires project service auth and fails closed for 
     functionExecutor: gatedExecutor,
   });
 
-  assert.equal(gated.status, 503);
-  assert.equal((gated.body as { error?: string }).error, "dynamic_runtime_unavailable");
+  assert.equal(gated.status, 401);
+  assert.equal((gated.body as { error?: string }).error, "authentication_required");
   assert.equal(gatedExecutor.last, null);
+
+  const userAuth = await devAuthorization(runtime, project.project_id, "user_direct");
+  const gatedWithUser = await coreGatewayResponse({
+    method: "POST",
+    pathname: "/functions/v1/invoke",
+    headers: { apikey: project.service_key, authorization: userAuth },
+    body: {
+      project_id: project.project_id,
+      function_name: "api",
+    },
+  }, {
+    ...runtime,
+    functionBundles: new MemoryFunctionBundles(gatedBundle),
+    functionExecutor: gatedExecutor,
+  });
+
+  assert.equal(gatedWithUser.status, 200);
+  assert.equal(gatedExecutor.last?.actor?.id, "user_direct");
+  assert.equal(gatedExecutor.last?.actor?.role, "authenticated");
 });
+
+test("routed function auth and role gates inject generated user context", async () => {
+  const catalog = new MemoryProjectCatalog();
+  const project = await catalog.create({ name: "gated routes app" });
+  const state: PortableReleaseState = {
+    ...emptyCoreReleaseState(),
+    routes: {
+      manifest_sha256: "route-manifest-test",
+      entries: [{
+        pattern: "/api/*",
+        kind: "prefix",
+        prefix: "/api/",
+        methods: ["GET"],
+        target: { type: "function", name: "api" },
+      }],
+    },
+  };
+  const authBundle = functionBundle("f".repeat(64), 12);
+  authBundle.require_auth = true;
+  const authExecutor = new MemoryFunctionExecutor();
+  const runtime = {
+    projects: catalog,
+    releases: new MemoryReleaseState(state),
+    content: new MemoryContentStore(),
+    functionBundles: new MemoryFunctionBundles(authBundle),
+    functionExecutor: authExecutor,
+    jwtSecret: "test-jwt-secret",
+  };
+
+  const blocked = await coreGatewayResponse({
+    method: "GET",
+    pathname: `/projects/v1/${project.project_id}/static/api/user`,
+  }, runtime);
+  assert.equal(blocked.status, 401);
+  assert.equal(authExecutor.last, null);
+
+  const userAuth = await devAuthorization(runtime, project.project_id, "user_routed");
+  const passed = await coreGatewayResponse({
+    method: "GET",
+    pathname: `/projects/v1/${project.project_id}/static/api/user`,
+    headers: {
+      authorization: userAuth,
+      "x-run402-user-id": "spoofed",
+    },
+  }, runtime);
+  assert.equal(passed.status, 201);
+  assert.equal(authExecutor.last?.actor?.id, "user_routed");
+  assert.deepEqual(authExecutor.last?.request?.headers.filter(([name]) => name === "x-run402-user-id"), [["x-run402-user-id", "user_routed"]]);
+
+  const roleBundle = functionBundle("a".repeat(64), 12);
+  roleBundle.require_role = {
+    table: "members",
+    idColumn: "user_id",
+    roleColumn: "role",
+    allowed: ["admin"],
+    cacheTtl: 0,
+  };
+  const roleExecutor = new MemoryFunctionExecutor();
+  const denied = await coreGatewayResponse({
+    method: "GET",
+    pathname: `/projects/v1/${project.project_id}/static/api/admin`,
+    headers: { authorization: userAuth },
+  }, {
+    ...runtime,
+    functionBundles: new MemoryFunctionBundles(roleBundle),
+    functionExecutor: roleExecutor,
+    roleGates: new MemoryRoleGates("member"),
+  });
+  assert.equal(denied.status, 403);
+  assert.equal((denied.body as { error?: string }).error, "ROLE_FORBIDDEN");
+  assert.equal(roleExecutor.last, null);
+
+  const allowed = await coreGatewayResponse({
+    method: "GET",
+    pathname: `/projects/v1/${project.project_id}/static/api/admin`,
+    headers: { authorization: userAuth },
+  }, {
+    ...runtime,
+    functionBundles: new MemoryFunctionBundles(roleBundle),
+    functionExecutor: roleExecutor,
+    roleGates: new MemoryRoleGates("admin"),
+  });
+  assert.equal(allowed.status, 201);
+  assert.equal(roleExecutor.last?.actor?.role, "admin");
+  assert.deepEqual(roleExecutor.last?.request?.headers.filter(([name]) => name === "x-run402-user-role"), [["x-run402-user-role", "admin"]]);
+});
+
+async function devAuthorization(
+  runtime: Parameters<typeof coreGatewayResponse>[1],
+  projectId: string,
+  sub: string,
+): Promise<string> {
+  const response = await coreGatewayResponse({
+    method: "POST",
+    pathname: "/auth/v1/dev-tokens",
+    body: {
+      project_id: projectId,
+      role: "authenticated",
+      sub,
+    },
+  }, runtime);
+  assert.equal(response.status, 201);
+  return (response.body as { authorization: string }).authorization;
+}
 
 class MemoryFunctionBundles {
   readonly #bundle: CoreFunctionBundleMetadata;
@@ -657,6 +781,18 @@ class MemoryFunctionBundles {
 
   async getFunctionBundle(): Promise<CoreFunctionBundleMetadata> {
     return this.#bundle;
+  }
+}
+
+class MemoryRoleGates {
+  readonly #role: string | null;
+
+  constructor(role: string | null) {
+    this.#role = role;
+  }
+
+  async resolveRole(): Promise<string | null> {
+    return this.#role;
   }
 }
 

@@ -1,4 +1,4 @@
-import { createHmac, randomBytes } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import {
   applyInvariantEnvelope,
@@ -26,6 +26,7 @@ import {
   UnsupportedCapabilityError,
   unsupportedCapabilityEnvelope,
   type ContentStorePort,
+  type CoreFunctionActorContext,
   type CoreFunctionBundleMetadata,
   type CoreProject,
   type RuntimeKernelPorts,
@@ -41,6 +42,7 @@ import {
   type StaticManifestFileEntry,
 } from "@run402/release";
 import { FilesystemContentStore } from "./filesystem-content.js";
+import { PostgresFunctionRoleGateStore, type FunctionRoleGatePort } from "./function-gates.js";
 import { HttpFunctionWorkerClient } from "./function-worker-client.js";
 import type {
   LocalFunctionExecutorInput,
@@ -74,6 +76,7 @@ export interface CoreGatewayRuntime {
   functions?: RuntimeKernelPorts["functions"];
   functionBundles?: FunctionBundleLookupPort;
   functionExecutor?: FunctionExecutorPort;
+  roleGates?: FunctionRoleGatePort;
   migrations?: RuntimeKernelPorts["migrations"];
   lifecycle?: RuntimeKernelPorts["lifecycle"];
   jwtSecret?: string;
@@ -160,6 +163,7 @@ export async function createGatewayRuntime(config: CoreGatewayConfig): Promise<C
     cleanup: storage,
     functionBundles: storage,
     functionExecutor: config.functionWorkerUrl ? new HttpFunctionWorkerClient(config.functionWorkerUrl) : undefined,
+    roleGates: new PostgresFunctionRoleGateStore(pool),
     migrations: applyStore,
     lifecycle: {
       activate: async (context) => {
@@ -615,6 +619,7 @@ export async function coreGatewayResponse(
         projectId: auth.project_id,
         functionName: input.function_name,
         releaseId: input.release_id,
+        headers,
       });
     } catch (error) {
       return applyErrorResponse(error);
@@ -1304,6 +1309,13 @@ async function invokeRoutedFunction(
     return { status: error.status, body: runtimeKernelErrorEnvelope(error) };
   }
 
+  const gate = await resolveFunctionGate(runtime, {
+    projectId: input.projectId,
+    headers: input.headers,
+    bundle,
+  });
+  if ("status" in gate) return gate;
+
   const requestId = `req_${randomBytes(12).toString("hex")}`;
   try {
     const result = await runtime.functionExecutor.invoke({
@@ -1312,6 +1324,7 @@ async function invokeRoutedFunction(
       functionName: input.route.target.name,
       invocationKind: "routed_http",
       requestId,
+      actor: gate.actor,
       bundle,
       request: {
         version: "run402.routed_http.v1",
@@ -1325,6 +1338,8 @@ async function invokeRoutedFunction(
           releaseId: input.releaseId,
           requestId,
           functionName: input.route.target.name,
+          actor: gate.actor,
+          role: gate.role,
         }),
         cookies: { raw: cookieHeader(input.headers) },
         body: routedBody(input.body),
@@ -1356,6 +1371,7 @@ async function invokeDirectFunction(
     projectId: string;
     functionName: string;
     releaseId?: string;
+    headers?: CoreGatewayRequest["headers"];
   },
 ): Promise<CoreGatewayResult> {
   if (!runtime.releases) {
@@ -1390,14 +1406,12 @@ async function invokeDirectFunction(
     });
     return { status: error.status, body: runtimeKernelErrorEnvelope(error) };
   }
-  if (bundle.require_auth || bundle.require_role) {
-    const error = new DynamicRuntimeUnavailableError("Run402 Core direct invoke auth gates are not configured yet.", {
-      function_name: input.functionName,
-      require_auth: bundle.require_auth,
-      require_role: bundle.require_role !== null,
-    });
-    return { status: error.status, body: runtimeKernelErrorEnvelope(error) };
-  }
+  const gate = await resolveFunctionGate(runtime, {
+    projectId: input.projectId,
+    headers: input.headers,
+    bundle,
+  });
+  if ("status" in gate) return gate;
 
   const requestId = `req_${randomBytes(12).toString("hex")}`;
   const result = await runtime.functionExecutor.invoke({
@@ -1406,6 +1420,7 @@ async function invokeDirectFunction(
     functionName: input.functionName,
     invocationKind: "direct",
     requestId,
+    actor: gate.actor,
     bundle,
   });
   return {
@@ -1417,6 +1432,122 @@ async function invokeDirectFunction(
       duration_ms: result.duration_ms,
     },
   };
+}
+
+async function resolveFunctionGate(
+  runtime: CoreGatewayRuntime,
+  input: {
+    projectId: string;
+    headers?: CoreGatewayRequest["headers"];
+    bundle: CoreFunctionBundleMetadata;
+  },
+): Promise<{ actor: CoreFunctionActorContext | null; role: string | null } | CoreGatewayResult> {
+  if (!input.bundle.require_auth && !input.bundle.require_role) {
+    return { actor: null, role: null };
+  }
+
+  const actor = localActorFromHeaders(runtime, input.projectId, input.headers);
+  if (!actor) return authRequired();
+
+  if (!input.bundle.require_role) {
+    return { actor, role: null };
+  }
+
+  if (!runtime.projects || !runtime.roleGates) {
+    const error = new DynamicRuntimeUnavailableError("Run402 Core function role gates are not configured.", {
+      function_name: input.bundle.name,
+    });
+    return { status: error.status, body: runtimeKernelErrorEnvelope(error) };
+  }
+  const project = await runtime.projects.inspect(input.projectId);
+  if (!project) {
+    return { status: 404, body: { error: "project_not_found", message: `Run402 Core project not found: ${input.projectId}` } };
+  }
+  const role = await runtime.roleGates.resolveRole({
+    projectSchema: project.schema_slot,
+    actorId: actor.id,
+    gate: input.bundle.require_role,
+  });
+  if (!role || !input.bundle.require_role.allowed.includes(role)) {
+    return roleForbidden(input.bundle.require_role.allowed);
+  }
+  return {
+    actor: { ...actor, role },
+    role,
+  };
+}
+
+function authRequired(): CoreGatewayResult {
+  return {
+    status: 401,
+    body: {
+      error: "authentication_required",
+      message: "A valid local user JWT is required for this function.",
+    },
+  };
+}
+
+function roleForbidden(allowed: readonly string[]): CoreGatewayResult {
+  return {
+    status: 403,
+    body: {
+      error: "ROLE_FORBIDDEN",
+      message: "Authenticated user does not satisfy this function role gate.",
+      allowed_roles: [...allowed],
+    },
+  };
+}
+
+function localActorFromHeaders(
+  runtime: CoreGatewayRuntime,
+  projectId: string,
+  headers: CoreGatewayRequest["headers"] | undefined,
+): CoreFunctionActorContext | null {
+  const secret = runtime.jwtSecret;
+  if (!secret) return null;
+  const authorization = firstHeader(headers, "authorization");
+  const token = bearerToken(authorization);
+  if (!token) return null;
+  const claims = verifyJwtClaims(token, secret);
+  if (!claims || claims.project_id !== projectId || !claims.sub || claims.role === "anon") return null;
+  return {
+    id: claims.sub,
+    role: claims.role ?? null,
+  };
+}
+
+function bearerToken(authorization: string | undefined): string | null {
+  if (!authorization) return null;
+  const match = /^Bearer\s+(.+)$/i.exec(authorization);
+  return match?.[1] ?? null;
+}
+
+function verifyJwtClaims(token: string, secret: string): Record<string, string> | null {
+  const parts = token.split(".");
+  if (parts.length !== 3) return null;
+  const [encodedHeader, encodedPayload, signature] = parts;
+  let header: { alg?: unknown };
+  let payload: unknown;
+  try {
+    header = JSON.parse(Buffer.from(encodedHeader, "base64url").toString("utf8")) as { alg?: unknown };
+    payload = JSON.parse(Buffer.from(encodedPayload, "base64url").toString("utf8")) as unknown;
+  } catch {
+    return null;
+  }
+  if (header.alg !== "HS256" || typeof payload !== "object" || payload === null || Array.isArray(payload)) return null;
+  const expected = createHmac("sha256", secret).update(`${encodedHeader}.${encodedPayload}`).digest("base64url");
+  if (!safeEqual(signature, expected)) return null;
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(payload)) {
+    if (typeof value === "string") out[key] = value;
+  }
+  return out;
+}
+
+function safeEqual(a: string, b: string): boolean {
+  const left = Buffer.from(a);
+  const right = Buffer.from(b);
+  return left.byteLength === right.byteLength && timingSafeEqual(left, right);
 }
 
 function functionResultToGateway(result: LocalFunctionExecutorResult, method: string): CoreGatewayResult {
@@ -1483,6 +1614,8 @@ function routedRequestHeaders(
     releaseId: string;
     requestId: string;
     functionName: string;
+    actor?: CoreFunctionActorContext | null;
+    role?: string | null;
   },
 ): Array<[string, string]> {
   const out: Array<[string, string]> = [];
@@ -1498,6 +1631,8 @@ function routedRequestHeaders(
   out.push(["x-run402-release-id", context.releaseId]);
   out.push(["x-run402-request-id", context.requestId]);
   out.push(["x-run402-function-name", context.functionName]);
+  if (context.actor) out.push(["x-run402-user-id", context.actor.id]);
+  if (context.role) out.push(["x-run402-user-role", context.role]);
   return out;
 }
 
