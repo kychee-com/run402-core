@@ -3,6 +3,10 @@ import {
   RELEASE_SPEC_VERSION,
   releasePackageInfo,
 } from "@run402/release";
+import {
+  coreFunctionRuntimeCapability,
+  type CoreFunctionRuntimeCapability,
+} from "./functions-runtime.js";
 
 export const RUNTIME_KERNEL_CONTRACT_VERSION = "run402-runtime-kernel-v1" as const;
 export const RUNTIME_KERNEL_PACKAGE_NAME = "@run402/runtime-kernel" as const;
@@ -25,13 +29,26 @@ export const SUPPORTED_RUNTIME_FEATURES = [
   "storage.visibility.public-private",
   "storage.immutable-local-urls",
   "storage.signed-read.local",
+  "functions.node",
+  "functions.routed-http.local",
+  "functions.direct-invoke.local",
+  "functions.auth-gates.local",
+  "functions.role-gates.local",
+  "functions.secrets.local",
+  "functions.logs.local",
+  "functions.trusted-local-code",
 ] as const;
 
 export const UNSUPPORTED_RUNTIME_FEATURES = [
   "database.migrations.sql_ref",
   "site.patch",
-  "functions.node",
   "astro.ssr",
+  "functions.hostile-code-isolation",
+  "functions.external-npm-dependencies",
+  "functions.scheduled",
+  "functions.background-jobs",
+  "functions.streaming",
+  "functions.websockets",
   "storage.s3-compatible",
   "assets.images",
   "subdomains.managed",
@@ -68,7 +85,12 @@ export interface RuntimeCapabilityDocument {
       release_spec_version: typeof RELEASE_SPEC_VERSION;
       planner_semantics_version: typeof PLANNER_SEMANTICS_VERSION;
     };
+    functions: {
+      name: "@run402/functions";
+      version: string;
+    };
   };
+  functions_runtime: CoreFunctionRuntimeCapability;
 }
 
 export function runtimeCapabilities(version = "0.1.1"): RuntimeCapabilityDocument {
@@ -92,6 +114,11 @@ export function runtimeCapabilities(version = "0.1.1"): RuntimeCapabilityDocumen
         release_spec_version: release.releaseSpecVersion,
         planner_semantics_version: release.plannerSemanticsVersion,
       },
+      functions: {
+        name: "@run402/functions",
+        version: "3.5.1",
+      },
     },
+    functions_runtime: coreFunctionRuntimeCapability(),
   };
 }

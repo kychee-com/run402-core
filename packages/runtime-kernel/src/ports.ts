@@ -5,6 +5,14 @@ import type {
   StaticManifest,
 } from "@run402/release";
 import type { RuntimeCapabilityDocument } from "./capabilities.js";
+import type {
+  CoreFunctionApplyEffects,
+  CoreFunctionBundleMetadata,
+  CoreFunctionInvocationInput,
+  CoreFunctionInvocationResult,
+  CoreFunctionLogEntry,
+  CoreFunctionSecretMetadata,
+} from "./functions-runtime.js";
 
 export interface CoreProject {
   project_id: string;
@@ -48,6 +56,7 @@ export interface CoreApplyPlan {
   target_release_id: string;
   target_release_digest: string;
   storage_effects?: CoreStorageApplyEffects;
+  function_effects?: CoreFunctionApplyEffects;
   noop: boolean;
   status: "planned" | "committed";
   created_at: string;
@@ -65,6 +74,7 @@ export interface CoreApplyCommitContext {
   release_digest: string;
   target_release: PortableReleaseState;
   storage_effects?: CoreStorageApplyEffects;
+  function_effects?: CoreFunctionApplyEffects;
 }
 
 export interface CoreApplyDeferredResult {
@@ -225,7 +235,40 @@ export interface CleanupResult {
   removed_objects: number;
   removed_versions: number;
   removed_cas_objects: number;
+  removed_function_bundles?: number;
+  removed_function_logs?: number;
   retained_live_sha256: string[];
+}
+
+export interface FunctionRuntimePort {
+  stageBundles(input: {
+    projectId: string;
+    releaseId: string;
+    bundles: CoreFunctionBundleMetadata[];
+  }): Promise<void>;
+  activateRelease(input: {
+    projectId: string;
+    releaseId: string;
+    expectedBaseReleaseId: string | null;
+    effects: CoreFunctionApplyEffects;
+  }): Promise<void>;
+  invoke(input: CoreFunctionInvocationInput): Promise<CoreFunctionInvocationResult>;
+  listLogs(input: {
+    projectId: string;
+    functionName?: string;
+    requestId?: string;
+    since?: string;
+    tail?: number;
+  }): Promise<CoreFunctionLogEntry[]>;
+  listSecrets(input: {
+    projectId: string;
+    functionName?: string;
+  }): Promise<CoreFunctionSecretMetadata[]>;
+  cleanup(projectId?: string): Promise<{
+    removed_function_bundles: number;
+    removed_function_logs: number;
+    retained_live_sha256: string[];
+  }>;
 }
 
 export interface StoragePort {
@@ -349,6 +392,7 @@ export interface RuntimeKernelPorts {
   signedReads?: SignedReadPort;
   routes?: RouteManifestPort;
   cleanup?: CleanupPort;
+  functions?: FunctionRuntimePort;
   migrations: MigrationPort;
   lifecycle?: ApplyLifecyclePort;
 }

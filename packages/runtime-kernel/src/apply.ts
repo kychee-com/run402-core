@@ -7,12 +7,33 @@ import {
   parseReleaseSpec,
   type AssetPutEntryWire,
   type ContentRefHex,
+  type FunctionSpec,
   type MigrationSpec,
   type PortableReleaseState,
   type ReleaseSpec,
 } from "@run402/release";
-import type { CoreApplyCommitContext, CoreApplyPlan, CoreAssetPut, CoreStorageApplyEffects, RuntimeKernelPorts } from "./ports.js";
-import { UnsupportedCapabilityError } from "./errors.js";
+import type {
+  CoreApplyCommitContext,
+  CoreApplyPlan,
+  CoreAssetPut,
+  CoreStorageApplyEffects,
+  RuntimeKernelPorts,
+} from "./ports.js";
+import {
+  DependencyInstallRejectedError,
+  FunctionBundleValidationError,
+  UnsupportedCapabilityError,
+} from "./errors.js";
+import {
+  CORE_FUNCTION_DEPENDENCY_MODE,
+  CORE_FUNCTION_RESOURCE_DEFAULTS,
+  emptyFunctionApplyEffects,
+  functionMemoryBytes,
+  normalizeFunctionEntrypoint,
+  type CoreDynamicFunctionRoute,
+  type CoreFunctionApplyEffects,
+  type CoreFunctionBundleMetadata,
+} from "./functions-runtime.js";
 import {
   computeStorageInventoryRevision,
   normalizeSha256Hex,
@@ -81,6 +102,8 @@ export async function createApplyPlan(
     concreteBase: base.state,
   });
   const storageEffects = await planStorageEffects(ports, spec);
+  const functionEffects = planFunctionEffects(spec, base.state, target);
+  const storedFunctionEffects = isEmptyFunctionEffects(functionEffects) ? undefined : functionEffects;
   const releaseSpecDigest = digestApplyRequest(spec);
   const targetDigest = digestMaterializedRelease(target);
   const baseDigest = digestMaterializedRelease(base.state);
@@ -94,7 +117,8 @@ export async function createApplyPlan(
     target_release_digest: targetDigest,
     target_release: target,
     storage_effects: storageEffects,
-    noop: targetDigest === baseDigest && storageEffects.noop,
+    ...(storedFunctionEffects ? { function_effects: storedFunctionEffects } : {}),
+    noop: targetDigest === baseDigest && storageEffects.noop && functionEffects.noop,
   });
 
   return publicPlan(plan);
@@ -155,10 +179,12 @@ export async function commitApplyPlan(
     release_digest: plan.target_release_digest,
     target_release: plan.target_release,
     storage_effects: plan.storage_effects,
+    function_effects: plan.function_effects,
   });
 
   await verifyStaticContent(ports, plan.project_id, plan.target_release);
   await verifyStorageContent(ports, plan.project_id, plan.storage_effects);
+  await verifyFunctionContent(ports, plan.project_id, plan.function_effects);
 
   const staged = await ports.lifecycle?.stage?.(context());
   if (staged?.release_id) releaseId = staged.release_id;
@@ -227,8 +253,8 @@ function deferredCommitResult(
 }
 
 function validateSupportedSpec(spec: ReleaseSpec): void {
-  if (spec.functions) throw new UnsupportedCapabilityError("functions.node");
-  if (spec.secrets) throw new UnsupportedCapabilityError("secrets.hosted");
+  validateFunctionSubset(spec);
+  if (spec.secrets) throw new UnsupportedCapabilityError("functions.secrets.local");
   if (spec.subdomains) throw new UnsupportedCapabilityError("subdomains.managed");
   if (spec.assets && !spec.assets.put && !spec.assets.delete && !spec.assets.sync) {
     throw new ApplyInvariantError("asset_spec_empty", "Asset spec must include put, delete, or sync.");
@@ -245,10 +271,153 @@ function validateSupportedSpec(spec: ReleaseSpec): void {
     }
   }
   for (const route of spec.routes?.replace ?? []) {
+    if (route.target.type === "function") {
+      continue;
+    }
     if (route.target.type !== "static") {
       throw new UnsupportedCapabilityError("functions.node");
     }
   }
+}
+
+function validateFunctionSubset(spec: ReleaseSpec): void {
+  if (!spec.functions) return;
+  if (!("replace" in spec.functions) || !spec.functions.replace) {
+    throw new UnsupportedCapabilityError("functions.patch");
+  }
+
+  for (const [name, fn] of Object.entries(spec.functions.replace)) {
+    validateCoreFunctionSpec(name, fn);
+  }
+}
+
+function validateCoreFunctionSpec(name: string, fn: FunctionSpec): void {
+  if (fn.runtime !== "node22") {
+    throw new FunctionBundleValidationError("invalid_function_bundle", `Function ${name} must use runtime node22.`, {
+      function_name: name,
+      runtime: fn.runtime,
+    });
+  }
+  if (!fn.source) {
+    throw new FunctionBundleValidationError("invalid_function_bundle", `Function ${name} must use source in Core Developer Preview.`, {
+      function_name: name,
+      reason: "missing_source_ref",
+    });
+  }
+  if (fn.files && Object.keys(fn.files).length > 0) {
+    throw new FunctionBundleValidationError("invalid_function_bundle", `Function ${name} files maps are not supported in Core Developer Preview.`, {
+      function_name: name,
+      reason: "files_map_unsupported",
+    });
+  }
+  if ((fn.deps?.length ?? 0) > 0) {
+    throw new DependencyInstallRejectedError("Core Functions Developer Preview supports pre-bundled function artifacts with no external deps.", {
+      function_name: name,
+      deps: fn.deps,
+      dependency_mode: CORE_FUNCTION_DEPENDENCY_MODE,
+    });
+  }
+  if (fn.schedule) {
+    throw new UnsupportedCapabilityError("functions.scheduled");
+  }
+  if (fn.class && fn.class !== "standard") {
+    throw new UnsupportedCapabilityError("astro.ssr");
+  }
+  if (fn.requireRole?.cacheTtl && fn.requireRole.cacheTtl > 0) {
+    throw new FunctionBundleValidationError("role_cache_unsupported", `Function ${name} requireRole.cacheTtl must be 0 in Core Developer Preview.`, {
+      function_name: name,
+      cache_ttl: fn.requireRole.cacheTtl,
+    });
+  }
+}
+
+function planFunctionEffects(
+  spec: ReleaseSpec,
+  base: PortableReleaseState,
+  target: PortableReleaseState,
+): CoreFunctionApplyEffects {
+  if (!spec.functions && !hasFunctionRoutes(target) && target.functions.length === 0) {
+    return emptyFunctionApplyEffects();
+  }
+  const functionSpecs = spec.functions && "replace" in spec.functions ? spec.functions.replace ?? {} : {};
+  const bundles = target.functions.map((entry) => {
+    const fnSpec = functionSpecs[entry.name];
+    if (!fnSpec?.source) {
+      throw new FunctionBundleValidationError("invalid_function_bundle", `Function ${entry.name} is missing source metadata for Core activation.`, {
+        function_name: entry.name,
+      });
+    }
+    return bundleMetadataFromSpec(entry.name, fnSpec, entry.require_role);
+  });
+  const dynamicRoutes = target.routes.entries
+    .filter((route): route is typeof route & { target: { type: "function"; name: string } } => route.target.type === "function")
+    .map((route): CoreDynamicFunctionRoute => ({
+      pattern: route.pattern,
+      kind: route.kind,
+      prefix: route.prefix,
+      methods: route.methods,
+      function_name: route.target.name,
+    }));
+  const requiredSecrets = [...new Set(spec.secrets?.require ?? [])].sort();
+  return {
+    bundles,
+    dynamic_routes: dynamicRoutes,
+    required_secrets: requiredSecrets,
+    dependency_mode: CORE_FUNCTION_DEPENDENCY_MODE,
+    noop: stableFunctionSlice(base) === stableFunctionSlice(target),
+  };
+}
+
+function bundleMetadataFromSpec(
+  name: string,
+  spec: FunctionSpec,
+  requireRole: CoreFunctionBundleMetadata["require_role"],
+): CoreFunctionBundleMetadata {
+  if (!spec.source) {
+    throw new FunctionBundleValidationError("invalid_function_bundle", `Function ${name} must use source in Core Developer Preview.`, {
+      function_name: name,
+    });
+  }
+  return {
+    name,
+    runtime: "node22",
+    entrypoint: normalizeFunctionEntrypoint(spec),
+    source: spec.source,
+    bundle_sha256: spec.source.sha256.toLowerCase(),
+    bundle_size_bytes: spec.source.size,
+    dependency_mode: CORE_FUNCTION_DEPENDENCY_MODE,
+    dependency_lock_digest: null,
+    deps: [],
+    required_secrets: [],
+    timeout_ms: Math.min(
+      (spec.config?.timeoutSeconds ?? CORE_FUNCTION_RESOURCE_DEFAULTS.invocationTimeoutMs / 1000) * 1000,
+      CORE_FUNCTION_RESOURCE_DEFAULTS.invocationTimeoutMs,
+    ),
+    memory_bytes: functionMemoryBytes({ memory_mb: spec.config?.memoryMb ?? 128 }),
+    require_auth: spec.requireAuth === true,
+    require_role: requireRole,
+    class: "standard",
+    capabilities: spec.capabilities ? [...spec.capabilities].sort() : [],
+  };
+}
+
+function hasFunctionRoutes(state: PortableReleaseState): boolean {
+  return state.routes.entries.some((entry) => entry.target.type === "function");
+}
+
+function isEmptyFunctionEffects(effects: CoreFunctionApplyEffects): boolean {
+  return effects.noop &&
+    effects.bundles.length === 0 &&
+    effects.dynamic_routes.length === 0 &&
+    effects.required_secrets.length === 0;
+}
+
+function stableFunctionSlice(state: PortableReleaseState): string {
+  return JSON.stringify({
+    functions: state.functions,
+    dynamic_routes: state.routes.entries.filter((entry) => entry.target.type === "function"),
+    secrets: state.secrets.keys,
+  });
 }
 
 async function planStorageEffects(
@@ -403,6 +572,22 @@ async function verifyStorageContent(
   }
 }
 
+async function verifyFunctionContent(
+  ports: RuntimeKernelPorts,
+  projectId: string,
+  effects: CoreFunctionApplyEffects | undefined,
+): Promise<void> {
+  for (const bundle of effects?.bundles ?? []) {
+    const present = await ports.content.hasContent(projectId, bundle.source.sha256);
+    if (!present) {
+      throw new ApplyInvariantError(
+        "content_digest_missing",
+        `Function bundle ${bundle.source.sha256} has not been staged for project ${projectId}.`,
+      );
+    }
+  }
+}
+
 async function applyMigrations(ports: RuntimeKernelPorts, spec: ReleaseSpec): Promise<void> {
   const migrations = spec.database?.migrations ?? [];
   for (const migration of migrations) {
@@ -484,6 +669,7 @@ function publicPlan(plan: CoreApplyPlan): CoreApplyPlan {
     target_release_id: plan.target_release_id,
     target_release_digest: plan.target_release_digest,
     ...(plan.storage_effects ? { storage_effects: plan.storage_effects } : {}),
+    ...(plan.function_effects ? { function_effects: plan.function_effects } : {}),
     noop: plan.noop,
     status: plan.status,
     created_at: plan.created_at,

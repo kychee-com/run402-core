@@ -6,6 +6,7 @@ import {
   commitApplyPlan,
   createApplyPlan,
   createCoreProject,
+  DynamicRuntimeUnavailableError,
   inspectCoreProject,
   normalizeSha256Hex,
   normalizeStorageContentType,
@@ -16,6 +17,8 @@ import {
   projectNotFoundEnvelope,
   runtimeCapabilities,
   runtimeHealth,
+  RuntimeKernelTypedError,
+  runtimeKernelErrorEnvelope,
   StorageValidationError,
   storageErrorEnvelope,
   UnsupportedCapabilityError,
@@ -59,6 +62,7 @@ export interface CoreGatewayRuntime {
   storage?: RuntimeKernelPorts["storage"];
   signedReads?: RuntimeKernelPorts["signedReads"];
   cleanup?: RuntimeKernelPorts["cleanup"];
+  functions?: RuntimeKernelPorts["functions"];
   migrations?: RuntimeKernelPorts["migrations"];
   lifecycle?: RuntimeKernelPorts["lifecycle"];
   jwtSecret?: string;
@@ -573,6 +577,11 @@ export async function coreGatewayResponse(
     return await staticDiagnostics(runtime, auth.project_id);
   }
 
+  if (pathname.startsWith("/functions")) {
+    const error = new DynamicRuntimeUnavailableError();
+    return { status: error.status, body: runtimeKernelErrorEnvelope(error) };
+  }
+
   const unsupportedFeature = unsupportedFeatureForPath(pathname);
   if (unsupportedFeature) {
     const error = new UnsupportedCapabilityError(unsupportedFeature);
@@ -634,6 +643,7 @@ function runtimePorts(runtime: CoreGatewayRuntime): RuntimeKernelPorts | null {
     storage: runtime.storage,
     signedReads: runtime.signedReads,
     cleanup: runtime.cleanup,
+    functions: runtime.functions,
     migrations: runtime.migrations,
     lifecycle: runtime.lifecycle,
   };
@@ -992,6 +1002,9 @@ function expectRole(value: unknown): "anon" | "authenticated" | "service_role" {
 }
 
 function applyErrorResponse(error: unknown): CoreGatewayResult {
+  if (error instanceof RuntimeKernelTypedError) {
+    return { status: error.status, body: runtimeKernelErrorEnvelope(error) };
+  }
   if (error instanceof UnsupportedCapabilityError) {
     return { status: error.status, body: unsupportedCapabilityEnvelope(error) };
   }
@@ -1049,8 +1062,11 @@ async function staticResponse(
   if (route) {
     if (!routeMethodAllows(route, method)) return methodNotAllowed(route);
     if (route.target.type !== "static") {
-      const error = new UnsupportedCapabilityError("functions.node", `Unsupported route target for ${publicPath}: ${route.target.type}`);
-      return { status: error.status, body: unsupportedCapabilityEnvelope(error) };
+      const error = new DynamicRuntimeUnavailableError("Run402 Core dynamic functions runtime is not configured.", {
+        route_pattern: route.pattern,
+        function_name: route.target.name,
+      });
+      return { status: error.status, body: runtimeKernelErrorEnvelope(error) };
     }
   }
   const entry = active.state.static_manifest?.files[route?.target.type === "static" ? route.pattern : publicPath];
@@ -1257,7 +1273,6 @@ function expectBoolean(value: unknown, name: string): boolean {
 }
 
 function unsupportedFeatureForPath(pathname: string): ConstructorParameters<typeof UnsupportedCapabilityError>[0] | null {
-  if (pathname.startsWith("/functions")) return "functions.node";
   if (pathname.startsWith("/ssr")) return "astro.ssr";
   if (pathname.startsWith("/export")) return "export.project-archive";
   if (pathname.startsWith("/import")) return "import.project-archive";

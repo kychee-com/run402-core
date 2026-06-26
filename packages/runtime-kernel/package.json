@@ -26,6 +26,7 @@
     "node": ">=22"
   },
   "dependencies": {
+    "@run402/functions": "3.5.1",
     "@run402/release": "0.1.1"
   },
   "repository": {

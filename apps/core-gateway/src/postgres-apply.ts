@@ -36,6 +36,7 @@ interface PlanRow {
   target_release_digest: string;
   target_release: PortableReleaseState;
   storage_effects: StoredCoreApplyPlan["storage_effects"] | null;
+  function_effects: StoredCoreApplyPlan["function_effects"] | null;
   noop: boolean;
   status: "planned" | "committed";
   created_at: Date;
@@ -111,6 +112,7 @@ export class PostgresApplyStore implements ReleaseStatePort, ApplyPlanStorePort,
         target_release_digest text NOT NULL,
         target_release jsonb NOT NULL,
         storage_effects jsonb,
+        function_effects jsonb,
         noop boolean NOT NULL,
         status text NOT NULL DEFAULT 'planned' CHECK (status IN ('planned', 'committed')),
         created_at timestamptz NOT NULL DEFAULT now(),
@@ -119,6 +121,71 @@ export class PostgresApplyStore implements ReleaseStatePort, ApplyPlanStorePort,
 
       ALTER TABLE internal.core_apply_plans
         ADD COLUMN IF NOT EXISTS storage_effects jsonb;
+
+      ALTER TABLE internal.core_apply_plans
+        ADD COLUMN IF NOT EXISTS function_effects jsonb;
+
+      CREATE TABLE IF NOT EXISTS internal.core_function_bundles (
+        project_id text NOT NULL REFERENCES internal.core_projects(project_id) ON DELETE CASCADE,
+        release_id text NOT NULL,
+        name text NOT NULL,
+        runtime text NOT NULL,
+        entrypoint text NOT NULL,
+        bundle_sha256 text NOT NULL,
+        bundle_size_bytes bigint NOT NULL,
+        dependency_mode text NOT NULL,
+        dependency_lock_digest text,
+        deps jsonb NOT NULL DEFAULT '[]'::jsonb,
+        required_secrets jsonb NOT NULL DEFAULT '[]'::jsonb,
+        require_auth boolean NOT NULL DEFAULT false,
+        require_role jsonb,
+        class text NOT NULL DEFAULT 'standard',
+        capabilities jsonb NOT NULL DEFAULT '[]'::jsonb,
+        timeout_ms integer NOT NULL,
+        memory_bytes bigint NOT NULL,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (project_id, release_id, name)
+      );
+
+      CREATE TABLE IF NOT EXISTS internal.core_function_secrets (
+        project_id text NOT NULL REFERENCES internal.core_projects(project_id) ON DELETE CASCADE,
+        name text NOT NULL,
+        scope text NOT NULL CHECK (scope IN ('project', 'release', 'function')),
+        function_name text NOT NULL DEFAULT '',
+        encrypted_value_ref text,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (project_id, name, scope, function_name)
+      );
+
+      CREATE TABLE IF NOT EXISTS internal.core_function_invocations (
+        request_id text PRIMARY KEY,
+        project_id text NOT NULL REFERENCES internal.core_projects(project_id) ON DELETE CASCADE,
+        release_id text,
+        function_name text NOT NULL,
+        invocation_kind text NOT NULL CHECK (invocation_kind IN ('routed_http', 'direct')),
+        status text NOT NULL,
+        started_at timestamptz NOT NULL DEFAULT now(),
+        finished_at timestamptz,
+        duration_ms integer,
+        error_code text
+      );
+
+      CREATE TABLE IF NOT EXISTS internal.core_function_logs (
+        id bigserial PRIMARY KEY,
+        timestamp timestamptz NOT NULL DEFAULT now(),
+        request_id text NOT NULL,
+        project_id text NOT NULL REFERENCES internal.core_projects(project_id) ON DELETE CASCADE,
+        release_id text,
+        function_name text NOT NULL,
+        stream text NOT NULL CHECK (stream IN ('platform', 'stdout', 'stderr')),
+        level text NOT NULL CHECK (level IN ('debug', 'info', 'warn', 'error')),
+        message text NOT NULL,
+        redacted boolean NOT NULL DEFAULT false
+      );
+
+      CREATE INDEX IF NOT EXISTS core_function_logs_project_request_idx
+        ON internal.core_function_logs(project_id, request_id, timestamp);
 
       CREATE TABLE IF NOT EXISTS internal.core_applied_migrations (
         project_id text NOT NULL REFERENCES internal.core_projects(project_id) ON DELETE CASCADE,
@@ -222,11 +289,12 @@ export class PostgresApplyStore implements ReleaseStatePort, ApplyPlanStorePort,
           target_release_digest,
           target_release,
           storage_effects,
+          function_effects,
           noop
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         RETURNING plan_id, project_id, spec, release_spec_digest, base_release_id,
-          target_release_id, target_release_digest, target_release, storage_effects, noop, status, created_at
+          target_release_id, target_release_digest, target_release, storage_effects, function_effects, noop, status, created_at
       `,
       [
         `plan_${randomToken(12)}`,
@@ -238,6 +306,7 @@ export class PostgresApplyStore implements ReleaseStatePort, ApplyPlanStorePort,
         input.target_release_digest,
         input.target_release,
         input.storage_effects ?? null,
+        input.function_effects ?? null,
         input.noop,
       ],
     );
@@ -248,7 +317,7 @@ export class PostgresApplyStore implements ReleaseStatePort, ApplyPlanStorePort,
     const result = await this.#pool.query<PlanRow>(
       `
         SELECT plan_id, project_id, spec, release_spec_digest, base_release_id,
-          target_release_id, target_release_digest, target_release, storage_effects, noop, status, created_at
+          target_release_id, target_release_digest, target_release, storage_effects, function_effects, noop, status, created_at
         FROM internal.core_apply_plans
         WHERE plan_id = $1
       `,
@@ -355,6 +424,7 @@ function rowToPlan(row: PlanRow): StoredCoreApplyPlan {
     target_release_id: row.target_release_id,
     target_release_digest: row.target_release_digest,
     ...(row.storage_effects ? { storage_effects: row.storage_effects } : {}),
+    ...(row.function_effects ? { function_effects: row.function_effects } : {}),
     noop: row.noop,
     status: row.status,
     created_at: row.created_at.toISOString(),

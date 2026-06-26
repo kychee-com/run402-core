@@ -48,15 +48,14 @@ test("capability route returns supported and unsupported feature lists", async (
 
   assert.equal(response.status, 200);
   assert.ok(body.supported_features?.includes("projects.create.local"));
-  assert.ok(body.unsupported_features?.some((entry) =>
-    entry.feature === "functions.node" && entry.error === "unsupported_capability"
-  ));
+  assert.ok(body.supported_features?.includes("functions.node"));
+  assert.equal(body.unsupported_features?.some((entry) => entry.feature === "functions.node"), false);
 });
 
-test("excluded runtime routes fail with unsupported_capability", async () => {
+test("function runtime route fails closed while worker is unavailable", async () => {
   const response = await coreGatewayResponse("/functions/v1/invoke");
-  assert.equal(response.status, 422);
-  assert.equal((response.body as { error?: string }).error, "unsupported_capability");
+  assert.equal(response.status, 503);
+  assert.equal((response.body as { error?: string }).error, "dynamic_runtime_unavailable");
 });
 
 test("project create and inspect routes use the configured catalog", async () => {
@@ -412,7 +411,7 @@ test("static route manifest serving honors explicit paths, aliases, methods, dia
   assert.equal((await coreGatewayResponse({
     method: "GET",
     pathname: `/projects/v1/${project.project_id}/static/api/users`,
-  }, runtime)).status, 422);
+  }, runtime)).status, 503);
 
   const diagnostics = await coreGatewayResponse({
     method: "GET",

@@ -16,6 +16,9 @@ Default credentials are local-development credentials. Do not expose this stack 
 - local signed-read URLs with bounded TTL
 - immutable URL records resolved by content digest rather than mutable object rows
 - static route manifests that fail closed for unsupported dynamic targets
+- trusted-code functions Developer Preview capability fields
+- explicit functions resource defaults and dependency policy
+- pre-bundled/no-external-deps function apply validation
 
 ## Not Included
 
@@ -25,6 +28,9 @@ Default credentials are local-development credentials. Do not expose this stack 
 - production monitoring
 - production secret management
 - untrusted code sandboxing
+- arbitrary third-party function hosting
+- external npm dependency installation for functions
+- function WebSockets, streaming, schedules, and background jobs
 - tenant isolation hardening beyond the local fixture path
 - upgrade automation
 - durable multi-node object storage

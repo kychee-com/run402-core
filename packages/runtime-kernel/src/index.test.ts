@@ -1,12 +1,18 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 
 import {
   createCoreProject,
   commitApplyPlan,
   createApplyPlan,
+  CORE_FUNCTION_DEFAULT_EXECUTOR,
+  CORE_FUNCTION_DEPENDENCY_MODE,
   emptyCoreReleaseState,
   ApplyInvariantError,
+  DependencyInstallRejectedError,
+  DynamicRuntimeUnavailableError,
+  FunctionBundleValidationError,
   inspectCoreProject,
   ProjectNotFoundError,
   projectNotFoundEnvelope,
@@ -20,6 +26,7 @@ import {
   createStorageReadSignature,
   computeStorageInventoryRevision,
   verifyStorageReadSignature,
+  runtimeKernelErrorEnvelope,
   unsupportedCapabilityEnvelope,
   type CoreProject,
   type CoreStorageObject,
@@ -37,7 +44,15 @@ test("runtime capability document advertises first-slice boundaries", () => {
   assert.ok(capabilities.supported_features.includes("database.rest.postgrest"));
   assert.ok(capabilities.supported_features.includes("storage.objects.local"));
   assert.ok(capabilities.supported_features.includes("site.static.exact-alias-routes"));
-  assert.ok(capabilities.unsupported_features.some((entry) => entry.feature === "functions.node"));
+  assert.ok(capabilities.supported_features.includes("functions.node"));
+  assert.ok(capabilities.supported_features.includes("functions.routed-http.local"));
+  assert.equal(capabilities.functions_runtime.maturity, "developer_preview");
+  assert.equal(capabilities.functions_runtime.default_executor, CORE_FUNCTION_DEFAULT_EXECUTOR);
+  assert.equal(capabilities.functions_runtime.hostile_code_isolation, false);
+  assert.equal(capabilities.functions_runtime.dependency_policy.mode, CORE_FUNCTION_DEPENDENCY_MODE);
+  assert.equal(capabilities.functions_runtime.dependency_policy.npm_install_supported, false);
+  assert.ok(capabilities.unsupported_features.some((entry) => entry.feature === "functions.external-npm-dependencies"));
+  assert.equal(capabilities.unsupported_features.some((entry) => entry.feature === "functions.node"), false);
   assert.equal(capabilities.unsupported_features.some((entry) => entry.feature === "storage.user-api"), false);
   assert.ok(capabilities.unsupported_features.every((entry) => entry.error === "unsupported_capability"));
 });
@@ -64,6 +79,18 @@ test("unsupported capability errors have stable envelope", () => {
     error: "unsupported_capability",
     message: "Unsupported runtime capability: functions.node",
     capability: "functions.node",
+  });
+});
+
+test("typed dynamic runtime errors have stable envelope", () => {
+  const error = new DynamicRuntimeUnavailableError("No worker configured.", { function_name: "api" });
+
+  assert.equal(error.code, "dynamic_runtime_unavailable");
+  assert.equal(error.status, 503);
+  assert.deepEqual(runtimeKernelErrorEnvelope(error), {
+    error: "dynamic_runtime_unavailable",
+    message: "No worker configured.",
+    details: { function_name: "api" },
   });
 });
 
@@ -413,6 +440,112 @@ test("asset reapply with identical object metadata is a no-op", async () => {
   assert.equal(storage.committed, null);
 });
 
+test("apply plan accepts first-slice prebundled function metadata", async () => {
+  const source = Buffer.from("export default async function handler() { return { status: 200 }; }\n");
+  const sourceSha = sha256Hex(source);
+  const ports = new MemoryRuntimePorts({ contentPresent: true });
+
+  const plan = await createApplyPlan(ports, {
+    spec: {
+      project: "prj_0000000000000001",
+      base: { release: "empty" },
+      functions: {
+        replace: {
+          api: {
+            runtime: "node22",
+            source: {
+              sha256: sourceSha,
+              size: source.byteLength,
+              contentType: "application/javascript",
+            },
+            requireAuth: true,
+            requireRole: {
+              table: "members",
+              idColumn: "user_id",
+              roleColumn: "role",
+              allowed: ["admin"],
+              cacheTtl: 0,
+            },
+          },
+        },
+      },
+      routes: {
+        replace: [{
+          pattern: "/api/*",
+          methods: ["GET", "POST"],
+          target: { type: "function", name: "api" },
+        }],
+      },
+    },
+  });
+
+  assert.equal(plan.noop, false);
+  assert.equal(plan.function_effects?.bundles[0]?.name, "api");
+  assert.equal(plan.function_effects?.bundles[0]?.source.sha256, sourceSha);
+  assert.equal(plan.function_effects?.bundles[0]?.dependency_mode, CORE_FUNCTION_DEPENDENCY_MODE);
+  assert.equal(plan.function_effects?.bundles[0]?.require_auth, true);
+  assert.equal(plan.function_effects?.dynamic_routes[0]?.pattern, "/api/*");
+
+  const result = await commitApplyPlan(ports, { plan_id: plan.plan_id });
+  assert.equal(result.status, "committed");
+});
+
+test("function apply verifies source content before activation", async () => {
+  const ports = new MemoryRuntimePorts({ contentPresent: false });
+  const plan = await createApplyPlan(ports, {
+    spec: prebundledFunctionSpec("b".repeat(64), 12),
+  });
+
+  await assert.rejects(
+    commitApplyPlan(ports, { plan_id: plan.plan_id }),
+    (error) => error instanceof ApplyInvariantError && error.code === "content_digest_missing",
+  );
+});
+
+test("function apply rejects external deps and positive role cache ttl", async () => {
+  await assert.rejects(
+    createApplyPlan(new MemoryRuntimePorts(), {
+      spec: {
+        ...prebundledFunctionSpec("c".repeat(64), 12),
+        functions: {
+          replace: {
+            api: {
+              runtime: "node22",
+              source: { sha256: "c".repeat(64), size: 12 },
+              deps: ["lodash@^4.17.21"],
+            },
+          },
+        },
+      },
+    }),
+    DependencyInstallRejectedError,
+  );
+
+  await assert.rejects(
+    createApplyPlan(new MemoryRuntimePorts(), {
+      spec: {
+        ...prebundledFunctionSpec("d".repeat(64), 12),
+        functions: {
+          replace: {
+            api: {
+              runtime: "node22",
+              source: { sha256: "d".repeat(64), size: 12 },
+              requireRole: {
+                table: "members",
+                idColumn: "user_id",
+                roleColumn: "role",
+                allowed: ["admin"],
+                cacheTtl: 30,
+              },
+            },
+          },
+        },
+      },
+    }),
+    (error) => error instanceof FunctionBundleValidationError && error.code === "role_cache_unsupported",
+  );
+});
+
 class MemoryProjectCatalog implements ProjectCatalogPort {
   readonly createdNames: string[] = [];
   readonly projects = new Map<string, CoreProject>();
@@ -649,4 +782,33 @@ function supportedMigrationSpec() {
       }],
     },
   };
+}
+
+function prebundledFunctionSpec(sha256: string, size: number) {
+  return {
+    project: "prj_0000000000000001",
+    base: { release: "empty" },
+    functions: {
+      replace: {
+        api: {
+          runtime: "node22",
+          source: {
+            sha256,
+            size,
+            contentType: "application/javascript",
+          },
+        },
+      },
+    },
+    routes: {
+      replace: [{
+        pattern: "/api/*",
+        target: { type: "function", name: "api" },
+      }],
+    },
+  };
+}
+
+function sha256Hex(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
 }
