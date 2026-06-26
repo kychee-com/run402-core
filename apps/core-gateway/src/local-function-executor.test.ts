@@ -7,6 +7,7 @@ import {
   DynamicRuntimeBusyError,
   DynamicRuntimeTimeoutError,
   CORE_FUNCTION_DEPENDENCY_MODE,
+  ResponseBodyTooLargeError,
   type CoreFunctionBundleMetadata,
 } from "@run402/runtime-kernel";
 import { FilesystemContentStore } from "./filesystem-content.js";
@@ -116,9 +117,33 @@ test("local function executor rejects busy and timed-out invocations", async () 
   }
 });
 
+test("local function executor enforces response body limit", async () => {
+  const fixture = await createExecutorFixture(`
+    export default async function handler() {
+      return "too large";
+    }
+  `, { responseBodyLimitBytes: 4 });
+  try {
+    await assert.rejects(
+      fixture.executor.invoke({
+        projectId: PROJECT_ID,
+        releaseId: RELEASE_ID,
+        functionName: "large",
+        invocationKind: "direct",
+        requestId: "req_large_1",
+        bundle: fixture.bundle,
+      }),
+      ResponseBodyTooLargeError,
+    );
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 async function createExecutorFixture(source: string, options: {
   invocationTimeoutMs?: number;
   maxConcurrentInvocations?: number;
+  responseBodyLimitBytes?: number;
 } = {}) {
   const id = randomUUID();
   const root = path.join(process.cwd(), ".run402-core", "executor-tests", id);
@@ -139,6 +164,7 @@ async function createExecutorFixture(source: string, options: {
       workDir: path.join(root, "work"),
       invocationTimeoutMs: options.invocationTimeoutMs,
       maxConcurrentInvocations: options.maxConcurrentInvocations,
+      responseBodyLimitBytes: options.responseBodyLimitBytes,
     }),
     cleanup: () => rm(root, { recursive: true, force: true }),
   };

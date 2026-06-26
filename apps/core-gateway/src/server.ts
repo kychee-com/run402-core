@@ -1,4 +1,4 @@
-import { createHmac } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import {
   applyInvariantEnvelope,
@@ -15,6 +15,7 @@ import {
   normalizeStorageVisibility,
   ProjectNotFoundError,
   projectNotFoundEnvelope,
+  CORE_FUNCTION_RESOURCE_DEFAULTS,
   runtimeCapabilities,
   runtimeHealth,
   RuntimeKernelTypedError,
@@ -24,6 +25,7 @@ import {
   UnsupportedCapabilityError,
   unsupportedCapabilityEnvelope,
   type ContentStorePort,
+  type CoreFunctionBundleMetadata,
   type CoreProject,
   type RuntimeKernelPorts,
   type ProjectCatalogPort,
@@ -38,6 +40,11 @@ import {
   type StaticManifestFileEntry,
 } from "@run402/release";
 import { FilesystemContentStore } from "./filesystem-content.js";
+import { HttpFunctionWorkerClient } from "./function-worker-client.js";
+import type {
+  LocalFunctionExecutorInput,
+  LocalFunctionExecutorResult,
+} from "./local-function-executor.js";
 import { PostgresApplyStore } from "./postgres-apply.js";
 import { createPostgresPool, PostgresProjectCatalog } from "./postgres-projects.js";
 import { PostgresStorageStore } from "./postgres-storage.js";
@@ -52,6 +59,7 @@ export interface CoreGatewayConfig {
   jwtSecret: string;
   signedReadSecret: string;
   maxObjectBytes: number;
+  functionWorkerUrl?: string;
 }
 
 export interface CoreGatewayRuntime {
@@ -63,11 +71,25 @@ export interface CoreGatewayRuntime {
   signedReads?: RuntimeKernelPorts["signedReads"];
   cleanup?: RuntimeKernelPorts["cleanup"];
   functions?: RuntimeKernelPorts["functions"];
+  functionBundles?: FunctionBundleLookupPort;
+  functionExecutor?: FunctionExecutorPort;
   migrations?: RuntimeKernelPorts["migrations"];
   lifecycle?: RuntimeKernelPorts["lifecycle"];
   jwtSecret?: string;
   maxObjectBytes?: number;
   close?: () => Promise<void>;
+}
+
+export interface FunctionBundleLookupPort {
+  getFunctionBundle(input: {
+    projectId: string;
+    releaseId: string;
+    functionName: string;
+  }): Promise<CoreFunctionBundleMetadata | null>;
+}
+
+export interface FunctionExecutorPort {
+  invoke(input: LocalFunctionExecutorInput): Promise<LocalFunctionExecutorResult>;
 }
 
 interface VerifiedContentStore extends ContentStorePort {
@@ -84,7 +106,7 @@ export interface CoreGatewayRequest {
 export interface CoreGatewayResult {
   status: number;
   body: unknown;
-  headers?: Record<string, string>;
+  headers?: Record<string, string | string[]>;
   raw?: boolean;
 }
 
@@ -102,6 +124,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): CoreGatewayCon
     jwtSecret: env.CORE_JWT_SECRET || "run402-core-local-jwt-secret-change-me",
     signedReadSecret: env.CORE_SIGNED_READ_SECRET || env.CORE_JWT_SECRET || "run402-core-local-signed-read-secret-change-me",
     maxObjectBytes: Number.parseInt(env.CORE_MAX_OBJECT_BYTES || String(100 * 1024 * 1024), 10),
+    functionWorkerUrl: env.CORE_FUNCTION_WORKER_URL,
   };
 }
 
@@ -134,6 +157,8 @@ export async function createGatewayRuntime(config: CoreGatewayConfig): Promise<C
     storage,
     signedReads: storage,
     cleanup: storage,
+    functionBundles: storage,
+    functionExecutor: config.functionWorkerUrl ? new HttpFunctionWorkerClient(config.functionWorkerUrl) : undefined,
     migrations: applyStore,
     lifecycle: {
       activate: async (context) => {
@@ -560,15 +585,17 @@ export async function coreGatewayResponse(
   }
 
   const staticMatch = /^\/projects\/v1\/([^/]+)\/static(\/.*)?$/.exec(pathname);
-  if ((method === "GET" || method === "HEAD") && staticMatch) {
-    const staticResult = await staticResponse(runtime, staticMatch[1], staticMatch[2] || "/", method);
+  if (staticMatch) {
+    const staticResult = await staticResponse(runtime, staticMatch[1], staticMatch[2] || "/", {
+      method,
+      rawQuery: url.search.slice(1),
+      headers: request.headers,
+      body: request.body,
+    });
     if (method === "HEAD" && staticResult.status === 200) {
       return { ...staticResult, body: new Uint8Array() };
     }
     return staticResult;
-  }
-  if (staticMatch) {
-    return await staticMethodResponse(runtime, staticMatch[1], staticMatch[2] || "/", method);
   }
 
   const staticDiagnosticsMatch = /^\/projects\/v1\/([^/]+)\/static-diagnostics$/.exec(pathname);
@@ -863,7 +890,10 @@ async function readRequestBody(req: IncomingMessage, pathnameWithQuery: string):
   if (req.method === "GET" || req.method === "HEAD") {
     return undefined;
   }
-  if (req.method === "PUT" && /^\/projects\/v1\/[^/]+\/storage\/uploads\/[^/]+\/bytes(?:\?|$)/.test(pathnameWithQuery)) {
+  if (
+    (req.method === "PUT" && /^\/projects\/v1\/[^/]+\/storage\/uploads\/[^/]+\/bytes(?:\?|$)/.test(pathnameWithQuery)) ||
+    /^\/projects\/v1\/[^/]+\/static(?:\/|\?|$)/.test(pathnameWithQuery)
+  ) {
     const chunks: Buffer[] = [];
     for await (const chunk of req) {
       chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
@@ -1043,7 +1073,12 @@ async function staticResponse(
   runtime: CoreGatewayRuntime,
   projectId: string,
   rawPath: string,
-  method: "GET" | "HEAD",
+  request: {
+    method: string;
+    rawQuery: string;
+    headers?: CoreGatewayRequest["headers"];
+    body?: unknown;
+  },
 ): Promise<CoreGatewayResult> {
   if (!runtime.releases || !runtime.content) {
     return unavailable("runtime_kernel_unavailable", "Run402 Core runtime kernel is not fully configured.");
@@ -1061,14 +1096,25 @@ async function staticResponse(
   }
   const route = routeForPath(active.state.routes.entries, publicPath);
   if (route) {
-    if (!routeMethodAllows(route, method)) return methodNotAllowed(route);
-    if (route.target.type !== "static") {
-      const error = new DynamicRuntimeUnavailableError("Run402 Core dynamic functions runtime is not configured.", {
-        route_pattern: route.pattern,
-        function_name: route.target.name,
+    if (!routeMethodAllows(route, request.method)) return methodNotAllowed(route);
+    if (route.target.type === "function") {
+      const functionRoute = route as RouteEntry & { target: { type: "function"; name: string } };
+      return await invokeRoutedFunction(runtime, {
+        projectId,
+        releaseId: active.release_id,
+        route: functionRoute,
+        publicPath,
+        rawQuery: request.rawQuery,
+        method: request.method,
+        headers: request.headers,
+        body: request.body,
+        locale: active.state.i18n?.defaultLocale ?? null,
+        defaultLocale: active.state.i18n?.defaultLocale ?? null,
       });
-      return { status: error.status, body: runtimeKernelErrorEnvelope(error) };
     }
+  }
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    return await staticMethodResponse(runtime, projectId, rawPath, request.method);
   }
   const entry = active.state.static_manifest?.files[route?.target.type === "static" ? route.pattern : publicPath];
   if (!entry) {
@@ -1094,7 +1140,7 @@ async function staticResponse(
   return {
     status: 200,
     raw: true,
-    body: content.bytes,
+    body: request.method === "HEAD" ? new Uint8Array() : content.bytes,
     headers: {
       "Content-Type": entry.content_type || content.contentType,
       "Content-Length": String(content.bytes.byteLength),
@@ -1184,6 +1230,216 @@ function staticEntrySha256(
   return siteEntry?.content_sha256 ?? entry.sha256;
 }
 
+async function invokeRoutedFunction(
+  runtime: CoreGatewayRuntime,
+  input: {
+    projectId: string;
+    releaseId: string;
+    route: RouteEntry & { target: { type: "function"; name: string } };
+    publicPath: string;
+    rawQuery: string;
+    method: string;
+    headers?: CoreGatewayRequest["headers"];
+    body?: unknown;
+    locale: string | null;
+    defaultLocale: string | null;
+  },
+): Promise<CoreGatewayResult> {
+  if (!runtime.functionExecutor || !runtime.functionBundles) {
+    const error = new DynamicRuntimeUnavailableError("Run402 Core dynamic functions runtime is not configured.", {
+      route_pattern: input.route.pattern,
+      function_name: input.route.target.name,
+    });
+    return { status: error.status, body: runtimeKernelErrorEnvelope(error) };
+  }
+  const bundle = await runtime.functionBundles.getFunctionBundle({
+    projectId: input.projectId,
+    releaseId: input.releaseId,
+    functionName: input.route.target.name,
+  });
+  if (!bundle) {
+    const error = new DynamicRuntimeUnavailableError("Run402 Core function bundle metadata is not available.", {
+      route_pattern: input.route.pattern,
+      function_name: input.route.target.name,
+      release_id: input.releaseId,
+    });
+    return { status: error.status, body: runtimeKernelErrorEnvelope(error) };
+  }
+
+  const requestId = `req_${randomBytes(12).toString("hex")}`;
+  try {
+    const result = await runtime.functionExecutor.invoke({
+      projectId: input.projectId,
+      releaseId: input.releaseId,
+      functionName: input.route.target.name,
+      invocationKind: "routed_http",
+      requestId,
+      bundle,
+      request: {
+        version: "run402.routed_http.v1",
+        method: input.method,
+        url: routedUrl(input.headers, input.publicPath, input.rawQuery),
+        path: input.publicPath,
+        rawPath: input.publicPath,
+        rawQuery: input.rawQuery,
+        headers: routedRequestHeaders(input.headers, {
+          projectId: input.projectId,
+          releaseId: input.releaseId,
+          requestId,
+          functionName: input.route.target.name,
+        }),
+        cookies: { raw: cookieHeader(input.headers) },
+        body: routedBody(input.body),
+        context: {
+          source: "route",
+          projectId: input.projectId,
+          releaseId: input.releaseId,
+          deploymentId: null,
+          host: hostHeader(input.headers),
+          proto: protoHeader(input.headers),
+          routePattern: input.route.pattern,
+          routeKind: input.route.kind,
+          routeTarget: { type: "function", name: input.route.target.name },
+          requestId,
+          locale: input.locale,
+          defaultLocale: input.defaultLocale,
+        },
+      },
+    });
+    return functionResultToGateway(result, input.method);
+  } catch (error) {
+    return applyErrorResponse(error);
+  }
+}
+
+function functionResultToGateway(result: LocalFunctionExecutorResult, method: string): CoreGatewayResult {
+  const response = result.response;
+  const body = response.body ? Buffer.from(response.body.data, "base64") : Buffer.alloc(0);
+  const headers = responseHeaders(response.headers, response.cookies);
+  headers["X-Run402-Request-Id"] = result.requestId;
+  if (!headerValue(headers, "Cache-Control")) {
+    headers["Cache-Control"] = "private, no-store";
+  }
+  if (!headerValue(headers, "Content-Length")) {
+    headers["Content-Length"] = String(body.byteLength);
+  }
+  return {
+    status: response.status,
+    raw: true,
+    body: method === "HEAD" ? new Uint8Array() : body,
+    headers,
+  };
+}
+
+function responseHeaders(
+  headers: Array<[string, string]> | undefined,
+  cookies: string[] | undefined,
+): Record<string, string | string[]> {
+  const out: Record<string, string | string[]> = {};
+  for (const [name, value] of headers ?? []) {
+    if (isHopByHopHeader(name)) continue;
+    setHeaderValue(out, name, value);
+  }
+  if (cookies?.length) {
+    out["Set-Cookie"] = cookies;
+  }
+  return out;
+}
+
+function setHeaderValue(headers: Record<string, string | string[]>, name: string, value: string): void {
+  const existingKey = Object.keys(headers).find((key) => key.toLowerCase() === name.toLowerCase()) ?? name;
+  const existing = headers[existingKey];
+  if (existing === undefined) {
+    headers[existingKey] = value;
+  } else if (Array.isArray(existing)) {
+    existing.push(value);
+  } else {
+    headers[existingKey] = [existing, value];
+  }
+}
+
+function headerValue(headers: Record<string, string | string[]>, name: string): string | string[] | undefined {
+  const key = Object.keys(headers).find((candidate) => candidate.toLowerCase() === name.toLowerCase());
+  return key ? headers[key] : undefined;
+}
+
+function routedUrl(headers: CoreGatewayRequest["headers"], publicPath: string, rawQuery: string): string {
+  const query = rawQuery ? `?${rawQuery}` : "";
+  return `${protoHeader(headers)}://${hostHeader(headers)}${publicPath}${query}`;
+}
+
+function routedRequestHeaders(
+  headers: CoreGatewayRequest["headers"],
+  context: {
+    projectId: string;
+    releaseId: string;
+    requestId: string;
+    functionName: string;
+  },
+): Array<[string, string]> {
+  const out: Array<[string, string]> = [];
+  for (const [rawName, rawValue] of Object.entries(headers ?? {})) {
+    const name = rawName.toLowerCase();
+    if (isHopByHopHeader(name) || name.startsWith("x-run402-")) continue;
+    const values = Array.isArray(rawValue) ? rawValue : [rawValue];
+    for (const value of values) {
+      if (value !== undefined) out.push([name, value]);
+    }
+  }
+  out.push(["x-run402-project-id", context.projectId]);
+  out.push(["x-run402-release-id", context.releaseId]);
+  out.push(["x-run402-request-id", context.requestId]);
+  out.push(["x-run402-function-name", context.functionName]);
+  return out;
+}
+
+function routedBody(body: unknown): NonNullable<LocalFunctionExecutorInput["request"]>["body"] {
+  if (body === undefined || body === null) return null;
+  const bytes = body instanceof Uint8Array
+    ? Buffer.from(body)
+    : Buffer.from(typeof body === "string" ? body : JSON.stringify(body), "utf8");
+  if (bytes.byteLength > CORE_FUNCTION_RESOURCE_DEFAULTS.requestBodyLimitBytes) {
+    throw new RangeError(`Function request body exceeds ${CORE_FUNCTION_RESOURCE_DEFAULTS.requestBodyLimitBytes} bytes.`);
+  }
+  return {
+    encoding: "base64",
+    data: bytes.toString("base64"),
+    size: bytes.byteLength,
+  };
+}
+
+function hostHeader(headers: CoreGatewayRequest["headers"]): string {
+  const value = firstHeader(headers, "host");
+  return value && /^[a-zA-Z0-9.:-]+$/.test(value) ? value : "localhost";
+}
+
+function protoHeader(headers: CoreGatewayRequest["headers"]): "http" | "https" {
+  return firstHeader(headers, "x-forwarded-proto") === "https" ? "https" : "http";
+}
+
+function cookieHeader(headers: CoreGatewayRequest["headers"]): string | null {
+  return firstHeader(headers, "cookie") ?? null;
+}
+
+function firstHeader(headers: CoreGatewayRequest["headers"], name: string): string | undefined {
+  const entry = Object.entries(headers ?? {}).find(([key]) => key.toLowerCase() === name.toLowerCase());
+  if (!entry) return undefined;
+  return Array.isArray(entry[1]) ? entry[1][0] : entry[1];
+}
+
+function isHopByHopHeader(name: string): boolean {
+  return [
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+  ].includes(name.toLowerCase());
+}
+
 function normalizePublicStaticPath(rawPath: string): string {
   const raw = rawPath || "/";
   if (!raw.startsWith("/")) throw new RangeError("Static path must start with /.");
@@ -1226,9 +1482,9 @@ function routeForPath(routes: readonly RouteEntry[], path: string): RouteEntry |
   return null;
 }
 
-function routeMethodAllows(route: RouteEntry, method: "GET" | "HEAD"): boolean {
+function routeMethodAllows(route: RouteEntry, method: string): boolean {
   if (!route.methods) return true;
-  return route.methods.includes(method);
+  return (route.methods as readonly string[]).includes(method);
 }
 
 function methodNotAllowed(route: RouteEntry): CoreGatewayResult {

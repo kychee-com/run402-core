@@ -65,7 +65,6 @@ async function main(): Promise<void> {
     return await handler(payload?.invocation.request ?? payload?.invocation);
   });
   const response = await normalizeResponse(value);
-  enforceResponseLimit(response, payload.response_body_limit_bytes);
   writeControl({
     ok: true,
     response,
@@ -113,12 +112,6 @@ function isRoutedResponse(value: unknown): value is RoutedHttpResponseV1 {
   return typeof value === "object" &&
     value !== null &&
     typeof (value as { status?: unknown }).status === "number";
-}
-
-function enforceResponseLimit(response: RoutedHttpResponseV1, limitBytes: number): void {
-  if ((response.body?.size ?? 0) > limitBytes) {
-    throw new Error(`Function response body exceeds ${limitBytes} bytes.`);
-  }
 }
 
 function contextFromInvocation(invocation: CoreFunctionInvocationInput) {

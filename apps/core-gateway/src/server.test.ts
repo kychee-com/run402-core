@@ -7,7 +7,9 @@ import {
   emptyCoreReleaseState,
   verifyStorageReadSignature,
   verifyContentRefBytes,
+  CORE_FUNCTION_DEPENDENCY_MODE,
   runtimeCapabilities,
+  type CoreFunctionBundleMetadata,
   type CoreProject,
   type CoreStorageObject,
   type CoreUploadSession,
@@ -17,6 +19,10 @@ import {
   type StoragePort,
 } from "@run402/runtime-kernel";
 import { STATIC_MANIFEST_VERSION, type PortableReleaseState } from "@run402/release";
+import type {
+  LocalFunctionExecutorInput,
+  LocalFunctionExecutorResult,
+} from "./local-function-executor.js";
 import { coreGatewayResponse, loadConfig } from "./server.js";
 
 test("loadConfig does not require Cloud environment variables", () => {
@@ -30,6 +36,7 @@ test("loadConfig does not require Cloud environment variables", () => {
     jwtSecret: "run402-core-local-jwt-secret-change-me",
     signedReadSecret: "run402-core-local-signed-read-secret-change-me",
     maxObjectBytes: 104857600,
+    functionWorkerUrl: undefined,
   });
 });
 
@@ -463,6 +470,144 @@ test("static route manifest serving honors explicit paths, aliases, methods, dia
   assert.equal(diagnostics.status, 200);
   assert.deepEqual((diagnostics.body as { non_public_asset_paths: string[] }).non_public_asset_paths, ["hidden.txt"]);
 });
+
+test("dynamic static routes invoke local functions with routed HTTP envelope", async () => {
+  const catalog = new MemoryProjectCatalog();
+  const project = await catalog.create({ name: "routes app" });
+  const state: PortableReleaseState = {
+    ...emptyCoreReleaseState(),
+    i18n: {
+      defaultLocale: "en",
+      locales: ["en"],
+      detect: [],
+      unknownLocalePolicy: "reject",
+    },
+    routes: {
+      manifest_sha256: "route-manifest-test",
+      entries: [{
+        pattern: "/api/*",
+        kind: "prefix",
+        prefix: "/api/",
+        methods: ["POST", "HEAD"],
+        target: { type: "function", name: "api" },
+      }],
+    },
+  };
+  const bundle = functionBundle("b".repeat(64), 12);
+  const executor = new MemoryFunctionExecutor();
+  const runtime = {
+    projects: catalog,
+    releases: new MemoryReleaseState(state),
+    content: new MemoryContentStore(),
+    functionBundles: new MemoryFunctionBundles(bundle),
+    functionExecutor: executor,
+  };
+
+  const response = await coreGatewayResponse({
+    method: "POST",
+    pathname: `/projects/v1/${project.project_id}/static/api/users?x=1&x=2`,
+    headers: {
+      host: "example.test",
+      cookie: "sid=abc",
+      "x-run402-request-id": "spoofed",
+      connection: "close",
+      "x-custom": ["one", "two"],
+    },
+    body: Buffer.from("hello"),
+  }, runtime);
+
+  assert.equal(response.status, 201);
+  assert.equal(Buffer.from(response.body as Uint8Array).toString("utf8"), "ok");
+  assert.match(String(response.headers?.["X-Run402-Request-Id"]), /^req_/);
+  assert.deepEqual(response.headers?.["Set-Cookie"], ["a=1; Path=/", "b=2; Path=/"]);
+  assert.equal(response.headers?.["Cache-Control"], "private, no-store");
+  assert.equal(response.headers?.connection, undefined);
+
+  const invocation = executor.last;
+  assert.ok(invocation);
+  assert.equal(invocation.request?.version, "run402.routed_http.v1");
+  assert.equal(invocation.request?.method, "POST");
+  assert.equal(invocation.request?.url, "http://example.test/api/users?x=1&x=2");
+  assert.equal(invocation.request?.path, "/api/users");
+  assert.equal(invocation.request?.rawQuery, "x=1&x=2");
+  assert.equal(invocation.request?.cookies.raw, "sid=abc");
+  assert.equal(Buffer.from(invocation.request?.body?.data ?? "", "base64").toString("utf8"), "hello");
+  assert.equal(invocation.request?.headers.some(([name, value]) => name === "x-run402-request-id" && value === "spoofed"), false);
+  assert.equal(invocation.request?.headers.some(([name]) => name === "connection"), false);
+  assert.deepEqual(invocation.request?.headers.filter(([name]) => name === "x-custom"), [["x-custom", "one"], ["x-custom", "two"]]);
+  assert.equal(invocation.request?.context.routePattern, "/api/*");
+  assert.equal(invocation.request?.context.routeTarget.name, "api");
+  assert.equal(invocation.request?.context.locale, "en");
+  assert.equal(invocation.request?.context.defaultLocale, "en");
+
+  const head = await coreGatewayResponse({
+    method: "HEAD",
+    pathname: `/projects/v1/${project.project_id}/static/api/users`,
+    headers: { host: "example.test" },
+  }, runtime);
+  assert.equal(head.status, 201);
+  assert.equal((head.body as Uint8Array).byteLength, 0);
+  assert.equal(head.headers?.["Content-Length"], "2");
+});
+
+class MemoryFunctionBundles {
+  readonly #bundle: CoreFunctionBundleMetadata;
+
+  constructor(bundle: CoreFunctionBundleMetadata) {
+    this.#bundle = bundle;
+  }
+
+  async getFunctionBundle(): Promise<CoreFunctionBundleMetadata> {
+    return this.#bundle;
+  }
+}
+
+class MemoryFunctionExecutor {
+  last: LocalFunctionExecutorInput | null = null;
+
+  async invoke(input: LocalFunctionExecutorInput): Promise<LocalFunctionExecutorResult> {
+    this.last = input;
+    return {
+      requestId: input.requestId,
+      duration_ms: 1,
+      logs: [],
+      response: {
+        status: 201,
+        headers: [
+          ["content-type", "text/plain"],
+          ["connection", "close"],
+        ],
+        cookies: ["a=1; Path=/", "b=2; Path=/"],
+        body: {
+          encoding: "base64" as const,
+          data: Buffer.from("ok").toString("base64"),
+          size: 2,
+        },
+      },
+    };
+  }
+}
+
+function functionBundle(sha256: string, size: number): CoreFunctionBundleMetadata {
+  return {
+    name: "api",
+    runtime: "node22",
+    entrypoint: "default",
+    source: { sha256, size, contentType: "application/javascript" },
+    bundle_sha256: sha256,
+    bundle_size_bytes: size,
+    dependency_mode: CORE_FUNCTION_DEPENDENCY_MODE,
+    dependency_lock_digest: null,
+    deps: [],
+    required_secrets: [],
+    timeout_ms: 10_000,
+    memory_bytes: 128 * 1024 * 1024,
+    require_auth: false,
+    require_role: null,
+    class: "standard",
+    capabilities: [],
+  };
+}
 
 class MemoryProjectCatalog implements ProjectCatalogPort {
   readonly createdNames: string[] = [];

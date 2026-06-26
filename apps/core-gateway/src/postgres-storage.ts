@@ -16,6 +16,7 @@ import {
   verifyStorageReadSignature,
   type CoreImmutableObjectVersion,
   type CoreFunctionApplyEffects,
+  type CoreFunctionBundleMetadata,
   type CoreStorageObject,
   type CoreStorageObjectList,
   type CoreUploadSession,
@@ -73,6 +74,24 @@ interface StorageVersionRow {
   public_url_key: string;
   created_at: Date | string;
   retained_until: Date | string | null;
+}
+
+interface FunctionBundleRow {
+  name: string;
+  runtime: "node22";
+  entrypoint: string;
+  bundle_sha256: string;
+  bundle_size_bytes: string | number;
+  dependency_mode: CoreFunctionBundleMetadata["dependency_mode"];
+  dependency_lock_digest: null;
+  deps: [];
+  required_secrets: string[];
+  require_auth: boolean;
+  require_role: CoreFunctionBundleMetadata["require_role"];
+  class: "standard";
+  capabilities: string[];
+  timeout_ms: number;
+  memory_bytes: string | number;
 }
 
 export class PostgresStorageStore implements StoragePort, SignedReadPort, CleanupPort {
@@ -629,6 +648,24 @@ export class PostgresStorageStore implements StoragePort, SignedReadPort, Cleanu
     return result.rows[0] ? this.#versionRow(result.rows[0]) : null;
   }
 
+  async getFunctionBundle(input: {
+    projectId: string;
+    releaseId: string;
+    functionName: string;
+  }): Promise<CoreFunctionBundleMetadata | null> {
+    const result = await this.#pool.query<FunctionBundleRow>(
+      `
+        SELECT name, runtime, entrypoint, bundle_sha256, bundle_size_bytes,
+          dependency_mode, dependency_lock_digest, deps, required_secrets,
+          require_auth, require_role, class, capabilities, timeout_ms, memory_bytes
+        FROM internal.core_function_bundles
+        WHERE project_id = $1 AND release_id = $2 AND name = $3
+      `,
+      [input.projectId, input.releaseId, input.functionName],
+    );
+    return result.rows[0] ? functionBundleRow(result.rows[0]) : null;
+  }
+
   async #applyStorageEffects(
     client: Pick<PgPool, "query">,
     projectId: string,
@@ -942,6 +979,31 @@ function versionId(sha256: string): string {
 
 function randomToken(bytes: number): string {
   return randomBytes(bytes).toString("hex");
+}
+
+function functionBundleRow(row: FunctionBundleRow): CoreFunctionBundleMetadata {
+  return {
+    name: row.name,
+    runtime: row.runtime,
+    entrypoint: row.entrypoint,
+    source: {
+      sha256: row.bundle_sha256,
+      size: Number(row.bundle_size_bytes),
+      contentType: "application/javascript",
+    },
+    bundle_sha256: row.bundle_sha256,
+    bundle_size_bytes: Number(row.bundle_size_bytes),
+    dependency_mode: row.dependency_mode,
+    dependency_lock_digest: row.dependency_lock_digest,
+    deps: row.deps,
+    required_secrets: row.required_secrets,
+    require_auth: row.require_auth,
+    require_role: row.require_role,
+    class: row.class,
+    capabilities: row.capabilities,
+    timeout_ms: row.timeout_ms,
+    memory_bytes: Number(row.memory_bytes),
+  };
 }
 
 function trimTrailingSlash(value: string): string {
