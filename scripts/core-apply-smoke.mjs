@@ -107,7 +107,7 @@ await expectPostJsonFailure("/apply/v1/plans", {
       },
     },
   },
-}, 422, "unsupported_capability");
+}, 422, "invalid_function_bundle");
 
 const missingContentPlan = await postJson("/apply/v1/plans", {
   spec: {
@@ -174,7 +174,7 @@ console.log(JSON.stringify({
     service: serviceRows.length,
   },
   invariant_checks: [
-    "unsupported_capability",
+    "invalid_function_bundle",
     "content_digest_missing",
     "stale_plan"
   ],
