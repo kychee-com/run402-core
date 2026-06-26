@@ -26,6 +26,7 @@ test("local function executor runs a prebundled source ref with scrubbed env", a
       return routedHttp.json({
         path: event.path,
         project: process.env.RUN402_PROJECT_ID,
+        secret: process.env.API_TOKEN ?? null,
         leakedDatabaseUrl: process.env.CORE_DATABASE_URL ?? null
       });
     }
@@ -40,6 +41,7 @@ test("local function executor runs a prebundled source ref with scrubbed env", a
       invocationKind: "routed_http",
       requestId: "req_executor_1",
       bundle: fixture.bundle,
+      secrets: { API_TOKEN: "secret-value" },
       request: routedRequest("req_executor_1", "/api/hello"),
     });
 
@@ -49,6 +51,7 @@ test("local function executor runs a prebundled source ref with scrubbed env", a
     assert.deepEqual(body, {
       path: "/api/hello",
       project: PROJECT_ID,
+      secret: "secret-value",
       leakedDatabaseUrl: null,
     });
     assert.equal(result.logs.some((entry) => entry.stream === "stdout" && entry.message.includes("hello from user code")), true);

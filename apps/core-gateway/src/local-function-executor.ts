@@ -19,6 +19,7 @@ import {
 
 export interface LocalFunctionExecutorInput extends CoreFunctionInvocationInput {
   bundle: CoreFunctionBundleMetadata;
+  secrets?: Record<string, string>;
 }
 
 export interface LocalFunctionExecutorResult extends CoreFunctionInvocationResult {
@@ -284,6 +285,7 @@ function killChildTree(child: ChildProcessWithoutNullStreams): void {
 
 function executorEnv(input: LocalFunctionExecutorInput): Record<string, string> {
   return {
+    ...(input.secrets ?? {}),
     RUN402_PROJECT_ID: input.projectId,
     RUN402_RELEASE_ID: input.releaseId ?? "",
     RUN402_FUNCTION_NAME: input.functionName,

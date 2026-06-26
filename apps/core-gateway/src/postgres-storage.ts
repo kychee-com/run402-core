@@ -17,11 +17,13 @@ import {
   type CoreImmutableObjectVersion,
   type CoreFunctionApplyEffects,
   type CoreFunctionBundleMetadata,
+  type CoreFunctionSecretMetadata,
   type CoreStorageObject,
   type CoreStorageObjectList,
   type CoreUploadSession,
   type CoreStorageApplyEffects,
   type CleanupPort,
+  type FunctionSecretPort,
   type SignedReadPort,
   type StorageObjectVisibility,
   type StoragePort,
@@ -94,7 +96,17 @@ interface FunctionBundleRow {
   memory_bytes: string | number;
 }
 
-export class PostgresStorageStore implements StoragePort, SignedReadPort, CleanupPort {
+interface FunctionSecretRow {
+  project_id: string;
+  name: string;
+  scope: "project" | "release" | "function";
+  function_name: string;
+  encrypted_value_ref: string | null;
+  created_at: Date | string;
+  updated_at: Date | string;
+}
+
+export class PostgresStorageStore implements StoragePort, SignedReadPort, CleanupPort, FunctionSecretPort {
   readonly #pool: PgPool;
   readonly #publicBaseUrl: string;
   readonly #signedReadSecret: string;
@@ -666,6 +678,77 @@ export class PostgresStorageStore implements StoragePort, SignedReadPort, Cleanu
     return result.rows[0] ? functionBundleRow(result.rows[0]) : null;
   }
 
+  async setSecret(input: {
+    projectId: string;
+    name: string;
+    value: string;
+    scope?: "project" | "release" | "function";
+    functionName?: string | null;
+  }): Promise<CoreFunctionSecretMetadata> {
+    const name = normalizeSecretName(input.name);
+    const scope = input.scope ?? "project";
+    const functionName = scope === "function" ? normalizeFunctionSecretName(input.functionName) : "";
+    const encoded = encodeSecretValue(input.value);
+    const result = await this.#pool.query<FunctionSecretRow>(
+      `
+        INSERT INTO internal.core_function_secrets (
+          project_id, name, scope, function_name, encrypted_value_ref
+        )
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (project_id, name, scope, function_name)
+        DO UPDATE SET encrypted_value_ref = EXCLUDED.encrypted_value_ref, updated_at = now()
+        RETURNING project_id, name, scope, function_name, encrypted_value_ref, created_at, updated_at
+      `,
+      [input.projectId, name, scope, functionName, encoded],
+    );
+    return secretMetadataRow(result.rows[0]);
+  }
+
+  async listSecrets(input: {
+    projectId: string;
+    functionName?: string;
+  }): Promise<CoreFunctionSecretMetadata[]> {
+    const functionName = input.functionName ? normalizeFunctionSecretName(input.functionName) : null;
+    const result = await this.#pool.query<FunctionSecretRow>(
+      `
+        SELECT project_id, name, scope, function_name, encrypted_value_ref, created_at, updated_at
+        FROM internal.core_function_secrets
+        WHERE project_id = $1
+          AND ($2::text IS NULL OR function_name = '' OR function_name = $2)
+        ORDER BY name ASC, scope ASC, function_name ASC
+      `,
+      [input.projectId, functionName],
+    );
+    return result.rows.map(secretMetadataRow);
+  }
+
+  async getSecretValues(input: {
+    projectId: string;
+    functionName: string;
+    names: string[];
+  }): Promise<Record<string, string>> {
+    const names = [...new Set(input.names.map(normalizeSecretName))].sort();
+    if (names.length === 0) return {};
+    const functionName = normalizeFunctionSecretName(input.functionName);
+    const result = await this.#pool.query<FunctionSecretRow>(
+      `
+        SELECT DISTINCT ON (name)
+          project_id, name, scope, function_name, encrypted_value_ref, created_at, updated_at
+        FROM internal.core_function_secrets
+        WHERE project_id = $1
+          AND name = ANY($2::text[])
+          AND (function_name = '' OR function_name = $3)
+        ORDER BY name ASC, CASE WHEN function_name = $3 THEN 0 ELSE 1 END, updated_at DESC
+      `,
+      [input.projectId, names, functionName],
+    );
+    const out: Record<string, string> = {};
+    for (const row of result.rows) {
+      if (row.encrypted_value_ref) out[row.name] = decodeSecretValue(row.encrypted_value_ref);
+    }
+    return out;
+  }
+
   async #applyStorageEffects(
     client: Pick<PgPool, "query">,
     projectId: string,
@@ -1004,6 +1087,40 @@ function functionBundleRow(row: FunctionBundleRow): CoreFunctionBundleMetadata {
     timeout_ms: row.timeout_ms,
     memory_bytes: Number(row.memory_bytes),
   };
+}
+
+function secretMetadataRow(row: FunctionSecretRow): CoreFunctionSecretMetadata {
+  return {
+    project_id: row.project_id,
+    name: row.name,
+    scope: row.scope,
+    function_name: row.function_name || null,
+    created_at: iso(row.created_at),
+    updated_at: iso(row.updated_at),
+  };
+}
+
+function normalizeSecretName(name: string): string {
+  if (!/^[A-Z_][A-Z0-9_]{0,127}$/.test(name)) {
+    throw new StorageValidationError("invalid_secret_name", "Secret name must match [A-Z_][A-Z0-9_]{0,127}.");
+  }
+  return name;
+}
+
+function normalizeFunctionSecretName(name: string | null | undefined): string {
+  if (!name || !/^[A-Za-z0-9_-]{1,64}$/.test(name)) {
+    throw new StorageValidationError("invalid_function_name", "Function-scoped secrets require a valid function name.");
+  }
+  return name;
+}
+
+function encodeSecretValue(value: string): string {
+  return `local:v1:${Buffer.from(value, "utf8").toString("base64url")}`;
+}
+
+function decodeSecretValue(value: string): string {
+  if (!value.startsWith("local:v1:")) return "";
+  return Buffer.from(value.slice("local:v1:".length), "base64url").toString("utf8");
 }
 
 function trimTrailingSlash(value: string): string {

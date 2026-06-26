@@ -13,6 +13,7 @@ import {
   normalizeStorageKey,
   normalizeStorageSize,
   normalizeStorageVisibility,
+  MissingRequiredSecretError,
   ProjectNotFoundError,
   projectNotFoundEnvelope,
   CORE_FUNCTION_RESOURCE_DEFAULTS,
@@ -77,6 +78,7 @@ export interface CoreGatewayRuntime {
   functionBundles?: FunctionBundleLookupPort;
   functionExecutor?: FunctionExecutorPort;
   roleGates?: FunctionRoleGatePort;
+  secrets?: RuntimeKernelPorts["secrets"];
   migrations?: RuntimeKernelPorts["migrations"];
   lifecycle?: RuntimeKernelPorts["lifecycle"];
   jwtSecret?: string;
@@ -164,6 +166,7 @@ export async function createGatewayRuntime(config: CoreGatewayConfig): Promise<C
     functionBundles: storage,
     functionExecutor: config.functionWorkerUrl ? new HttpFunctionWorkerClient(config.functionWorkerUrl) : undefined,
     roleGates: new PostgresFunctionRoleGateStore(pool),
+    secrets: storage,
     migrations: applyStore,
     lifecycle: {
       activate: async (context) => {
@@ -610,6 +613,27 @@ export async function coreGatewayResponse(
     return await staticDiagnostics(runtime, auth.project_id);
   }
 
+  const functionSecretsMatch = /^\/projects\/v1\/([^/]+)\/functions\/secrets$/.exec(pathname);
+  if ((method === "POST" || method === "GET") && functionSecretsMatch) {
+    const secrets = runtime.secrets;
+    if (!secrets) return unavailable("function_secrets_unavailable", "Run402 Core function secrets are not configured.");
+    const auth = await requireProjectService(runtime, functionSecretsMatch[1], headers);
+    if ("status" in auth) return auth;
+    try {
+      if (method === "POST") {
+        const stored = await secrets.setSecret({ projectId: auth.project_id, ...secretInput(request.body) });
+        return { status: 201, body: stored };
+      }
+      const listed = await secrets.listSecrets({
+        projectId: auth.project_id,
+        functionName: query.get("function_name") ?? query.get("functionName") ?? undefined,
+      });
+      return { status: 200, body: { secrets: listed } };
+    } catch (error) {
+      return storageRouteError(error);
+    }
+  }
+
   if (method === "POST" && pathname === "/functions/v1/invoke") {
     try {
       const input = directInvokeInput(request.body);
@@ -693,6 +717,7 @@ function runtimePorts(runtime: CoreGatewayRuntime): RuntimeKernelPorts | null {
     signedReads: runtime.signedReads,
     cleanup: runtime.cleanup,
     functions: runtime.functions,
+    secrets: runtime.secrets,
     migrations: runtime.migrations,
     lifecycle: runtime.lifecycle,
   };
@@ -703,6 +728,13 @@ function unavailable(error: string, message: string): CoreGatewayResult {
     status: 503,
     body: { error, message },
   };
+}
+
+function isGatewayResult(value: unknown): value is CoreGatewayResult {
+  return typeof value === "object" &&
+    value !== null &&
+    typeof (value as { status?: unknown }).status === "number" &&
+    "body" in value;
 }
 
 async function requireProjectService(
@@ -1023,6 +1055,37 @@ function directInvokeInput(body: unknown): {
   };
 }
 
+function secretInput(body: unknown): {
+  name: string;
+  value: string;
+  scope?: "project" | "release" | "function";
+  functionName?: string | null;
+} {
+  if (body === undefined || body === null || typeof body !== "object" || Array.isArray(body)) {
+    throw new RangeError("Secret body must be a JSON object.");
+  }
+  const record = body as Record<string, unknown>;
+  const name = expectString(record.name, "name");
+  const value = expectString(record.value, "value");
+  const rawScope = record.scope;
+  const scope = rawScope === undefined ? undefined : expectSecretScope(rawScope);
+  const functionName = record.function_name ?? record.functionName;
+  if (functionName !== undefined && functionName !== null && typeof functionName !== "string") {
+    throw new RangeError("function_name must be a string.");
+  }
+  return {
+    name,
+    value,
+    ...(scope ? { scope } : {}),
+    ...(functionName ? { functionName } : {}),
+  };
+}
+
+function expectSecretScope(value: unknown): "project" | "release" | "function" {
+  if (value === "project" || value === "release" || value === "function") return value;
+  throw new RangeError("scope must be project, release, or function.");
+}
+
 function createDevToken(body: unknown, secret: string): {
   token: string;
   authorization: string;
@@ -1315,6 +1378,8 @@ async function invokeRoutedFunction(
     bundle,
   });
   if ("status" in gate) return gate;
+  const secrets = await resolveFunctionSecrets(runtime, input.projectId, bundle);
+  if (isGatewayResult(secrets)) return secrets;
 
   const requestId = `req_${randomBytes(12).toString("hex")}`;
   try {
@@ -1325,6 +1390,7 @@ async function invokeRoutedFunction(
       invocationKind: "routed_http",
       requestId,
       actor: gate.actor,
+      secrets,
       bundle,
       request: {
         version: "run402.routed_http.v1",
@@ -1412,6 +1478,8 @@ async function invokeDirectFunction(
     bundle,
   });
   if ("status" in gate) return gate;
+  const secrets = await resolveFunctionSecrets(runtime, input.projectId, bundle);
+  if (isGatewayResult(secrets)) return secrets;
 
   const requestId = `req_${randomBytes(12).toString("hex")}`;
   const result = await runtime.functionExecutor.invoke({
@@ -1421,6 +1489,7 @@ async function invokeDirectFunction(
     invocationKind: "direct",
     requestId,
     actor: gate.actor,
+    secrets,
     bundle,
   });
   return {
@@ -1475,6 +1544,33 @@ async function resolveFunctionGate(
     actor: { ...actor, role },
     role,
   };
+}
+
+async function resolveFunctionSecrets(
+  runtime: CoreGatewayRuntime,
+  projectId: string,
+  bundle: CoreFunctionBundleMetadata,
+): Promise<Record<string, string> | CoreGatewayResult> {
+  const required = [...new Set(bundle.required_secrets)].sort();
+  if (required.length === 0) return {};
+  if (!runtime.secrets) {
+    const error = new DynamicRuntimeUnavailableError("Run402 Core function secrets are not configured.", {
+      function_name: bundle.name,
+    });
+    return { status: error.status, body: runtimeKernelErrorEnvelope(error) };
+  }
+  const values = await runtime.secrets.getSecretValues({
+    projectId,
+    functionName: bundle.name,
+    names: required,
+  });
+  for (const name of required) {
+    if (!(name in values)) {
+      const error = new MissingRequiredSecretError(name, bundle.name);
+      return { status: error.status, body: runtimeKernelErrorEnvelope(error) };
+    }
+  }
+  return values;
 }
 
 function authRequired(): CoreGatewayResult {

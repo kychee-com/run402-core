@@ -754,6 +754,78 @@ test("routed function auth and role gates inject generated user context", async 
   assert.deepEqual(roleExecutor.last?.request?.headers.filter(([name]) => name === "x-run402-user-role"), [["x-run402-user-role", "admin"]]);
 });
 
+test("function secrets expose metadata only and inject required values before dispatch", async () => {
+  const catalog = new MemoryProjectCatalog();
+  const project = await catalog.create({ name: "secret functions app" });
+  const state = emptyCoreReleaseState();
+  const secrets = new MemorySecrets();
+  const bundle = functionBundle("7".repeat(64), 12);
+  bundle.required_secrets = ["API_TOKEN"];
+  const executor = new MemoryFunctionExecutor();
+  const runtime = {
+    projects: catalog,
+    releases: new MemoryReleaseState(state),
+    content: new MemoryContentStore(),
+    functionBundles: new MemoryFunctionBundles(bundle),
+    functionExecutor: executor,
+    secrets,
+  };
+
+  const blockedSet = await coreGatewayResponse({
+    method: "POST",
+    pathname: `/projects/v1/${project.project_id}/functions/secrets`,
+    body: { name: "API_TOKEN", value: "secret-value" },
+  }, runtime);
+  assert.equal(blockedSet.status, 401);
+
+  const stored = await coreGatewayResponse({
+    method: "POST",
+    pathname: `/projects/v1/${project.project_id}/functions/secrets`,
+    headers: { apikey: project.service_key },
+    body: { name: "API_TOKEN", value: "secret-value" },
+  }, runtime);
+  assert.equal(stored.status, 201);
+  assert.equal((stored.body as { name?: string }).name, "API_TOKEN");
+  assert.equal("value" in (stored.body as Record<string, unknown>), false);
+
+  const listed = await coreGatewayResponse({
+    method: "GET",
+    pathname: `/projects/v1/${project.project_id}/functions/secrets`,
+    headers: { apikey: project.service_key },
+  }, runtime);
+  assert.equal(listed.status, 200);
+  const listedSecrets = (listed.body as { secrets: Array<Record<string, unknown>> }).secrets;
+  assert.equal(listedSecrets[0]?.name, "API_TOKEN");
+  assert.equal("value" in listedSecrets[0], false);
+
+  const invoked = await coreGatewayResponse({
+    method: "POST",
+    pathname: "/functions/v1/invoke",
+    headers: { apikey: project.service_key },
+    body: {
+      project_id: project.project_id,
+      function_name: "api",
+    },
+  }, runtime);
+  assert.equal(invoked.status, 200);
+  assert.deepEqual(executor.last?.secrets, { API_TOKEN: "secret-value" });
+
+  secrets.clear();
+  executor.last = null;
+  const missing = await coreGatewayResponse({
+    method: "POST",
+    pathname: "/functions/v1/invoke",
+    headers: { apikey: project.service_key },
+    body: {
+      project_id: project.project_id,
+      function_name: "api",
+    },
+  }, runtime);
+  assert.equal(missing.status, 422);
+  assert.equal((missing.body as { error?: string }).error, "missing_required_secret");
+  assert.equal(executor.last, null);
+});
+
 async function devAuthorization(
   runtime: Parameters<typeof coreGatewayResponse>[1],
   projectId: string,
@@ -794,6 +866,54 @@ class MemoryRoleGates {
   async resolveRole(): Promise<string | null> {
     return this.#role;
   }
+}
+
+class MemorySecrets {
+  readonly #values = new Map<string, string>();
+
+  async setSecret(input: {
+    projectId: string;
+    name: string;
+    value: string;
+    scope?: "project" | "release" | "function";
+    functionName?: string | null;
+  }) {
+    this.#values.set(input.name, input.value);
+    return secretMetadata(input.projectId, input.name, input.scope ?? "project", input.functionName ?? null);
+  }
+
+  async listSecrets(input: { projectId: string }) {
+    return [...this.#values.keys()].sort().map((name) => secretMetadata(input.projectId, name, "project", null));
+  }
+
+  async getSecretValues(input: { names: string[] }) {
+    const out: Record<string, string> = {};
+    for (const name of input.names) {
+      const value = this.#values.get(name);
+      if (value !== undefined) out[name] = value;
+    }
+    return out;
+  }
+
+  clear(): void {
+    this.#values.clear();
+  }
+}
+
+function secretMetadata(
+  projectId: string,
+  name: string,
+  scope: "project" | "release" | "function",
+  functionName: string | null,
+) {
+  return {
+    project_id: projectId,
+    name,
+    scope,
+    function_name: functionName,
+    created_at: new Date(0).toISOString(),
+    updated_at: new Date(0).toISOString(),
+  };
 }
 
 class MemoryFunctionExecutor {

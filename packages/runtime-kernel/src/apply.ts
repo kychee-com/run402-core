@@ -22,6 +22,7 @@ import type {
 import {
   DependencyInstallRejectedError,
   FunctionBundleValidationError,
+  MissingRequiredSecretError,
   UnsupportedCapabilityError,
 } from "./errors.js";
 import {
@@ -185,6 +186,7 @@ export async function commitApplyPlan(
   await verifyStaticContent(ports, plan.project_id, plan.target_release);
   await verifyStorageContent(ports, plan.project_id, plan.storage_effects);
   await verifyFunctionContent(ports, plan.project_id, plan.function_effects);
+  await verifyFunctionSecrets(ports, plan.project_id, plan.function_effects);
 
   const staged = await ports.lifecycle?.stage?.(context());
   if (staged?.release_id) releaseId = staged.release_id;
@@ -254,7 +256,6 @@ function deferredCommitResult(
 
 function validateSupportedSpec(spec: ReleaseSpec): void {
   validateFunctionSubset(spec);
-  if (spec.secrets) throw new UnsupportedCapabilityError("functions.secrets.local");
   if (spec.subdomains) throw new UnsupportedCapabilityError("subdomains.managed");
   if (spec.assets && !spec.assets.put && !spec.assets.delete && !spec.assets.sync) {
     throw new ApplyInvariantError("asset_spec_empty", "Asset spec must include put, delete, or sync.");
@@ -350,6 +351,7 @@ function planFunctionEffects(
     return emptyFunctionApplyEffects();
   }
   const functionSpecs = spec.functions && "replace" in spec.functions ? spec.functions.replace ?? {} : {};
+  const requiredSecrets = [...new Set(spec.secrets?.require ?? [])].sort();
   const bundles = target.functions.map((entry) => {
     const fnSpec = functionSpecs[entry.name];
     if (!fnSpec?.source) {
@@ -357,7 +359,7 @@ function planFunctionEffects(
         function_name: entry.name,
       });
     }
-    return bundleMetadataFromSpec(entry.name, fnSpec, entry.require_role);
+    return bundleMetadataFromSpec(entry.name, fnSpec, entry.require_role, requiredSecrets);
   });
   const dynamicRoutes = target.routes.entries
     .filter((route): route is typeof route & { target: { type: "function"; name: string } } => route.target.type === "function")
@@ -368,7 +370,6 @@ function planFunctionEffects(
       methods: route.methods,
       function_name: route.target.name,
     }));
-  const requiredSecrets = [...new Set(spec.secrets?.require ?? [])].sort();
   return {
     bundles,
     dynamic_routes: dynamicRoutes,
@@ -382,6 +383,7 @@ function bundleMetadataFromSpec(
   name: string,
   spec: FunctionSpec,
   requireRole: CoreFunctionBundleMetadata["require_role"],
+  requiredSecrets: string[],
 ): CoreFunctionBundleMetadata {
   if (!spec.source) {
     throw new FunctionBundleValidationError("invalid_function_bundle", `Function ${name} must use source in Core Developer Preview.`, {
@@ -398,7 +400,7 @@ function bundleMetadataFromSpec(
     dependency_mode: CORE_FUNCTION_DEPENDENCY_MODE,
     dependency_lock_digest: null,
     deps: [],
-    required_secrets: [],
+    required_secrets: requiredSecrets,
     timeout_ms: Math.min(
       (spec.config?.timeoutSeconds ?? CORE_FUNCTION_RESOURCE_DEFAULTS.invocationTimeoutMs / 1000) * 1000,
       CORE_FUNCTION_RESOURCE_DEFAULTS.invocationTimeoutMs,
@@ -598,6 +600,24 @@ async function verifyFunctionContent(
         "content_digest_missing",
         `Function bundle ${bundle.source.sha256} has not been staged for project ${projectId}.`,
       );
+    }
+  }
+}
+
+async function verifyFunctionSecrets(
+  ports: RuntimeKernelPorts,
+  projectId: string,
+  effects: CoreFunctionApplyEffects | undefined,
+): Promise<void> {
+  const required = [...new Set(effects?.required_secrets ?? [])].sort();
+  if (required.length === 0) return;
+  if (!ports.secrets) {
+    throw new UnsupportedCapabilityError("functions.secrets.local");
+  }
+  const present = new Set((await ports.secrets.listSecrets({ projectId })).map((secret) => secret.name));
+  for (const name of required) {
+    if (!present.has(name)) {
+      throw new MissingRequiredSecretError(name);
     }
   }
 }

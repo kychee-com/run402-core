@@ -271,6 +271,25 @@ export interface FunctionRuntimePort {
   }>;
 }
 
+export interface FunctionSecretPort {
+  setSecret(input: {
+    projectId: string;
+    name: string;
+    value: string;
+    scope?: "project" | "release" | "function";
+    functionName?: string | null;
+  }): Promise<CoreFunctionSecretMetadata>;
+  listSecrets(input: {
+    projectId: string;
+    functionName?: string;
+  }): Promise<CoreFunctionSecretMetadata[]>;
+  getSecretValues(input: {
+    projectId: string;
+    functionName: string;
+    names: string[];
+  }): Promise<Record<string, string>>;
+}
+
 export interface StoragePort {
   createUploadSession(input: {
     projectId: string;
@@ -393,6 +412,7 @@ export interface RuntimeKernelPorts {
   routes?: RouteManifestPort;
   cleanup?: CleanupPort;
   functions?: FunctionRuntimePort;
+  secrets?: FunctionSecretPort;
   migrations: MigrationPort;
   lifecycle?: ApplyLifecyclePort;
 }

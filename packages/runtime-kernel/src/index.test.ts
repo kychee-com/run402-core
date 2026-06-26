@@ -14,6 +14,7 @@ import {
   DynamicRuntimeUnavailableError,
   FunctionBundleValidationError,
   inspectCoreProject,
+  MissingRequiredSecretError,
   ProjectNotFoundError,
   projectNotFoundEnvelope,
   RUNTIME_KERNEL_CONTRACT_VERSION,
@@ -532,6 +533,35 @@ test("function apply forwards effects to lifecycle activation", async () => {
   assert.deepEqual(activatedBundleNames, ["api"]);
 });
 
+test("function commit verifies required secrets before activation", async () => {
+  const missingPorts = new MemoryRuntimePorts({ secrets: new MemorySecretPort() });
+  const missingPlan = await createApplyPlan(missingPorts, {
+    spec: {
+      ...prebundledFunctionSpec("5".repeat(64), 12),
+      secrets: { require: ["API_TOKEN"] },
+    },
+  });
+  await assert.rejects(
+    commitApplyPlan(missingPorts, { plan_id: missingPlan.plan_id }),
+    (error) => error instanceof MissingRequiredSecretError && error.code === "missing_required_secret",
+  );
+
+  const presentPorts = new MemoryRuntimePorts({
+    secrets: new MemorySecretPort({ API_TOKEN: "secret-value" }),
+  });
+  const presentPlan = await createApplyPlan(presentPorts, {
+    spec: {
+      ...prebundledFunctionSpec("6".repeat(64), 12),
+      secrets: { require: ["API_TOKEN"] },
+    },
+  });
+  const committed = await commitApplyPlan(presentPorts, { plan_id: presentPlan.plan_id });
+
+  assert.equal(committed.status, "committed");
+  assert.deepEqual(presentPlan.function_effects?.required_secrets, ["API_TOKEN"]);
+  assert.deepEqual(presentPlan.function_effects?.bundles[0]?.required_secrets, ["API_TOKEN"]);
+});
+
 test("function reapply with identical bundle and routes is a no-op", async () => {
   const source = Buffer.from("export default async function handler() { return { status: 200 }; }\n");
   const sourceSha = sha256Hex(source);
@@ -730,6 +760,7 @@ class MemoryRuntimePorts implements RuntimeKernelPorts {
   readonly plans: RuntimeKernelPorts["plans"];
   readonly content: RuntimeKernelPorts["content"];
   readonly storage?: RuntimeKernelPorts["storage"];
+  readonly secrets?: RuntimeKernelPorts["secrets"];
   readonly migrations: RuntimeKernelPorts["migrations"];
   readonly lifecycle?: RuntimeKernelPorts["lifecycle"];
 
@@ -744,11 +775,13 @@ class MemoryRuntimePorts implements RuntimeKernelPorts {
     activeReleaseId?: string | null;
     contentPresent?: boolean;
     storage?: RuntimeKernelPorts["storage"];
+    secrets?: RuntimeKernelPorts["secrets"];
   } = {}) {
     this.#order = options.order ?? [];
     this.#activeReleaseId = options.activeReleaseId ?? null;
     this.lifecycle = options.lifecycle;
     this.storage = options.storage;
+    this.secrets = options.secrets;
     this.projects = {
       create: async () => {
         throw new Error("not used");
@@ -929,6 +962,52 @@ class MemoryStoragePort implements NonNullable<RuntimeKernelPorts["storage"]> {
 
   async getImmutableVersion(): Promise<null> {
     return null;
+  }
+}
+
+class MemorySecretPort implements NonNullable<RuntimeKernelPorts["secrets"]> {
+  readonly #values: Map<string, string>;
+
+  constructor(values: Record<string, string> = {}) {
+    this.#values = new Map(Object.entries(values));
+  }
+
+  async setSecret(input: {
+    projectId: string;
+    name: string;
+    value: string;
+    scope?: "project" | "release" | "function";
+    functionName?: string | null;
+  }) {
+    this.#values.set(input.name, input.value);
+    return {
+      project_id: input.projectId,
+      name: input.name,
+      scope: input.scope ?? "project",
+      function_name: input.functionName ?? null,
+      created_at: new Date(0).toISOString(),
+      updated_at: new Date(0).toISOString(),
+    };
+  }
+
+  async listSecrets(input: { projectId: string }) {
+    return [...this.#values.keys()].sort().map((name) => ({
+      project_id: input.projectId,
+      name,
+      scope: "project" as const,
+      function_name: null,
+      created_at: new Date(0).toISOString(),
+      updated_at: new Date(0).toISOString(),
+    }));
+  }
+
+  async getSecretValues(input: { names: string[] }) {
+    const out: Record<string, string> = {};
+    for (const name of input.names) {
+      const value = this.#values.get(name);
+      if (value !== undefined) out[name] = value;
+    }
+    return out;
   }
 }
 
