@@ -98,4 +98,4 @@ run402 archives verify ./project.r402ar --json
 run402 core projects import ./project.r402ar --name imported-project --env-file ./required.env --json
 ```
 
-The public runtime-kernel and Core gateway currently implement local schema validation, canonical digest, inspect, verify, and new-project import for the supported runtime slice. Cloud export remains the next implementation slice.
+The public runtime-kernel and Core gateway implement local schema validation, canonical digest, inspect, verify, and new-project import for the supported runtime slice. Run402 Cloud creates portable exports for the supported slice; Core verifies and imports them without requiring Cloud credentials after download.

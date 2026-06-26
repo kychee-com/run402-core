@@ -2,7 +2,7 @@
 
 Run402 Core is the open-source server/runtime core for Run402.
 
-The current Core runtime-kernel slice is a Developer Preview single-node reference runtime. It can create a local project, stage digest-checked static content, plan and commit a supported ReleaseSpec, run inline PostgreSQL migrations, serve a PostgREST/RLS fixture, serve active-release static content, and exercise local storage objects with static route-manifest behavior.
+The current Core runtime-kernel slice is a Developer Preview single-node reference runtime. It can create a local project, plan and commit a supported ReleaseSpec, run inline PostgreSQL migrations, serve PostgREST/RLS behavior, serve active-release static content, handle local storage objects and route manifests, execute trusted local functions, run a narrow Astro SSR target, and import verified portable project archives.
 
 ## What Is Here Today
 
@@ -17,9 +17,26 @@ The current Core runtime-kernel slice is a Developer Preview single-node referen
 
 ## What Is Not Here Yet
 
-This repo is not a complete production self-hosted Run402 distribution. It does not include export/import, functions, Astro SSR, S3-compatible storage, fleet scheduling, Cloud billing operations, monitoring, backups, abuse controls, TLS automation, HA, or global routing.
+This repo is not a complete production self-hosted Run402 distribution. It does not include Cloud fleet scheduling, Aurora operations, global routing, Cloud billing operations, managed abuse controls, managed backups, monitoring, compliance automation, TLS automation, HA, custom domains, arbitrary dependency installation, hostile multi-tenant code isolation, or Cloud import back into managed Run402.
 
-Those are separate phases. The promise of this slice is smaller and concrete: the supported static + Postgres REST + local storage/routing runtime path is public, buildable, testable, and suitable for Run402 Cloud to consume or verify directly.
+The promise of this slice is smaller and concrete: the supported Core runtime path is public, buildable, testable, and suitable for Run402 Cloud to consume or verify directly.
+
+## Extraction Status
+
+Run402 Core is an open-source ratchet. Public-safe, production-used runtime code moves here, and Run402 Cloud consumes the public package or verifies against the public implementation.
+
+| Extracted surface | Current status |
+| --- | --- |
+| `@run402/functions` | Public package consumed by Cloud |
+| `@run402/release` | Public release/apply semantics package |
+| `@run402/runtime-kernel` | Public Core runtime contracts and services |
+| Core gateway + Compose | Developer Preview local runtime |
+| Storage/routing | Supported Core subset |
+| Functions runtime | Trusted local Developer Preview |
+| Astro SSR runtime | Narrow Developer Preview |
+| Portable archives | Cloud export to Core import for the supported runtime slice |
+
+Run402 Cloud remains the managed service. Core reduces vendor-lock-in risk; it does not open-source fleet operations.
 
 ## Packages
 
@@ -75,7 +92,11 @@ Current runtime-kernel scope:
 | Immutable local object URLs | Yes |
 | Exact static aliases and explicit public paths | Yes |
 | Deterministic dev JWTs | Yes |
-| Functions / SSR / export-import / S3-compatible storage | No |
+| Trusted local functions Developer Preview | Yes |
+| Astro SSR Developer Preview | Yes |
+| Portable archive inspect/verify/import | Yes |
+| S3-compatible storage | No |
+| Cloud import into managed Run402 | No |
 
 ## Development
 
@@ -94,7 +115,7 @@ CORE_CONFORMANCE_RESTART=1 npm run core:storage-routing
 docker compose down -v
 ```
 
-See [docs/runtime-kernel/quickstart.md](./docs/runtime-kernel/quickstart.md), [docs/runtime-kernel/capabilities.md](./docs/runtime-kernel/capabilities.md), [docs/runtime-kernel/storage-routing.md](./docs/runtime-kernel/storage-routing.md), and [docs/runtime-kernel/security-defaults.md](./docs/runtime-kernel/security-defaults.md).
+See [docs/runtime-kernel/quickstart.md](./docs/runtime-kernel/quickstart.md), [docs/runtime-kernel/capabilities.md](./docs/runtime-kernel/capabilities.md), [docs/runtime-kernel/storage-routing.md](./docs/runtime-kernel/storage-routing.md), [docs/runtime-kernel/portable-archives.md](./docs/runtime-kernel/portable-archives.md), [docs/runtime-kernel/security-defaults.md](./docs/runtime-kernel/security-defaults.md), and [docs/open-source-readiness.md](./docs/open-source-readiness.md).
 
 ## Cloud Vs Core
 
