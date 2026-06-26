@@ -12,7 +12,7 @@
   ],
   "scripts": {
     "build": "npm run build:functions && npm run build:release && npm run build:runtime-kernel && npm run build:core-gateway",
-    "test": "npm run build:release && npm run build:runtime-kernel && npm run test:functions && npm run test:release && npm run test:runtime-kernel && npm run test:core-gateway",
+    "test": "npm run build:functions && npm run build:release && npm run build:runtime-kernel && npm run test:functions && npm run test:release && npm run test:runtime-kernel && npm run test:core-gateway",
     "build:functions": "npm run build -w packages/functions",
     "build:release": "npm run build -w packages/release",
     "build:runtime-kernel": "npm run build -w packages/runtime-kernel",
@@ -23,7 +23,7 @@
     "test:release:smoke": "node packages/release/test/smoke-tarball.mjs",
     "test:runtime-kernel": "npm run test -w packages/runtime-kernel",
     "test:core-gateway": "npm run test -w apps/core-gateway",
-    "lint": "npm run lint:functions && npm run lint:release && npm run build:release && npm run lint:runtime-kernel && npm run build:runtime-kernel && npm run lint:core-gateway",
+    "lint": "npm run lint:functions && npm run build:functions && npm run lint:release && npm run build:release && npm run lint:runtime-kernel && npm run build:runtime-kernel && npm run lint:core-gateway",
     "lint:functions": "tsc --noEmit -p packages/functions/tsconfig.json",
     "lint:release": "npm run lint -w packages/release",
     "lint:runtime-kernel": "npm run lint -w packages/runtime-kernel",
