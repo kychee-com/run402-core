@@ -36,7 +36,9 @@
     "core:storage-routing": "node scripts/core-storage-routing-smoke.mjs",
     "core:functions": "node scripts/core-functions-smoke.mjs",
     "core:astro-ssr": "node scripts/core-astro-ssr-smoke.mjs",
-    "core:conformance": "npm run core:apply-smoke && npm run core:storage-routing && npm run core:functions && npm run core:astro-ssr",
+    "core:archive-import": "node scripts/core-archive-import-smoke.mjs",
+    "core:archive-import:restart": "CORE_ARCHIVE_RESTART_CHECK=1 node scripts/core-archive-import-smoke.mjs",
+    "core:conformance": "npm run core:apply-smoke && npm run core:storage-routing && npm run core:functions && npm run core:astro-ssr && npm run core:archive-import:restart",
     "core:boundary": "node scripts/core-boundary-check.mjs",
     "fixtures:portable-archive": "node --import tsx scripts/generate-portable-archive-fixture.mjs"
   },

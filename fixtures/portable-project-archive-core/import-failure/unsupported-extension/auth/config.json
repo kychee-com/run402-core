@@ -1,0 +1,5 @@
+{
+  "schema_version": "run402.project_archive.auth_config.v1",
+  "auth_export": "stubs",
+  "subject_id_namespace": "run402-auth-subject"
+}

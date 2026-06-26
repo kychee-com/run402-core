@@ -14,6 +14,7 @@ COPY packages/release packages/release
 COPY packages/functions packages/functions
 COPY packages/runtime-kernel packages/runtime-kernel
 COPY apps/core-gateway apps/core-gateway
+COPY fixtures/portable-project-archive-core fixtures/portable-project-archive-core
 
 RUN npm run build -w packages/functions \
   && npm run build -w packages/release \
@@ -37,6 +38,7 @@ COPY --from=build /app/packages/runtime-kernel/package.json ./packages/runtime-k
 COPY --from=build /app/packages/runtime-kernel/dist ./packages/runtime-kernel/dist
 COPY --from=build /app/apps/core-gateway/package.json ./apps/core-gateway/package.json
 COPY --from=build /app/apps/core-gateway/dist ./apps/core-gateway/dist
+COPY --from=build /app/fixtures/portable-project-archive-core ./fixtures/portable-project-archive-core
 
 EXPOSE 4020
 CMD ["node", "apps/core-gateway/dist/server.js"]

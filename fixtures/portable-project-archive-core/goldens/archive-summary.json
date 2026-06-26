@@ -1,8 +1,8 @@
 {
-  "archive_digest": "sha256:43df72f602176a3da1089c817a5f3092589334af11f9d6fb562f53c43c23b674",
-  "descriptor_count": 20,
-  "file_count": 22,
-  "total_bytes": 16487,
+  "archive_digest": "sha256:4835112a777f6529a5016782309a2afcbd6ef385c30317364c117119de4769ad",
+  "descriptor_count": 21,
+  "file_count": 23,
+  "total_bytes": 19497,
   "required_capabilities": [
     "run402.core.release-state.v1",
     "run402.core.database.phased-postgres-copy.v1",

@@ -14,6 +14,7 @@ import type {
   CoreFunctionLogEntry,
   CoreFunctionSecretMetadata,
 } from "./functions-runtime.js";
+import type { PortableArchiveImporterPort } from "./archive.js";
 
 export interface CoreProject {
   project_id: string;
@@ -433,5 +434,6 @@ export interface RuntimeKernelPorts {
   functions?: FunctionRuntimePort;
   secrets?: FunctionSecretPort;
   migrations: MigrationPort;
+  archiveImporter?: PortableArchiveImporterPort;
   lifecycle?: ApplyLifecyclePort;
 }

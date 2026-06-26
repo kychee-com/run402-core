@@ -1,6 +1,6 @@
 {
-  "archive_digest": "sha256:43df72f602176a3da1089c817a5f3092589334af11f9d6fb562f53c43c23b674",
+  "archive_digest": "sha256:4835112a777f6529a5016782309a2afcbd6ef385c30317364c117119de4769ad",
   "pinned_release_id": "rel_public_portable_archive_fixture_v1",
-  "portable_release_state_digest": "sha256:2e126a36bdc9cc8d689abb7cca6ad121584f8e0cbcdbf856d19fbf5093c7abbb",
+  "portable_release_state_digest": "sha256:323bef05935b4de1e7edf732e4e0a6ef98aca85230731379571098d88b5d806f",
   "fact_set_digest": "sha256:49dedad8d98887694570e60c27b7afe33a05872256148d544362bbf8f02d1bc9"
 }

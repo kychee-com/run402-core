@@ -10,6 +10,7 @@ import {
   CORE_ASTRO_SSR_OUTPUT_CONTRACT_VERSION,
   createCoreProject,
   DynamicRuntimeUnavailableError,
+  importPortableArchive,
   inspectCoreProject,
   normalizeSha256Hex,
   normalizeStorageContentType,
@@ -17,6 +18,7 @@ import {
   normalizeStorageSize,
   normalizeStorageVisibility,
   MissingRequiredSecretError,
+  PortableArchiveError,
   ProjectNotFoundError,
   projectNotFoundEnvelope,
   CORE_FUNCTION_RESOURCE_DEFAULTS,
@@ -36,6 +38,7 @@ import {
   type CoreFunctionLogEntry,
   type CoreProject,
   type FunctionLogPort,
+  type PortableArchiveImportInput,
   type RuntimeKernelPorts,
   type ProjectCatalogPort,
 } from "@run402/runtime-kernel";
@@ -56,6 +59,7 @@ import type {
   LocalFunctionExecutorResult,
 } from "./local-function-executor.js";
 import { PostgresApplyStore } from "./postgres-apply.js";
+import { PostgresArchiveImporter } from "./postgres-archive-importer.js";
 import { createPostgresPool, PostgresProjectCatalog } from "./postgres-projects.js";
 import { PostgresStorageStore } from "./postgres-storage.js";
 
@@ -87,6 +91,7 @@ export interface CoreGatewayRuntime {
   roleGates?: FunctionRoleGatePort;
   secrets?: RuntimeKernelPorts["secrets"];
   migrations?: RuntimeKernelPorts["migrations"];
+  archiveImporter?: RuntimeKernelPorts["archiveImporter"];
   lifecycle?: RuntimeKernelPorts["lifecycle"];
   jwtSecret?: string;
   maxObjectBytes?: number;
@@ -158,9 +163,14 @@ export async function createGatewayRuntime(config: CoreGatewayConfig): Promise<C
     signedReadSecret: config.signedReadSecret,
     maxObjectBytes: config.maxObjectBytes,
   });
+  const archiveImporter = new PostgresArchiveImporter(pool, content, {
+    publicBaseUrl: config.publicBaseUrl,
+    postgrestPublicUrl: config.postgrestPublicUrl,
+  });
   await projects.bootstrap();
   await applyStore.bootstrap();
   await storage.bootstrap();
+  await archiveImporter.bootstrap();
 
   return {
     projects,
@@ -176,6 +186,7 @@ export async function createGatewayRuntime(config: CoreGatewayConfig): Promise<C
     roleGates: new PostgresFunctionRoleGateStore(pool),
     secrets: storage,
     migrations: applyStore,
+    archiveImporter,
     lifecycle: {
       activate: async (context) => {
         await storage.activateReleaseWithStorage({
@@ -234,6 +245,21 @@ export async function coreGatewayResponse(
 
     const project = await createCoreProject({ projects }, projectInput(request.body));
     return { status: 201, body: project };
+  }
+
+  if (method === "POST" && pathname === "/archives/v1/import") {
+    const importer = runtime.archiveImporter;
+    if (!importer) return unavailable("archive_import_unavailable", "Run402 Core archive importer is not configured.");
+    try {
+      const input = archiveImportInput(request.body);
+      const result = await importPortableArchive({ importer }, input);
+      return {
+        status: result.status === "imported" ? 201 : result.status === "dry_run" ? 200 : 422,
+        body: result,
+      };
+    } catch (error) {
+      return archiveImportErrorResponse(error);
+    }
   }
 
   const contentMatch = /^\/projects\/v1\/([^/]+)\/content$/.exec(pathname);
@@ -744,6 +770,7 @@ function runtimePorts(runtime: CoreGatewayRuntime): RuntimeKernelPorts | null {
     functions: runtime.functions,
     secrets: runtime.secrets,
     migrations: runtime.migrations,
+    archiveImporter: runtime.archiveImporter,
     lifecycle: runtime.lifecycle,
   };
 }
@@ -1008,6 +1035,38 @@ function projectInput(body: unknown): { name?: string | null } {
   return { name };
 }
 
+function archiveImportInput(body: unknown): PortableArchiveImportInput {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    throw new RangeError("Archive import body must be a JSON object.");
+  }
+  const record = body as Record<string, unknown>;
+  const archivePath = expectString(record.archive_path ?? record.archivePath, "archive_path");
+  const name = record.name ?? record.project_name ?? record.projectName;
+  if (name !== undefined && name !== null && typeof name !== "string") {
+    throw new RangeError("name must be a string.");
+  }
+  const target = record.target;
+  if (typeof target === "object" && target !== null && !Array.isArray(target)) {
+    const kind = (target as Record<string, unknown>).kind;
+    if (kind === "existing_project") {
+      return {
+        archivePath,
+        target: { kind, project_id: expectString((target as Record<string, unknown>).project_id, "target.project_id") },
+      };
+    }
+  }
+  const dryRun = record.dry_run ?? record.dryRun;
+  const requireRunnable = record.require_runnable ?? record.requireRunnable;
+  const secretValues = record.secret_values ?? record.secretValues;
+  return {
+    archivePath,
+    target: { kind: "new_project", name: typeof name === "string" ? name : undefined },
+    ...(dryRun !== undefined ? { dryRun: expectBoolean(dryRun, "dry_run") } : {}),
+    ...(requireRunnable !== undefined ? { requireRunnable: expectBoolean(requireRunnable, "require_runnable") } : {}),
+    ...(secretValues !== undefined ? { secretValues: expectStringRecord(secretValues, "secret_values") } : {}),
+  };
+}
+
 async function stageContent(
   content: ContentStorePort,
   projectId: string,
@@ -1213,6 +1272,25 @@ function applyErrorResponse(error: unknown): CoreGatewayResult {
         code: error.code,
       },
     };
+  }
+  if (error instanceof RangeError) {
+    return {
+      status: 400,
+      body: {
+        error: "invalid_request",
+        message: error.message,
+      },
+    };
+  }
+  throw error;
+}
+
+function archiveImportErrorResponse(error: unknown): CoreGatewayResult {
+  if (error instanceof PortableArchiveError) {
+    return { status: error.status, body: runtimeKernelErrorEnvelope(error) };
+  }
+  if (error instanceof RuntimeKernelTypedError) {
+    return { status: error.status, body: runtimeKernelErrorEnvelope(error) };
   }
   if (error instanceof RangeError) {
     return {
@@ -2188,6 +2266,20 @@ function expectString(value: unknown, name: string): string {
   return value;
 }
 
+function expectStringRecord(value: unknown, name: string): Record<string, string> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new RangeError(`${name} must be an object.`);
+  }
+  const out: Record<string, string> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (typeof entry !== "string") {
+      throw new RangeError(`${name}.${key} must be a string.`);
+    }
+    out[key] = entry;
+  }
+  return out;
+}
+
 function expectInteger(value: unknown, name: string): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
     throw new RangeError(`${name} must be a non-negative integer.`);
@@ -2214,7 +2306,6 @@ function expectBoolean(value: unknown, name: string): boolean {
 function unsupportedFeatureForPath(pathname: string): ConstructorParameters<typeof UnsupportedCapabilityError>[0] | null {
   if (pathname.startsWith("/ssr")) return "astro.ssr";
   if (pathname.startsWith("/export")) return "export.project-archive";
-  if (pathname.startsWith("/import")) return "import.project-archive";
   if (pathname.startsWith("/auth/oauth")) return "auth.hosted-oauth";
   if (pathname.startsWith("/jobs")) return "cloud.fleet-scheduling";
   return null;

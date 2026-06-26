@@ -23,7 +23,7 @@ Run402 Core storage/routing is a single-node Developer Preview reference runtime
 
 - function execution
 - Astro SSR execution
-- export/import archives
+- Cloud archive export/import flows from the storage-only surface
 - S3-compatible APIs
 - direct-to-object-store upload paths
 - managed quotas or billing policy

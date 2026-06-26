@@ -21,6 +21,11 @@
           "name": { "type": "string", "minLength": 1 },
           "copy_path": { "type": "string", "minLength": 1 },
           "row_count": { "type": "integer", "minimum": 0 },
+          "deterministic_order": { "type": "boolean" },
+          "order_by": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          },
           "columns": {
             "type": "array",
             "items": {

@@ -1,0 +1,30 @@
+{
+  "schema_version": "run402.project_archive.storage_index.v1",
+  "objects": [
+    {
+      "key": "site/index.html",
+      "visibility": "public",
+      "content_type": "text/html",
+      "cache_control": "public, max-age=60",
+      "immutable": false,
+      "size": 95,
+      "digest": "sha256:d9f5613b7b61289760c1a69dcf586412bf665978fb49dee673dcaf9c1308e887",
+      "blob_path": "blobs/sha256/d9f5613b7b61289760c1a69dcf586412bf665978fb49dee673dcaf9c1308e887"
+    },
+    {
+      "key": "objects/public.txt",
+      "visibility": "public",
+      "content_type": "text/plain",
+      "immutable": true,
+      "size": 35,
+      "digest": "sha256:4c9ca00e1494af814a638b1cdd4d061e53fb200879ff9c374a72eb14b1442a27",
+      "blob_path": "blobs/sha256/4c9ca00e1494af814a638b1cdd4d061e53fb200879ff9c374a72eb14b1442a27"
+    }
+  ],
+  "static_routes": [
+    {
+      "path": "/index.html",
+      "object_key": "site/index.html"
+    }
+  ]
+}

@@ -18,7 +18,8 @@
   "dependencies": {
     "@run402/functions": "3.5.1",
     "@run402/runtime-kernel": "0.1.5",
-    "pg": "^8.13.1"
+    "pg": "^8.13.1",
+    "pg-copy-streams": "^7.0.0"
   },
   "devDependencies": {
     "@types/pg": "^8.11.10"

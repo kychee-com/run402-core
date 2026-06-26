@@ -54,7 +54,7 @@ Public JSON Schemas ship in `@run402/runtime-kernel/schemas/*`:
 
 Core treats every archive as hostile input. The verifier rejects absolute paths, `..`, backslashes, duplicate paths, symlinks, hardlinks, device entries, unsupported tar entry types, duplicate JSON object keys, unsupported versions, unknown required capabilities, unsupported media types, missing descriptors, missing blobs, digest mismatches, size mismatches, excessive file count, excessive expanded size, excessive descriptor size, and excessive descriptor depth.
 
-Import is intentionally not best-effort. When import lands, it will verify before mutating state and will target a new local project only. Existing-project merge, Cloud import, partial import, credential migration, incremental archives, and multi-release history are not v1 features.
+Import is intentionally not best-effort. Core verifies before mutating state and targets a new local project only. Existing-project merge, Cloud import, partial import, credential migration, incremental archives, and multi-release history are not v1 features.
 
 ## Stable Diagnostics
 
@@ -74,6 +74,7 @@ Stable v1 codes include:
 - `DATABASE_RLS_IMPORT_UNSUPPORTED`
 - `DATABASE_SCHEMA_UNSAFE`
 - `DATABASE_SEQUENCE_RESTORE_FAILED`
+- `NON_DETERMINISTIC_TABLE_ORDER`
 - `STORAGE_OBJECT_CHANGED_DURING_EXPORT`
 - `STORAGE_OBJECT_DIGEST_MISMATCH`
 - `AUTH_CREDENTIALS_NOT_EXPORTED`
@@ -97,4 +98,4 @@ run402 archives verify ./project.r402ar --json
 run402 core projects import ./project.r402ar --name imported-project --env-file ./required.env --json
 ```
 
-The public runtime-kernel package currently implements the local schema, canonical digest, inspect, and verify foundation. Cloud export and Core import are the next implementation slices.
+The public runtime-kernel and Core gateway currently implement local schema validation, canonical digest, inspect, verify, and new-project import for the supported runtime slice. Cloud export remains the next implementation slice.

@@ -59,7 +59,7 @@ Unsupported required behavior fails closed with `astro_ssr_unsupported_feature`,
 - edge runtime globals
 - Cloud-only globals and routing hooks
 - custom domains/global routing extraction
-- export/import and Cloud import
+- Cloud export, Cloud import, and existing-project archive merge
 - managed production operations such as fleet scheduling, billing, abuse controls, backups, monitoring, compliance, and support
 
-Run402 Core reduces lock-in for the supported runtime slice. It does not yet claim whole-project portability until portable archive and Cloud import work exists.
+Run402 Core reduces lock-in for the supported runtime slice. It supports local new-project import for portable archives, while Cloud export and Cloud import remain separate follow-up work.

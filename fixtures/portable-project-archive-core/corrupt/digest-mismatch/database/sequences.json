@@ -6,6 +6,12 @@
       "name": "todos_id_seq",
       "value": "2",
       "is_called": true
+    },
+    {
+      "schema": "public",
+      "name": "comments_id_seq",
+      "value": "2",
+      "is_called": true
     }
   ]
 }

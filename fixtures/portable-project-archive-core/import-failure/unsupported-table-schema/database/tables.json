@@ -1,0 +1,61 @@
+{
+  "schema_version": "run402.project_archive.database_tables.v1",
+  "tables": [
+    {
+      "id": "todos",
+      "schema": "private",
+      "name": "todos",
+      "copy_path": "database/data/todos.copy",
+      "row_count": 2,
+      "deterministic_order": true,
+      "order_by": [
+        "id"
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "type": "bigint",
+          "nullable": false
+        },
+        {
+          "name": "owner_id",
+          "type": "text",
+          "nullable": false
+        },
+        {
+          "name": "title",
+          "type": "text",
+          "nullable": false
+        }
+      ]
+    },
+    {
+      "id": "comments",
+      "schema": "public",
+      "name": "comments",
+      "copy_path": "database/data/comments.copy",
+      "row_count": 2,
+      "deterministic_order": true,
+      "order_by": [
+        "id"
+      ],
+      "columns": [
+        {
+          "name": "id",
+          "type": "bigint",
+          "nullable": false
+        },
+        {
+          "name": "todo_id",
+          "type": "bigint",
+          "nullable": false
+        },
+        {
+          "name": "body",
+          "type": "text",
+          "nullable": false
+        }
+      ]
+    }
+  ]
+}

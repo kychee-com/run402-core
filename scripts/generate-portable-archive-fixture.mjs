@@ -16,6 +16,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const fixtureRoot = path.join(repoRoot, "fixtures/portable-project-archive-core");
 const archiveRoot = path.join(fixtureRoot, "archive");
 const corruptRoot = path.join(fixtureRoot, "corrupt");
+const importFailureRoot = path.join(fixtureRoot, "import-failure");
 const goldensRoot = path.join(fixtureRoot, "goldens");
 
 await rm(fixtureRoot, { recursive: true, force: true });
@@ -50,18 +51,63 @@ const astroDigest = computePortableArchiveBytesDigest(astroBytes);
 const astroBlobPath = `blobs/sha256/${astroDigest.slice("sha256:".length)}`;
 await writeFile(path.join(archiveRoot, astroBlobPath), astroBytes);
 
+const preDataSql = [
+  "create sequence todos_id_seq;",
+  "create table todos (",
+  "  id bigint primary key default nextval('todos_id_seq'),",
+  "  owner_id text not null,",
+  "  title text not null",
+  ");",
+  "create sequence comments_id_seq;",
+  "create table comments (",
+  "  id bigint primary key default nextval('comments_id_seq'),",
+  "  todo_id bigint not null references todos(id) on delete cascade,",
+  "  body text not null",
+  ");",
+  "create table todo_audit (",
+  "  event text not null,",
+  "  todo_id bigint not null,",
+  "  owner_id text not null",
+  ");",
+  "",
+].join("\n");
+const postDataSql = [
+  "create index todos_owner_id_idx on todos(owner_id);",
+  "create index comments_todo_id_idx on comments(todo_id);",
+  "create function record_todo_insert() returns trigger language plpgsql as $$",
+  "begin",
+  "  insert into todo_audit(event, todo_id, owner_id) values ('insert', new.id, new.owner_id);",
+  "  return new;",
+  "end;",
+  "$$;",
+  "create trigger todos_audit_insert after insert on todos for each row execute function record_todo_insert();",
+  "alter table todos enable row level security;",
+  "alter table comments enable row level security;",
+  "grant select on todos, comments to anon, authenticated, service_role;",
+  "grant insert on todos to authenticated, service_role;",
+  "grant select, insert on todo_audit to service_role;",
+  "grant usage, select on sequence todos_id_seq, comments_id_seq to anon, authenticated, service_role;",
+  "create policy todos_owner_read on todos for select using (owner_id = auth.uid());",
+  "create policy todos_owner_insert on todos for insert with check (owner_id = auth.uid());",
+  "create policy comments_owner_read on comments for select using (exists (select 1 from todos where todos.id = comments.todo_id and todos.owner_id = auth.uid()));",
+  "",
+].join("\n");
+const todosCopy = "1\tauth_subject_alice\tShip portable archives\n2\tauth_subject_bob\tKeep DX boringly good\n";
+const commentsCopy = "1\t1\tAlice-only comment with FK intact\n2\t2\tBob-only comment with FK intact\n";
+const preDataChecksum = computePortableArchiveBytesDigest(Buffer.from(preDataSql));
+
 await writeDescriptor("release_spec", "manifest/release-spec.json", PROJECT_ARCHIVE_MEDIA_TYPES.releaseSpec, {
   project: "portable-archive-fixture",
   base: { release: "empty" },
   database: {
     migrations: [{
       id: "001_archive_fixture",
-      checksum: "sha256:8bb7e9214568f6f4d7a0b2e1e122b6236c59b15a8d038d2ee04a35597d4fef77",
-      sql: "create table todos (id bigint primary key, owner_id text not null, title text not null);",
+      checksum: preDataChecksum,
+      sql: preDataSql,
     }],
     expose: {
       schemas: ["public"],
-      tables: ["todos"],
+      tables: ["todos", "comments", "todo_audit"],
     },
   },
   secrets: { require: ["OPENAI_API_KEY"] },
@@ -94,6 +140,9 @@ await writeDescriptor("portable_release_state", "manifest/portable-release-state
         content_type: "text/html",
         cache_class: "html",
         cache_class_source: "declared",
+        asset_path: "index.html",
+        direct: true,
+        authority: "explicit_public_path",
       },
     },
   },
@@ -134,7 +183,7 @@ await writeDescriptor("portable_release_state", "manifest/portable-release-state
       { pattern: "/*", kind: "prefix", prefix: "/", methods: ["GET"], target: { type: "function", name: "ssr" } },
     ],
   },
-  migrations: [{ migration_id: "001_archive_fixture", checksum_hex: "8bb7e9214568f6f4d7a0b2e1e122b6236c59b15a8d038d2ee04a35597d4fef77", transaction: "default" }],
+  migrations: [{ migration_id: "001_archive_fixture", checksum_hex: preDataChecksum.slice("sha256:".length), transaction: "default" }],
   i18n: null,
 });
 await writeDescriptor("fact_set", "manifest/fact-set.json", PROJECT_ARCHIVE_MEDIA_TYPES.releaseFactSet, {
@@ -183,57 +232,72 @@ await writeDescriptor("export_report", "manifest/export-report.json", PROJECT_AR
   consistency: "core_fixture_v1",
   omitted_sensitive_resource_count: 0,
   unsupported_resource_count: 1,
-  counts: { tables: 1, rows: 2, storage_objects: 2, functions: 2, auth_subject_stubs: 2 },
+  counts: { tables: 2, rows: 4, storage_objects: 2, functions: 2, auth_subject_stubs: 2 },
   bytes: { storage: staticHtml.byteLength + objectBytes.byteLength, runtime: functionBytes.byteLength + astroBytes.byteLength },
 });
 await writeTextDescriptor(
   "database.pre_data_sql",
   "database/pre-data.sql",
   PROJECT_ARCHIVE_MEDIA_TYPES.databaseSql,
-  [
-    "create table todos (",
-    "  id bigint primary key,",
-    "  owner_id text not null,",
-    "  title text not null",
-    ");",
-    "create index todos_owner_id_idx on todos(owner_id);",
-    "",
-  ].join("\n"),
+  preDataSql,
 );
 await writeDescriptor("database.tables", "database/tables.json", PROJECT_ARCHIVE_MEDIA_TYPES.databaseTables, {
   schema_version: "run402.project_archive.database_tables.v1",
-  tables: [{
-    id: "todos",
-    schema: "public",
-    name: "todos",
-    copy_path: "database/data/todos.copy",
-    row_count: 2,
-    columns: [
-      { name: "id", type: "bigint", nullable: false },
-      { name: "owner_id", type: "text", nullable: false },
-      { name: "title", type: "text", nullable: false },
-    ],
-  }],
+  tables: [
+    {
+      id: "todos",
+      schema: "public",
+      name: "todos",
+      copy_path: "database/data/todos.copy",
+      row_count: 2,
+      deterministic_order: true,
+      order_by: ["id"],
+      columns: [
+        { name: "id", type: "bigint", nullable: false },
+        { name: "owner_id", type: "text", nullable: false },
+        { name: "title", type: "text", nullable: false },
+      ],
+    },
+    {
+      id: "comments",
+      schema: "public",
+      name: "comments",
+      copy_path: "database/data/comments.copy",
+      row_count: 2,
+      deterministic_order: true,
+      order_by: ["id"],
+      columns: [
+        { name: "id", type: "bigint", nullable: false },
+        { name: "todo_id", type: "bigint", nullable: false },
+        { name: "body", type: "text", nullable: false },
+      ],
+    },
+  ],
 });
 await writeTextDescriptor(
   "database.data.todos",
   "database/data/todos.copy",
   PROJECT_ARCHIVE_MEDIA_TYPES.databaseCopy,
-  "1\tauth_subject_alice\tShip portable archives\n2\tauth_subject_bob\tKeep DX boringly good\n",
+  todosCopy,
+);
+await writeTextDescriptor(
+  "database.data.comments",
+  "database/data/comments.copy",
+  PROJECT_ARCHIVE_MEDIA_TYPES.databaseCopy,
+  commentsCopy,
 );
 await writeDescriptor("database.sequences", "database/sequences.json", PROJECT_ARCHIVE_MEDIA_TYPES.databaseSequences, {
   schema_version: "run402.project_archive.database_sequences.v1",
-  sequences: [{ schema: "public", name: "todos_id_seq", value: "2", is_called: true }],
+  sequences: [
+    { schema: "public", name: "todos_id_seq", value: "2", is_called: true },
+    { schema: "public", name: "comments_id_seq", value: "2", is_called: true },
+  ],
 });
 await writeTextDescriptor(
   "database.post_data_sql",
   "database/post-data.sql",
   PROJECT_ARCHIVE_MEDIA_TYPES.databaseSql,
-  [
-    "alter table todos enable row level security;",
-    "create policy todos_owner_read on todos for select using (owner_id = auth.uid());",
-    "",
-  ].join("\n"),
+  postDataSql,
 );
 await writeDescriptor("auth.config", "auth/config.json", PROJECT_ARCHIVE_MEDIA_TYPES.authConfig, {
   schema_version: "run402.project_archive.auth_config.v1",
@@ -244,7 +308,7 @@ await writeTextDescriptor(
   "auth.subjects",
   "auth/subjects.ndjson",
   PROJECT_ARCHIVE_MEDIA_TYPES.authSubjects,
-  "{\"subject_id\":\"auth_subject_alice\",\"disabled\":true,\"references\":[\"todos.owner_id\"]}\n{\"subject_id\":\"auth_subject_bob\",\"disabled\":true,\"references\":[\"todos.owner_id\"]}\n",
+  "{\"subject_id\":\"auth_subject_alice\",\"disabled\":true,\"references\":[\"todos.owner_id\",\"comments.todo_id\"]}\n{\"subject_id\":\"auth_subject_bob\",\"disabled\":true,\"references\":[\"todos.owner_id\",\"comments.todo_id\"]}\n",
 );
 await writeDescriptor("storage.index", "storage/index.json", PROJECT_ARCHIVE_MEDIA_TYPES.storageIndex, {
   schema_version: "run402.project_archive.storage_index.v1",
@@ -277,7 +341,7 @@ await writeDescriptor("runtime.index", "runtime/index.json", PROJECT_ARCHIVE_MED
     {
       name: "api",
       runtime: "node22",
-      entrypoint: "index.mjs",
+      entrypoint: "default",
       artifact_digest: functionDigest,
       artifact_path: functionBlobPath,
       required_secrets: ["OPENAI_API_KEY"],
@@ -286,7 +350,7 @@ await writeDescriptor("runtime.index", "runtime/index.json", PROJECT_ARCHIVE_MED
     {
       name: "ssr",
       runtime: "node22",
-      entrypoint: "server.mjs",
+      entrypoint: "default",
       artifact_digest: astroDigest,
       artifact_path: astroBlobPath,
       required_secrets: [],
@@ -345,6 +409,7 @@ const index = {
     "database.pre_data_sql",
     "database.tables",
     "database.data.todos",
+    "database.data.comments",
     "database.sequences",
     "database.post_data_sql",
     "auth.config",
@@ -409,6 +474,7 @@ await writeJson(path.join(goldensRoot, "release-identity.json"), {
   fact_set_digest: index.descriptors.fact_set.digest,
 });
 await writeCorruptVariants(index);
+await writeImportFailureVariants(index);
 
 async function writeDescriptor(name, relativePath, mediaType, value) {
   const bytes = Buffer.from(`${JSON.stringify(value, null, 2)}\n`);
@@ -506,4 +572,52 @@ async function makeVariant(name, mutate) {
   const variantRoot = path.join(corruptRoot, name);
   await cp(archiveRoot, variantRoot, { recursive: true });
   await mutate(variantRoot);
+}
+
+async function writeImportFailureVariants(validIndex) {
+  await makeImportFailureVariant("unsafe-database-sql", async (variantRoot) => {
+    const unsafeSql = `${preDataSql}COPY todos FROM '/tmp/run402-should-not-read';\n`;
+    await writeFile(path.join(variantRoot, "database/pre-data.sql"), unsafeSql);
+    await rewriteDescriptorFromFile(variantRoot, validIndex, "database.pre_data_sql", "database/pre-data.sql");
+  });
+
+  await makeImportFailureVariant("unsupported-extension", async (variantRoot) => {
+    const unsafeSql = `CREATE EXTENSION file_fdw;\n${preDataSql}`;
+    await writeFile(path.join(variantRoot, "database/pre-data.sql"), unsafeSql);
+    await rewriteDescriptorFromFile(variantRoot, validIndex, "database.pre_data_sql", "database/pre-data.sql");
+  });
+
+  await makeImportFailureVariant("unsupported-table-schema", async (variantRoot) => {
+    const tablesPath = path.join(variantRoot, "database/tables.json");
+    const tables = JSON.parse(await readFile(tablesPath, "utf8"));
+    tables.tables[0].schema = "private";
+    await writeJson(tablesPath, tables);
+    await rewriteDescriptorFromFile(variantRoot, validIndex, "database.tables", "database/tables.json");
+  });
+
+  await makeImportFailureVariant("credential-auth-export", async (variantRoot) => {
+    const authConfigPath = path.join(variantRoot, "auth/config.json");
+    const authConfig = JSON.parse(await readFile(authConfigPath, "utf8"));
+    authConfig.auth_export = "credentials";
+    await writeJson(authConfigPath, authConfig);
+    await rewriteDescriptorFromFile(variantRoot, validIndex, "auth.config", "auth/config.json");
+  });
+}
+
+async function makeImportFailureVariant(name, mutate) {
+  const variantRoot = path.join(importFailureRoot, name);
+  await cp(archiveRoot, variantRoot, { recursive: true });
+  await mutate(variantRoot);
+}
+
+async function rewriteDescriptorFromFile(variantRoot, validIndex, descriptorName, relativePath) {
+  const bytes = await readFile(path.join(variantRoot, relativePath));
+  const variantIndex = structuredClone(validIndex);
+  variantIndex.descriptors[descriptorName] = {
+    ...variantIndex.descriptors[descriptorName],
+    digest: computePortableArchiveBytesDigest(bytes),
+    size: bytes.byteLength,
+  };
+  variantIndex.archive_digest = computePortableArchiveLogicalDigest(variantIndex);
+  await writeJson(path.join(variantRoot, "index.json"), variantIndex);
 }

@@ -1,0 +1,12 @@
+{
+  "schema_version": "run402.project_archive.layout.v1",
+  "archive_version": "run402-project-archive.v1",
+  "mediaType": "application/vnd.run402.project-archive.layout.v1+json",
+  "index": "index.json",
+  "blobs": "blobs/sha256",
+  "transports": [
+    "directory",
+    "tar"
+  ],
+  "checksum_lists_authoritative": false
+}

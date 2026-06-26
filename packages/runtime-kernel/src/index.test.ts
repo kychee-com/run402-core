@@ -54,11 +54,12 @@ test("runtime capability document advertises first-slice boundaries", () => {
   assert.ok(capabilities.supported_features.includes("astro.ssr.run402-output-v1"));
   assert.ok(capabilities.supported_features.includes("archives.format.run402-project-archive-v1"));
   assert.ok(capabilities.supported_features.includes("archives.verify.local"));
+  assert.ok(capabilities.supported_features.includes("archives.import.local-new-project"));
   assert.equal(capabilities.functions_runtime.maturity, "developer_preview");
   assert.equal(capabilities.astro_ssr_runtime.maturity, "developer_preview");
   assert.equal(capabilities.portable_archives.maturity, "developer_preview");
   assert.equal(capabilities.portable_archives.local_verify, true);
-  assert.equal(capabilities.portable_archives.local_import, false);
+  assert.equal(capabilities.portable_archives.local_import, true);
   assert.equal(capabilities.astro_ssr_runtime.output_contract_version, CORE_ASTRO_SSR_OUTPUT_CONTRACT_VERSION);
   assert.equal(capabilities.astro_ssr_runtime.fallback.pattern, CORE_ASTRO_SSR_FALLBACK_PATTERN);
   assert.equal(capabilities.functions_runtime.default_executor, CORE_FUNCTION_DEFAULT_EXECUTOR);
@@ -67,6 +68,7 @@ test("runtime capability document advertises first-slice boundaries", () => {
   assert.equal(capabilities.functions_runtime.dependency_policy.npm_install_supported, false);
   assert.ok(capabilities.unsupported_features.some((entry) => entry.feature === "functions.external-npm-dependencies"));
   assert.ok(capabilities.unsupported_features.some((entry) => entry.feature === "astro.streaming"));
+  assert.ok(capabilities.unsupported_features.some((entry) => entry.feature === "archives.import.existing-project-merge"));
   assert.equal(capabilities.unsupported_features.some((entry) => entry.feature === "functions.node"), false);
   assert.equal(capabilities.unsupported_features.some((entry) => entry.feature === "astro.ssr"), false);
   assert.equal(capabilities.unsupported_features.some((entry) => entry.feature === "storage.user-api"), false);

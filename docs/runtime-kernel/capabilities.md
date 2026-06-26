@@ -35,6 +35,9 @@
 - inherited function runtime request IDs, logs, required secrets, env allowlist, timeout, body/response caps, and trusted-local-code isolation profile
 - portable archive Developer Preview verification for `run402-project-archive.v1`
 - offline archive inspect/verify from directory and uncompressed tar transports
+- local new-project import for verified `run402-project-archive.v1` archives
+- phased Postgres pre-data, client `COPY`, sequence, and post-data import
+- storage/static object import, function artifact import, Astro SSR artifact import, disabled auth subject stubs, and value-free secret requirements
 - content-addressed archive descriptors, canonical logical digest computation, duplicate JSON key rejection, and untrusted-input safety checks
 
 ## Explicitly Unsupported
@@ -54,8 +57,8 @@ Unsupported required capabilities fail with `unsupported_capability`.
 - hosted OAuth
 - managed subdomains and custom domains
 - Cloud archive export creation
-- Core project archive import and existing-project archive merge
 - Cloud import
+- existing-project archive merge
 - Cloud billing, fleet scheduling, managed backups, monitoring, and abuse controls
 
 ## Route Subset
@@ -66,4 +69,4 @@ The current server serves active-release entries from `site.public_paths` explic
 
 Core can inspect and verify `run402-project-archive.v1` archives locally without Cloud credentials. Verification checks integrity and compatibility only; an archive remains untrusted input. Core rejects unsafe paths, links, device entries, duplicate paths, duplicate JSON object keys, unsupported required capabilities, unsupported media types, digest mismatches, missing blobs, excessive file count, excessive expanded size, excessive descriptor size, and excessive descriptor depth.
 
-Archive import into a new local project is still outside this slice. Cloud import, existing-project merge import, logs export, credential export, billing/allowance state, managed backups, custom domains, global routing, and managed production operations remain unsupported.
+Archive import verifies before mutation and targets a new local project only. It restores phased Postgres state, client-streamed `COPY` table data, sequence values, post-data DDL, storage/static bytes, runtime artifacts, route metadata, active release identity, secret placeholders, and disabled auth subject stubs. Cloud import, existing-project merge import, logs export, credential export, billing/allowance state, managed backups, custom domains, global routing, and managed production operations remain unsupported.

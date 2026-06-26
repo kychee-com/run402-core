@@ -54,4 +54,4 @@ Core now exposes a limited Astro SSR portability contract: `astro.ssr.v1`, one N
 
 The logical precedence contract is public: static aliases, public assets, prerendered HTML, function routes, SSR fallback, then 404. Cloud may use different production routing infrastructure, but accepted requests in the supported fixture should resolve to the same logical winner.
 
-Cloud remains proprietary for managed SSR production operations: Lambda/ECS or equivalent fleet execution, global routing, managed logs, quotas, billing, abuse controls, backups, monitoring, compliance, and support. Core does not support arbitrary Astro adapters, streaming, WebSockets, ISR/cache, edge runtime, Cloud globals, export/import, or Cloud import in this child change.
+Cloud remains proprietary for managed SSR production operations: Lambda/ECS or equivalent fleet execution, global routing, managed logs, quotas, billing, abuse controls, backups, monitoring, compliance, and support. Core does not support arbitrary Astro adapters, streaming, WebSockets, ISR/cache, edge runtime, Cloud globals, Cloud export, Cloud import, or existing-project archive merge in this child change.

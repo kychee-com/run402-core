@@ -12,7 +12,10 @@ import {
   PROJECT_ARCHIVE_VERSION,
   computePortableArchiveBytesDigest,
   computePortableArchiveLogicalDigest,
+  importPortableArchive,
   verifyPortableArchive,
+  type PortableArchiveImporterPort,
+  type PortableArchiveVerifiedImportInput,
   type PortableArchiveDescriptor,
   type PortableArchiveIndex,
   type PortableArchiveLayout,
@@ -113,6 +116,77 @@ test("committed corrupt archive variants fail with stable codes", async () => {
   }
 });
 
+test("portable archive import refuses existing-project targets before mutation", async () => {
+  const importer = new RecordingArchiveImporter();
+
+  const result = await importPortableArchive({ importer }, {
+    archivePath: path.join(REPO_ROOT, "fixtures/portable-project-archive-core/archive"),
+    target: { kind: "existing_project", project_id: "prj_existing" },
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.diagnostics[0]?.code, "PROJECT_ALREADY_EXISTS");
+  assert.equal(importer.calls.length, 0);
+});
+
+test("portable archive import verifies before mutation", async () => {
+  const importer = new RecordingArchiveImporter();
+
+  const result = await importPortableArchive({ importer }, {
+    archivePath: path.join(REPO_ROOT, "fixtures/portable-project-archive-core/corrupt/digest-mismatch"),
+    target: { kind: "new_project", name: "bad-archive" },
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.diagnostics[0]?.code, "IMPORT_VERIFY_FAILED");
+  assert.equal(importer.calls.length, 0);
+});
+
+test("portable archive import dry-run verifies without mutation", async () => {
+  const importer = new RecordingArchiveImporter();
+
+  const result = await importPortableArchive({ importer }, {
+    archivePath: path.join(REPO_ROOT, "fixtures/portable-project-archive-core/archive"),
+    target: { kind: "new_project", name: "dry-run-archive" },
+    dryRun: true,
+  });
+
+  assert.equal(result.status, "dry_run");
+  assert.equal(result.project_name, "dry-run-archive");
+  assert.equal(importer.calls.length, 0);
+});
+
+test("portable archive import requireRunnable blocks missing secrets before mutation", async () => {
+  const importer = new RecordingArchiveImporter();
+
+  const result = await importPortableArchive({ importer }, {
+    archivePath: path.join(REPO_ROOT, "fixtures/portable-project-archive-core/archive"),
+    target: { kind: "new_project", name: "needs-secrets" },
+    requireRunnable: true,
+  });
+
+  assert.equal(result.status, "blocked");
+  assert.equal(result.diagnostics[0]?.code, "SECRET_VALUES_REQUIRED");
+  assert.equal(importer.calls.length, 0);
+});
+
+test("portable archive import calls the concrete importer only after gates pass", async () => {
+  const importer = new RecordingArchiveImporter();
+
+  const result = await importPortableArchive({ importer }, {
+    archivePath: path.join(REPO_ROOT, "fixtures/portable-project-archive-core/archive"),
+    target: { kind: "new_project", name: "imported-archive" },
+    requireRunnable: true,
+    secretValues: { OPENAI_API_KEY: "present" },
+  });
+
+  assert.equal(result.status, "imported");
+  assert.equal(result.project_id, "prj_imported_archive");
+  assert.equal(importer.calls.length, 1);
+  assert.equal(importer.calls[0]?.project_name, "imported-archive");
+  assert.equal(importer.calls[0]?.verification.ok, true);
+});
+
 test("portable archive logical digest ignores descriptor map insertion order", async () => {
   const fixture = await createArchiveFixture();
   try {
@@ -141,6 +215,35 @@ test("portable archive reports unknown required capabilities as blocking compati
 
     assert.equal(result.ok, false);
     assert.equal(result.diagnostics.some((entry) => entry.code === "ARCHIVE_UNSUPPORTED_REQUIRED_CAPABILITY"), true);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("portable archive reports nondeterministic table ordering as a warning", async () => {
+  const fixture = await createArchiveFixture();
+  try {
+    const tablesPath = path.join(fixture.root, "database/tables.json");
+    const tables = JSON.parse(await readFile(tablesPath, "utf8")) as {
+      tables: Array<{ deterministic_order?: boolean; order_by?: string[] }>;
+    };
+    tables.tables[0].deterministic_order = false;
+    tables.tables[0].order_by = [];
+    await writeJson(tablesPath, tables);
+    const bytes = await readFile(tablesPath);
+    fixture.index.descriptors["database.tables"].digest = computePortableArchiveBytesDigest(bytes);
+    fixture.index.descriptors["database.tables"].size = bytes.byteLength;
+    fixture.index.archive_digest = computePortableArchiveLogicalDigest(fixture.index);
+    await writeJson(path.join(fixture.root, "index.json"), fixture.index);
+
+    const result = await verifyPortableArchive({ archivePath: fixture.root });
+
+    assert.equal(result.ok, true);
+    assert.ok(result.diagnostics.some((entry) =>
+      entry.code === "NON_DETERMINISTIC_TABLE_ORDER" &&
+      entry.severity === "warning" &&
+      entry.resource_id === "todos",
+    ));
   } finally {
     await fixture.cleanup();
   }
@@ -575,4 +678,17 @@ function tarEntry(name: string, body: Buffer, typeFlag: string): Buffer {
 
 function octal(value: number, width: number): string {
   return value.toString(8).padStart(width, "0");
+}
+
+class RecordingArchiveImporter implements PortableArchiveImporterPort {
+  readonly calls: PortableArchiveVerifiedImportInput[] = [];
+
+  async importVerifiedArchive(input: PortableArchiveVerifiedImportInput) {
+    this.calls.push(input);
+    return {
+      project_id: "prj_imported_archive",
+      project_name: input.project_name,
+      release_id: "rel_imported_archive",
+    };
+  }
 }

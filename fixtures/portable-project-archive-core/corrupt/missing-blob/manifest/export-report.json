@@ -6,8 +6,8 @@
   "omitted_sensitive_resource_count": 0,
   "unsupported_resource_count": 1,
   "counts": {
-    "tables": 1,
-    "rows": 2,
+    "tables": 2,
+    "rows": 4,
     "storage_objects": 2,
     "functions": 2,
     "auth_subject_stubs": 2

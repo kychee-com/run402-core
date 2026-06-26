@@ -19,7 +19,10 @@
         "size": 95,
         "content_type": "text/html",
         "cache_class": "html",
-        "cache_class_source": "declared"
+        "cache_class_source": "declared",
+        "asset_path": "index.html",
+        "direct": true,
+        "authority": "explicit_public_path"
       }
     }
   },
@@ -93,7 +96,7 @@
   "migrations": [
     {
       "migration_id": "001_archive_fixture",
-      "checksum_hex": "8bb7e9214568f6f4d7a0b2e1e122b6236c59b15a8d038d2ee04a35597d4fef77",
+      "checksum_hex": "48b974c80a6ab76e4686f14f384cc721a8a7235128538df814ba859b3edd9986",
       "transaction": "default"
     }
   ],

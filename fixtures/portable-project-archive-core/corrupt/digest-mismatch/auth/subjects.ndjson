@@ -1,2 +1,2 @@
-{"subject_id":"auth_subject_alice","disabled":true,"references":["todos.owner_id"]}
-{"subject_id":"auth_subject_bob","disabled":true,"references":["todos.owner_id"]}
+{"subject_id":"auth_subject_alice","disabled":true,"references":["todos.owner_id","comments.todo_id"]}
+{"subject_id":"auth_subject_bob","disabled":true,"references":["todos.owner_id","comments.todo_id"]}

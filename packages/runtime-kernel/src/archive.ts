@@ -72,6 +72,7 @@ export const ARCHIVE_ERROR_CODES = [
   "DATABASE_RLS_IMPORT_UNSUPPORTED",
   "DATABASE_SCHEMA_UNSAFE",
   "DATABASE_SEQUENCE_RESTORE_FAILED",
+  "NON_DETERMINISTIC_TABLE_ORDER",
   "STORAGE_OBJECT_CHANGED_DURING_EXPORT",
   "STORAGE_OBJECT_DIGEST_MISMATCH",
   "AUTH_CREDENTIALS_NOT_EXPORTED",
@@ -202,6 +203,15 @@ export interface ArchiveExportReport {
   unsupported_resource_count?: number;
 }
 
+interface ArchiveDatabaseTablesDescriptor {
+  tables?: Array<{
+    id?: unknown;
+    name?: unknown;
+    deterministic_order?: unknown;
+    order_by?: unknown;
+  }>;
+}
+
 export interface PortableArchiveLimits {
   maxFiles: number;
   maxExpandedBytes: number;
@@ -229,6 +239,54 @@ export interface PortableArchiveVerifyResult {
   export_report: ArchiveExportReport | null;
   portability_report: ArchivePortabilityReport | null;
   diagnostics: ArchiveDiagnostic[];
+}
+
+export type PortableArchiveImportTarget =
+  | { kind: "new_project"; name?: string | null }
+  | { kind: "existing_project"; project_id: string };
+
+export interface PortableArchiveImportInput {
+  archivePath: string;
+  target: PortableArchiveImportTarget;
+  dryRun?: boolean;
+  requireRunnable?: boolean;
+  secretValues?: Record<string, string>;
+  limits?: Partial<PortableArchiveLimits>;
+}
+
+export interface PortableArchiveImportedProject {
+  project_id: string;
+  project_name: string;
+  release_id: string | null;
+  endpoints?: Record<string, string>;
+}
+
+export interface PortableArchiveVerifiedImportInput {
+  archive_path: string;
+  project_name: string;
+  verification: PortableArchiveVerifyResult;
+  secret_values: Record<string, string>;
+  require_runnable: boolean;
+}
+
+export interface PortableArchiveImporterPort {
+  importVerifiedArchive(input: PortableArchiveVerifiedImportInput): Promise<PortableArchiveImportedProject>;
+}
+
+export interface PortableArchiveImportPorts {
+  importer: PortableArchiveImporterPort;
+}
+
+export interface PortableArchiveImportResult {
+  schema_version: "run402.project_archive.import_result.v1";
+  status: "dry_run" | "imported" | "blocked" | "failed";
+  archive_digest: `sha256:${string}` | null;
+  project_id?: string;
+  project_name?: string;
+  release_id?: string | null;
+  required_secrets: ArchiveSecretRequirement[];
+  diagnostics: ArchiveDiagnostic[];
+  next_action: ArchiveNextAction;
 }
 
 export class PortableArchiveError extends RuntimeKernelTypedError {
@@ -301,6 +359,120 @@ export async function inspectPortableArchive(input: PortableArchiveVerifyInput):
   return verifyPortableArchive(input);
 }
 
+export async function importPortableArchive(
+  ports: PortableArchiveImportPorts,
+  input: PortableArchiveImportInput,
+): Promise<PortableArchiveImportResult> {
+  if (input.target.kind === "existing_project") {
+    return importResult({
+      status: "failed",
+      archiveDigest: null,
+      requiredSecrets: [],
+      diagnostics: [diagnostic({
+        code: "PROJECT_ALREADY_EXISTS",
+        resourceType: "project",
+        resourceId: input.target.project_id,
+        message: "Portable archive v1 imports into a new local Core project only.",
+        nextAction: {
+          type: "run_command",
+          message: "Choose a new project name and retry import.",
+        },
+      })],
+      nextAction: {
+        type: "run_command",
+        message: "Retry with target.kind = 'new_project'.",
+      },
+    });
+  }
+
+  const projectName = normalizeImportProjectName(input.target.name);
+  const verification = await verifyPortableArchive({
+    archivePath: input.archivePath,
+    limits: input.limits,
+  });
+
+  if (!verification.ok) {
+    return importResult({
+      status: "failed",
+      archiveDigest: verification.archive_digest,
+      requiredSecrets: verification.required_secrets,
+      diagnostics: [
+        diagnostic({
+          code: "IMPORT_VERIFY_FAILED",
+          resourceType: "archive",
+          message: "Portable archive verification failed; Core state was not mutated.",
+          context: { diagnostic_count: verification.diagnostics.length },
+        }),
+        ...verification.diagnostics,
+      ],
+      nextAction: {
+        type: "run_command",
+        message: "Run archive verify, fix the reported archive issue, then retry import.",
+      },
+    });
+  }
+
+  const secretValues = input.secretValues ?? {};
+  const missingSecrets = verification.required_secrets.filter((secret) => secret.required && !(secret.name in secretValues));
+  if (input.requireRunnable && missingSecrets.length > 0) {
+    return importResult({
+      status: "blocked",
+      archiveDigest: verification.archive_digest,
+      projectName,
+      requiredSecrets: verification.required_secrets,
+      diagnostics: missingSecrets.map((secret) => diagnostic({
+        code: "SECRET_VALUES_REQUIRED",
+        resourceType: "secret",
+        resourceId: secret.name,
+        message: `Required secret ${secret.name} is missing.`,
+        nextAction: {
+          type: "set_secret",
+          env_var: secret.name,
+          message: "Set this secret and retry import.",
+        },
+        retryable: true,
+      })),
+      nextAction: {
+        type: "set_secret",
+        message: "Provide all required secret values or retry without requireRunnable.",
+      },
+    });
+  }
+
+  if (input.dryRun) {
+    return importResult({
+      status: "dry_run",
+      archiveDigest: verification.archive_digest,
+      projectName,
+      requiredSecrets: verification.required_secrets,
+      diagnostics: verification.diagnostics,
+      nextAction: {
+        type: "run_command",
+        message: "Run import without dryRun to create the new local Core project.",
+      },
+    });
+  }
+
+  const imported = await ports.importer.importVerifiedArchive({
+    archive_path: input.archivePath,
+    project_name: projectName,
+    verification,
+    secret_values: secretValues,
+    require_runnable: input.requireRunnable ?? false,
+  });
+
+  return importResult({
+    status: "imported",
+    archiveDigest: verification.archive_digest,
+    projectId: imported.project_id,
+    projectName: imported.project_name,
+    releaseId: imported.release_id,
+    requiredSecrets: verification.required_secrets,
+    diagnostics: verification.diagnostics,
+    nextAction: { type: "none" },
+  });
+}
+
 export async function verifyPortableArchive(input: PortableArchiveVerifyInput): Promise<PortableArchiveVerifyResult> {
   const limits = { ...DEFAULT_ARCHIVE_LIMITS, ...(input.limits ?? {}) };
   const diagnostics: ArchiveDiagnostic[] = [];
@@ -357,6 +529,7 @@ export async function verifyPortableArchive(input: PortableArchiveVerifyInput): 
       ? secretRequirements.secrets.filter(isArchiveSecretRequirement)
       : [];
     authSubjectStubCount = countAuthSubjectStubs(index, archive, diagnostics, limits);
+    addDatabaseOrderDiagnostics(index, archive, diagnostics, limits);
     diagnostics.push(...portabilityDiagnostics(portabilityReport));
   } else {
     diagnostics.push(diagnostic({
@@ -383,6 +556,38 @@ export async function verifyPortableArchive(input: PortableArchiveVerifyInput): 
     portability_report: portabilityReport,
     diagnostics,
   };
+}
+
+function importResult(input: {
+  status: PortableArchiveImportResult["status"];
+  archiveDigest: `sha256:${string}` | null;
+  requiredSecrets: ArchiveSecretRequirement[];
+  diagnostics: ArchiveDiagnostic[];
+  nextAction: ArchiveNextAction;
+  projectId?: string;
+  projectName?: string;
+  releaseId?: string | null;
+}): PortableArchiveImportResult {
+  return {
+    schema_version: "run402.project_archive.import_result.v1",
+    status: input.status,
+    archive_digest: input.archiveDigest,
+    ...(input.projectId ? { project_id: input.projectId } : {}),
+    ...(input.projectName ? { project_name: input.projectName } : {}),
+    ...(input.releaseId !== undefined ? { release_id: input.releaseId } : {}),
+    required_secrets: input.requiredSecrets,
+    diagnostics: input.diagnostics,
+    next_action: input.nextAction,
+  };
+}
+
+function normalizeImportProjectName(value: string | null | undefined): string {
+  const name = value?.trim();
+  if (!name) return "imported-project";
+  if (name.length > 120) {
+    throw new RangeError("Project name must be 120 characters or less.");
+  }
+  return name;
 }
 
 function validateLayout(layout: PortableArchiveLayout, diagnostics: ArchiveDiagnostic[]): void {
@@ -617,6 +822,49 @@ function countAuthSubjectStubs(
   const bytes = archive.entries.get(descriptor.path);
   if (!bytes) return 0;
   return parseNdjsonBytes(bytes, descriptor.path, diagnostics, limits);
+}
+
+function addDatabaseOrderDiagnostics(
+  index: PortableArchiveIndex,
+  archive: ArchiveEntries,
+  diagnostics: ArchiveDiagnostic[],
+  limits: PortableArchiveLimits,
+): void {
+  const tables = parseOptionalJsonDescriptor<ArchiveDatabaseTablesDescriptor>(
+    index,
+    archive,
+    "database.tables",
+    diagnostics,
+    limits,
+  );
+  if (!Array.isArray(tables?.tables)) return;
+  const deterministicIdentityRequired = index.annotations?.deterministic_identity === "required";
+  for (const table of tables.tables) {
+    if (!isRecord(table) || table.deterministic_order !== false) continue;
+    const tableId = typeof table.id === "string"
+      ? table.id
+      : typeof table.name === "string"
+        ? table.name
+        : undefined;
+    diagnostics.push(diagnostic({
+      code: "NON_DETERMINISTIC_TABLE_ORDER",
+      severity: deterministicIdentityRequired ? "blocking" : "warning",
+      path: "database/tables.json",
+      resourceType: "database_table",
+      resourceId: tableId,
+      message: deterministicIdentityRequired
+        ? "Archive table data is not deterministically ordered, but deterministic identity is required."
+        : "Archive table data is not deterministically ordered; import can proceed but logical identity may vary across exports.",
+      nextAction: deterministicIdentityRequired
+        ? { type: "change_export_scope", message: "Re-export with deterministic table ordering or disable deterministic identity mode." }
+        : { type: "none" },
+      retryable: deterministicIdentityRequired,
+      context: {
+        deterministic_identity_required: deterministicIdentityRequired,
+        order_by: Array.isArray(table.order_by) ? table.order_by : null,
+      },
+    }));
+  }
 }
 
 function portabilityDiagnostics(report: ArchivePortabilityReport | null): ArchiveDiagnostic[] {

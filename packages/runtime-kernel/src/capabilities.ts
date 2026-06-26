@@ -54,6 +54,7 @@ export const SUPPORTED_RUNTIME_FEATURES = [
   "archives.format.run402-project-archive-v1",
   "archives.inspect.local",
   "archives.verify.local",
+  "archives.import.local-new-project",
   "archives.transport.directory",
   "archives.transport.tar",
   "archives.untrusted-input-verifier",
@@ -79,8 +80,8 @@ export const UNSUPPORTED_RUNTIME_FEATURES = [
   "subdomains.managed",
   "domains.custom",
   "export.project-archive",
-  "import.project-archive",
   "cloud-import.project-archive",
+  "archives.import.existing-project-merge",
   "auth.hosted-oauth",
   "cloud.billing",
   "cloud.fleet-scheduling",
@@ -127,7 +128,7 @@ export interface CorePortableArchiveCapability {
   default_extension: typeof PROJECT_ARCHIVE_DEFAULT_EXTENSION;
   local_inspect: true;
   local_verify: true;
-  local_import: false;
+  local_import: true;
   cloud_import: false;
   existing_project_merge: false;
   auth_export_modes: ["none", "stubs"];
@@ -186,7 +187,7 @@ export function corePortableArchiveCapability(): CorePortableArchiveCapability {
     default_extension: PROJECT_ARCHIVE_DEFAULT_EXTENSION,
     local_inspect: true,
     local_verify: true,
-    local_import: false,
+    local_import: true,
     cloud_import: false,
     existing_project_merge: false,
     auth_export_modes: ["none", "stubs"],
@@ -206,7 +207,7 @@ export function corePortableArchiveCapability(): CorePortableArchiveCapability {
     },
     known_exclusions: [
       "Cloud export creation is implemented in Run402 Cloud, not Core.",
-      "Core import into a new local project is not activated until the importer lands.",
+      "Core imports portable archives into a new local project only.",
       "Cloud import, existing-project merge, logs export, credential export, billing, allowance, and managed operations are excluded.",
     ],
   };

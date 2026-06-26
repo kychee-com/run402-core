@@ -28,6 +28,7 @@
     "database.pre_data_sql",
     "database.tables",
     "database.data.todos",
+    "database.data.comments",
     "database.sequences",
     "database.post_data_sql",
     "auth.config",
@@ -45,14 +46,14 @@
     "release_spec": {
       "mediaType": "application/vnd.run402.release-spec.v1+json",
       "path": "manifest/release-spec.json",
-      "digest": "sha256:6cd06f24d68658f4d9bbc264eeb88d9e944ab808c65552f5826838c1f907521f",
-      "size": 952
+      "digest": "sha256:4472fd39c63a81595d384acb87d95e9fa5b63a0936aa051decfd65f9e12ca995",
+      "size": 1393
     },
     "portable_release_state": {
       "mediaType": "application/vnd.run402.portable-release-state.v1+json",
       "path": "manifest/portable-release-state.json",
-      "digest": "sha256:2e126a36bdc9cc8d689abb7cca6ad121584f8e0cbcdbf856d19fbf5093c7abbb",
-      "size": 2275
+      "digest": "sha256:323bef05935b4de1e7edf732e4e0a6ef98aca85230731379571098d88b5d806f",
+      "size": 2380
     },
     "fact_set": {
       "mediaType": "application/vnd.run402.release-fact-set.v1+json",
@@ -69,20 +70,20 @@
     "export_report": {
       "mediaType": "application/vnd.run402.project-archive.export-report.v1+json",
       "path": "manifest/export-report.json",
-      "digest": "sha256:94454c8d826cc383b32e555f949a88036898774299b6e6da6185a70e004a7b31",
+      "digest": "sha256:44e94a8ff228900c29eb6310e9da8ae8063435d34556032e039b57c7e7d0dc4b",
       "size": 427
     },
     "database.pre_data_sql": {
       "mediaType": "application/sql; dialect=postgresql",
       "path": "database/pre-data.sql",
-      "digest": "sha256:95aee5d62249a634da0fad03cba6fbd54d1fd6a919c59011cdc77546492ec2d1",
-      "size": 149
+      "digest": "sha256:48b974c80a6ab76e4686f14f384cc721a8a7235128538df814ba859b3edd9986",
+      "size": 470
     },
     "database.tables": {
       "mediaType": "application/vnd.run402.project-archive.database-tables.v1+json",
       "path": "database/tables.json",
-      "digest": "sha256:4c0b7a37d3f7cef0f7f0d49771800a610affb2d71d5ccebc2b309b2546211824",
-      "size": 572
+      "digest": "sha256:61e6304050f36d6f4ae209539da75dec8ec3989a039ecd19644a6c182b804065",
+      "size": 1221
     },
     "database.data.todos": {
       "mediaType": "application/vnd.postgresql.copy.text",
@@ -90,17 +91,23 @@
       "digest": "sha256:1f6d4179e83b9de02b287e60a23fa7cb0fda8f3f1282767fc951c2bfb23b3f08",
       "size": 85
     },
+    "database.data.comments": {
+      "mediaType": "application/vnd.postgresql.copy.text",
+      "path": "database/data/comments.copy",
+      "digest": "sha256:9eb81fa22f3c0f5b9278346b39a0a04b76fefa2a0ce526551cb10b9ea8278235",
+      "size": 74
+    },
     "database.sequences": {
       "mediaType": "application/vnd.run402.project-archive.database-sequences.v1+json",
       "path": "database/sequences.json",
-      "digest": "sha256:66c0c6dc4ba3e03739c8d4b690e265afb759234ea074e22e23199e104ac398dd",
-      "size": 205
+      "digest": "sha256:041d482234de0cd626a35b809230ad09d966fdd66755e0fe52d18dfa1587d2a3",
+      "size": 321
     },
     "database.post_data_sql": {
       "mediaType": "application/sql; dialect=postgresql",
       "path": "database/post-data.sql",
-      "digest": "sha256:b5e8b40b157972f620885864f33a9a8728d1b8580b59a58bb3baa2ab80a533b8",
-      "size": 127
+      "digest": "sha256:180a70f05de5346b9768068213f615585d8dc97e9439fb281242ebd6bd2aafed",
+      "size": 1114
     },
     "auth.config": {
       "mediaType": "application/vnd.run402.project-archive.auth-config.v1+json",
@@ -111,8 +118,8 @@
     "auth.subjects": {
       "mediaType": "application/x-ndjson; profile=run402-auth-subject-stubs-v1",
       "path": "auth/subjects.ndjson",
-      "digest": "sha256:6d59cf9f3c14795d69e5fb548a4f512152a9ac0f7d5b6314c53d32cd66f7438f",
-      "size": 166
+      "digest": "sha256:b015fab37f31619b739cac5743b9cffdff7dad2e862e24b788ed105dce244ba9",
+      "size": 204
     },
     "storage.index": {
       "mediaType": "application/vnd.run402.project-archive.storage-index.v1+json",
@@ -123,8 +130,8 @@
     "runtime.index": {
       "mediaType": "application/vnd.run402.project-archive.runtime-index.v1+json",
       "path": "runtime/index.json",
-      "digest": "sha256:c424365d0564bd4ca568361e338549672ca95ce73c48aed6e17a5eed4dec76cc",
-      "size": 888
+      "digest": "sha256:a0f3a375d40c680b4836f0ac028122cc9eb7948601d0445a1887043d865e8849",
+      "size": 883
     },
     "secret_requirements": {
       "mediaType": "application/vnd.run402.project-archive.secret-requirements.v1+json",
@@ -173,5 +180,5 @@
       "artifact_capture": "captured"
     }
   },
-  "archive_digest": "sha256:edf3259b91d7cd26c144fa169bc7b7b57c9f97625ac4f0a4a319741c24927e28"
+  "archive_digest": "sha256:db2ec06d5d9c9faeebe740492730bfa8aea45e96067183a9c93d3dc8aa2e1340"
 }
