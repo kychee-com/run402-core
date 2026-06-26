@@ -127,7 +127,7 @@ await expectPostJsonFailure("/apply/v1/plans", {
       ],
     },
   },
-}, 422, "unsupported_capability");
+}, 400, "invalid_release_spec");
 
 await applySpec(storageRoutingSpec({
   base: { release: "current" },
@@ -199,7 +199,7 @@ console.log(JSON.stringify({
     "route-miss-static-lookup",
     "private-asset-nondisclosure",
     "route-conflict-rejection",
-    "unsupported-dynamic-target",
+    "missing-dynamic-target-rejection",
   ],
 }, null, 2));
 
