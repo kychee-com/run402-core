@@ -200,6 +200,21 @@ export interface CoreFunctionInvocationResult {
   response: RoutedHttpResponseV1;
 }
 
+export type CoreFunctionInvocationStatus = "succeeded" | "failed";
+
+export interface CoreFunctionInvocationRecord {
+  request_id: string;
+  project_id: string;
+  release_id: string | null;
+  function_name: string;
+  invocation_kind: CoreFunctionInvocationInput["invocationKind"];
+  status: CoreFunctionInvocationStatus;
+  started_at: string;
+  finished_at: string;
+  duration_ms: number;
+  error_code: string | null;
+}
+
 export interface CoreFunctionLogEntry {
   timestamp: string;
   request_id: string;

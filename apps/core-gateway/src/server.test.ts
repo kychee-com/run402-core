@@ -9,11 +9,15 @@ import {
   verifyContentRefBytes,
   CORE_FUNCTION_DEPENDENCY_MODE,
   CORE_FUNCTION_RESOURCE_DEFAULTS,
+  LocalExecutorError,
   runtimeCapabilities,
   type CoreFunctionBundleMetadata,
+  type CoreFunctionInvocationRecord,
+  type CoreFunctionLogEntry,
   type CoreProject,
   type CoreStorageObject,
   type CoreUploadSession,
+  type FunctionLogPort,
   type ProjectCatalogPort,
   type SignedReadPort,
   type StorageObjectVisibility,
@@ -826,6 +830,183 @@ test("function secrets expose metadata only and inject required values before di
   assert.equal(executor.last, null);
 });
 
+test("function logs persist platform and user records with request filters", async () => {
+  const catalog = new MemoryProjectCatalog();
+  const project = await catalog.create({ name: "logged routes app" });
+  const state: PortableReleaseState = {
+    ...emptyCoreReleaseState(),
+    routes: {
+      manifest_sha256: "route-manifest-test",
+      entries: [{
+        pattern: "/api/*",
+        kind: "prefix",
+        prefix: "/api/",
+        methods: ["GET"],
+        target: { type: "function", name: "api" },
+      }],
+    },
+  };
+  const functionLogs = new MemoryFunctionLogs();
+  const executor = new MemoryFunctionExecutor({
+    logs: (input) => [userLog(input, "stdout", "hello from user code")],
+  });
+  const runtime = {
+    projects: catalog,
+    releases: new MemoryReleaseState(state),
+    content: new MemoryContentStore(),
+    functionBundles: new MemoryFunctionBundles(functionBundle("8".repeat(64), 12)),
+    functionExecutor: executor,
+    functionLogs,
+  };
+
+  const response = await coreGatewayResponse({
+    method: "GET",
+    pathname: `/projects/v1/${project.project_id}/static/api/logged`,
+  }, runtime);
+  assert.equal(response.status, 201);
+  const requestId = String(response.headers?.["X-Run402-Request-Id"]);
+  assert.match(requestId, /^req_/);
+
+  const unauthorized = await coreGatewayResponse({
+    method: "GET",
+    pathname: `/projects/v1/${project.project_id}/functions/logs?request_id=${requestId}`,
+  }, runtime);
+  assert.equal(unauthorized.status, 401);
+
+  const listed = await coreGatewayResponse({
+    method: "GET",
+    pathname: `/projects/v1/${project.project_id}/functions/logs?request_id=${requestId}&tail=10`,
+    headers: { apikey: project.service_key },
+  }, runtime);
+  assert.equal(listed.status, 200);
+  const logs = (listed.body as { logs: CoreFunctionLogEntry[] }).logs;
+  assert.ok(logs.length >= 3);
+  assert.deepEqual([...logs].sort((a, b) => a.timestamp.localeCompare(b.timestamp)), logs);
+  assert.equal(logs.every((entry) => entry.request_id === requestId), true);
+  assert.equal(logs.some((entry) => entry.stream === "platform" && entry.message.includes("function_invocation_started")), true);
+  assert.equal(logs.some((entry) => entry.stream === "stdout" && entry.message === "hello from user code"), true);
+  assert.equal(functionLogs.invocations[0]?.status, "succeeded");
+
+  const future = await coreGatewayResponse({
+    method: "GET",
+    pathname: `/projects/v1/${project.project_id}/functions/logs?request_id=${requestId}&since=2999-01-01T00:00:00.000Z`,
+    headers: { apikey: project.service_key },
+  }, runtime);
+  assert.deepEqual((future.body as { logs: CoreFunctionLogEntry[] }).logs, []);
+});
+
+test("routed function errors return sanitized request diagnostics and platform logs", async () => {
+  const catalog = new MemoryProjectCatalog();
+  const project = await catalog.create({ name: "failing routes app" });
+  const state: PortableReleaseState = {
+    ...emptyCoreReleaseState(),
+    routes: {
+      manifest_sha256: "route-manifest-test",
+      entries: [{
+        pattern: "/api/*",
+        kind: "prefix",
+        prefix: "/api/",
+        methods: ["GET"],
+        target: { type: "function", name: "api" },
+      }],
+    },
+  };
+  const functionLogs = new MemoryFunctionLogs();
+  const runtime = {
+    projects: catalog,
+    releases: new MemoryReleaseState(state),
+    content: new MemoryContentStore(),
+    functionBundles: new MemoryFunctionBundles(functionBundle("9".repeat(64), 12)),
+    functionExecutor: new MemoryFunctionExecutor({
+      error: new LocalExecutorError("raw user boom secret-value", { function_name: "api" }),
+    }),
+    functionLogs,
+  };
+
+  const response = await coreGatewayResponse({
+    method: "GET",
+    pathname: `/projects/v1/${project.project_id}/static/api/fails`,
+  }, runtime);
+  assert.equal(response.status, 500);
+  const body = response.body as { error?: string; message?: string; request_id?: string };
+  assert.equal(body.error, "local_executor_failed");
+  assert.equal(body.message, "Function invocation failed.");
+  assert.match(body.request_id ?? "", /^req_/);
+  assert.equal(response.headers?.["X-Run402-Request-Id"], body.request_id);
+  assert.equal(JSON.stringify(body).includes("raw user boom"), false);
+
+  const listed = await coreGatewayResponse({
+    method: "GET",
+    pathname: `/projects/v1/${project.project_id}/functions/logs?request_id=${body.request_id}`,
+    headers: { apikey: project.service_key },
+  }, runtime);
+  const logs = (listed.body as { logs: CoreFunctionLogEntry[] }).logs;
+  assert.equal(functionLogs.invocations[0]?.status, "failed");
+  assert.equal(logs.some((entry) => entry.stream === "platform" && entry.level === "error"), true);
+  assert.equal(logs.some((entry) => entry.message.includes("raw user boom")), false);
+  assert.equal(logs.some((entry) => entry.message.includes("/api/*") && entry.message.includes("/api/fails")), true);
+});
+
+test("function user logs are redacted before readback or direct response", async () => {
+  const catalog = new MemoryProjectCatalog();
+  const project = await catalog.create({ name: "redacted functions app" });
+  const state = emptyCoreReleaseState();
+  const secrets = new MemorySecrets();
+  await secrets.setSecret({
+    projectId: project.project_id,
+    name: "API_TOKEN",
+    value: "secret-value",
+  });
+  const bundle = functionBundle("6".repeat(64), 12);
+  bundle.required_secrets = ["API_TOKEN"];
+  const functionLogs = new MemoryFunctionLogs();
+  const executor = new MemoryFunctionExecutor({
+    logs: (input) => [
+      userLog(input, "stdout", `Authorization: Bearer abcdef123456 cookie=sessionid ${project.service_key}`),
+      userLog(input, "stderr", "x-run402-payment: paytoken API_TOKEN=secret-value api_key=abcd1234abcd1234"),
+    ],
+  });
+  const runtime = {
+    projects: catalog,
+    releases: new MemoryReleaseState(state),
+    content: new MemoryContentStore(),
+    functionBundles: new MemoryFunctionBundles(bundle),
+    functionExecutor: executor,
+    functionLogs,
+    secrets,
+  };
+
+  const invoked = await coreGatewayResponse({
+    method: "POST",
+    pathname: "/functions/v1/invoke",
+    headers: { apikey: project.service_key },
+    body: {
+      project_id: project.project_id,
+      function_name: "api",
+    },
+  }, runtime);
+  assert.equal(invoked.status, 200);
+  const directLogs = (invoked.body as { logs: CoreFunctionLogEntry[] }).logs;
+  assert.equal(directLogs.every((entry) => entry.redacted), true);
+  const directText = directLogs.map((entry) => entry.message).join("\n");
+  assert.equal(directText.includes("abcdef123456"), false);
+  assert.equal(directText.includes("sessionid"), false);
+  assert.equal(directText.includes(project.service_key), false);
+  assert.equal(directText.includes("paytoken"), false);
+  assert.equal(directText.includes("secret-value"), false);
+  assert.equal(directText.includes("abcd1234abcd1234"), false);
+
+  const requestId = (invoked.body as { request_id: string }).request_id;
+  const listed = await coreGatewayResponse({
+    method: "GET",
+    pathname: `/projects/v1/${project.project_id}/functions/logs?request_id=${requestId}`,
+    headers: { apikey: project.service_key },
+  }, runtime);
+  const storedText = (listed.body as { logs: CoreFunctionLogEntry[] }).logs.map((entry) => entry.message).join("\n");
+  assert.equal(storedText.includes("secret-value"), false);
+  assert.equal(storedText.includes("[redacted]"), true);
+});
+
 async function devAuthorization(
   runtime: Parameters<typeof coreGatewayResponse>[1],
   projectId: string,
@@ -900,6 +1081,39 @@ class MemorySecrets {
   }
 }
 
+class MemoryFunctionLogs implements FunctionLogPort {
+  readonly invocations: CoreFunctionInvocationRecord[] = [];
+  readonly logs: CoreFunctionLogEntry[] = [];
+
+  async recordInvocation(input: {
+    invocation: CoreFunctionInvocationRecord;
+    logs: CoreFunctionLogEntry[];
+  }): Promise<void> {
+    this.invocations.push(input.invocation);
+    this.logs.push(...input.logs);
+  }
+
+  async listLogs(input: {
+    projectId: string;
+    functionName?: string;
+    requestId?: string;
+    since?: string;
+    tail?: number;
+  }): Promise<CoreFunctionLogEntry[]> {
+    const sinceMs = input.since ? Date.parse(input.since) : null;
+    const filtered = this.logs.filter((entry) =>
+      entry.project_id === input.projectId &&
+      (!input.functionName || entry.function_name === input.functionName) &&
+      (!input.requestId || entry.request_id === input.requestId) &&
+      (sinceMs === null || Date.parse(entry.timestamp) >= sinceMs)
+    );
+    const tail = Math.min(Math.max(input.tail ?? 100, 1), 1000);
+    return filtered
+      .sort((a, b) => a.timestamp.localeCompare(b.timestamp))
+      .slice(-tail);
+  }
+}
+
 function secretMetadata(
   projectId: string,
   name: string,
@@ -916,15 +1130,26 @@ function secretMetadata(
   };
 }
 
+interface MemoryFunctionExecutorOptions {
+  logs?: (input: LocalFunctionExecutorInput) => CoreFunctionLogEntry[];
+  error?: Error;
+}
+
 class MemoryFunctionExecutor {
   last: LocalFunctionExecutorInput | null = null;
+  readonly #options: MemoryFunctionExecutorOptions;
+
+  constructor(options: MemoryFunctionExecutorOptions = {}) {
+    this.#options = options;
+  }
 
   async invoke(input: LocalFunctionExecutorInput): Promise<LocalFunctionExecutorResult> {
     this.last = input;
+    if (this.#options.error) throw this.#options.error;
     return {
       requestId: input.requestId,
       duration_ms: 1,
-      logs: [],
+      logs: this.#options.logs?.(input) ?? [],
       response: {
         status: 201,
         headers: [
@@ -960,6 +1185,24 @@ function functionBundle(sha256: string, size: number): CoreFunctionBundleMetadat
     require_role: null,
     class: "standard",
     capabilities: [],
+  };
+}
+
+function userLog(
+  input: LocalFunctionExecutorInput,
+  stream: "stdout" | "stderr",
+  message: string,
+): CoreFunctionLogEntry {
+  return {
+    timestamp: new Date().toISOString(),
+    request_id: input.requestId,
+    project_id: input.projectId,
+    release_id: input.releaseId,
+    function_name: input.functionName,
+    stream,
+    level: stream === "stderr" ? "error" : "info",
+    message,
+    redacted: false,
   };
 }
 

@@ -187,6 +187,9 @@ export class PostgresApplyStore implements ReleaseStatePort, ApplyPlanStorePort,
       CREATE INDEX IF NOT EXISTS core_function_logs_project_request_idx
         ON internal.core_function_logs(project_id, request_id, timestamp);
 
+      CREATE INDEX IF NOT EXISTS core_function_logs_project_timestamp_idx
+        ON internal.core_function_logs(project_id, timestamp, id);
+
       CREATE TABLE IF NOT EXISTS internal.core_applied_migrations (
         project_id text NOT NULL REFERENCES internal.core_projects(project_id) ON DELETE CASCADE,
         migration_id text NOT NULL,

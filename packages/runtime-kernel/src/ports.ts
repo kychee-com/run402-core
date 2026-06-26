@@ -10,6 +10,7 @@ import type {
   CoreFunctionBundleMetadata,
   CoreFunctionInvocationInput,
   CoreFunctionInvocationResult,
+  CoreFunctionInvocationRecord,
   CoreFunctionLogEntry,
   CoreFunctionSecretMetadata,
 } from "./functions-runtime.js";
@@ -288,6 +289,24 @@ export interface FunctionSecretPort {
     functionName: string;
     names: string[];
   }): Promise<Record<string, string>>;
+}
+
+export interface FunctionLogPort {
+  recordInvocation(input: {
+    invocation: CoreFunctionInvocationRecord;
+    logs: CoreFunctionLogEntry[];
+    retention?: {
+      maxAgeMs?: number;
+      maxBytes?: number;
+    };
+  }): Promise<void>;
+  listLogs(input: {
+    projectId: string;
+    functionName?: string;
+    requestId?: string;
+    since?: string;
+    tail?: number;
+  }): Promise<CoreFunctionLogEntry[]>;
 }
 
 export interface StoragePort {

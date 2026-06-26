@@ -6,6 +6,7 @@ import {
   createStorageReadSignature,
   encodeStorageKeyPath,
   ApplyInvariantError,
+  CORE_FUNCTION_RESOURCE_DEFAULTS,
   normalizeSha256Hex,
   normalizeStorageContentType,
   normalizeStorageKey,
@@ -17,12 +18,15 @@ import {
   type CoreImmutableObjectVersion,
   type CoreFunctionApplyEffects,
   type CoreFunctionBundleMetadata,
+  type CoreFunctionInvocationRecord,
+  type CoreFunctionLogEntry,
   type CoreFunctionSecretMetadata,
   type CoreStorageObject,
   type CoreStorageObjectList,
   type CoreUploadSession,
   type CoreStorageApplyEffects,
   type CleanupPort,
+  type FunctionLogPort,
   type FunctionSecretPort,
   type SignedReadPort,
   type StorageObjectVisibility,
@@ -106,7 +110,19 @@ interface FunctionSecretRow {
   updated_at: Date | string;
 }
 
-export class PostgresStorageStore implements StoragePort, SignedReadPort, CleanupPort, FunctionSecretPort {
+interface FunctionLogRow {
+  timestamp: Date | string;
+  request_id: string;
+  project_id: string;
+  release_id: string | null;
+  function_name: string;
+  stream: "platform" | "stdout" | "stderr";
+  level: "debug" | "info" | "warn" | "error";
+  message: string;
+  redacted: boolean;
+}
+
+export class PostgresStorageStore implements StoragePort, SignedReadPort, CleanupPort, FunctionSecretPort, FunctionLogPort {
   readonly #pool: PgPool;
   readonly #publicBaseUrl: string;
   readonly #signedReadSecret: string;
@@ -749,6 +765,167 @@ export class PostgresStorageStore implements StoragePort, SignedReadPort, Cleanu
     return out;
   }
 
+  async recordInvocation(input: {
+    invocation: CoreFunctionInvocationRecord;
+    logs: CoreFunctionLogEntry[];
+    retention?: {
+      maxAgeMs?: number;
+      maxBytes?: number;
+    };
+  }): Promise<void> {
+    const client = await this.#pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        `
+          INSERT INTO internal.core_function_invocations (
+            request_id,
+            project_id,
+            release_id,
+            function_name,
+            invocation_kind,
+            status,
+            started_at,
+            finished_at,
+            duration_ms,
+            error_code
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7::timestamptz, $8::timestamptz, $9, $10)
+          ON CONFLICT (request_id)
+          DO UPDATE SET
+            status = EXCLUDED.status,
+            finished_at = EXCLUDED.finished_at,
+            duration_ms = EXCLUDED.duration_ms,
+            error_code = EXCLUDED.error_code
+        `,
+        [
+          input.invocation.request_id,
+          input.invocation.project_id,
+          input.invocation.release_id,
+          input.invocation.function_name,
+          input.invocation.invocation_kind,
+          input.invocation.status,
+          input.invocation.started_at,
+          input.invocation.finished_at,
+          input.invocation.duration_ms,
+          input.invocation.error_code,
+        ],
+      );
+
+      for (const log of input.logs) {
+        await client.query(
+          `
+            INSERT INTO internal.core_function_logs (
+              timestamp,
+              request_id,
+              project_id,
+              release_id,
+              function_name,
+              stream,
+              level,
+              message,
+              redacted
+            )
+            VALUES ($1::timestamptz, $2, $3, $4, $5, $6, $7, $8, $9)
+          `,
+          [
+            log.timestamp,
+            log.request_id,
+            log.project_id,
+            log.release_id,
+            log.function_name,
+            log.stream,
+            log.level,
+            log.message,
+            log.redacted,
+          ],
+        );
+      }
+
+      await this.#pruneFunctionLogs(client, input.invocation.project_id, input.retention);
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async listLogs(input: {
+    projectId: string;
+    functionName?: string;
+    requestId?: string;
+    since?: string;
+    tail?: number;
+  }): Promise<CoreFunctionLogEntry[]> {
+    const limit = clampLogTail(input.tail);
+    const predicates = ["project_id = $1"];
+    const params: unknown[] = [input.projectId, limit];
+    if (input.functionName) {
+      params.push(normalizeFunctionName(input.functionName, "Function name is invalid."));
+      predicates.push(`function_name = $${params.length}`);
+    }
+    if (input.requestId) {
+      params.push(normalizeRequestId(input.requestId));
+      predicates.push(`request_id = $${params.length}`);
+    }
+    if (input.since) {
+      params.push(normalizeIsoInstant(input.since, "since"));
+      predicates.push(`timestamp >= $${params.length}::timestamptz`);
+    }
+    const result = await this.#pool.query<FunctionLogRow>(
+      `
+        WITH selected AS (
+          SELECT timestamp, request_id, project_id, release_id, function_name,
+            stream, level, message, redacted, id
+          FROM internal.core_function_logs
+          WHERE ${predicates.join(" AND ")}
+          ORDER BY timestamp DESC, id DESC
+          LIMIT $2
+        )
+        SELECT timestamp, request_id, project_id, release_id, function_name,
+          stream, level, message, redacted
+        FROM selected
+        ORDER BY timestamp ASC, id ASC
+      `,
+      params,
+    );
+    return result.rows.map(functionLogRow);
+  }
+
+  async #pruneFunctionLogs(
+    client: Pick<PgPool, "query">,
+    projectId: string,
+    retention: { maxAgeMs?: number; maxBytes?: number } | undefined,
+  ): Promise<void> {
+    const maxAgeMs = clampRetentionMs(retention?.maxAgeMs);
+    const maxBytes = clampRetentionBytes(retention?.maxBytes);
+    await client.query(
+      `
+        DELETE FROM internal.core_function_logs
+        WHERE project_id = $1
+          AND timestamp < now() - ($2::bigint * interval '1 millisecond')
+      `,
+      [projectId, maxAgeMs],
+    );
+    await client.query(
+      `
+        WITH ranked AS (
+          SELECT id,
+            SUM(octet_length(message)) OVER (ORDER BY timestamp DESC, id DESC) AS bytes_from_newest
+          FROM internal.core_function_logs
+          WHERE project_id = $1
+        )
+        DELETE FROM internal.core_function_logs logs
+        USING ranked
+        WHERE logs.id = ranked.id
+          AND ranked.bytes_from_newest > $2
+      `,
+      [projectId, maxBytes],
+    );
+  }
+
   async #applyStorageEffects(
     client: Pick<PgPool, "query">,
     projectId: string,
@@ -1108,10 +1285,63 @@ function normalizeSecretName(name: string): string {
 }
 
 function normalizeFunctionSecretName(name: string | null | undefined): string {
+  return normalizeFunctionName(name, "Function-scoped secrets require a valid function name.");
+}
+
+function normalizeFunctionName(name: string | null | undefined, message: string): string {
   if (!name || !/^[A-Za-z0-9_-]{1,64}$/.test(name)) {
-    throw new StorageValidationError("invalid_function_name", "Function-scoped secrets require a valid function name.");
+    throw new StorageValidationError("invalid_function_name", message);
   }
   return name;
+}
+
+function normalizeRequestId(requestId: string): string {
+  if (!/^req_[A-Za-z0-9_-]{6,128}$/.test(requestId)) {
+    throw new StorageValidationError("invalid_request_id", "Function log request_id is invalid.");
+  }
+  return requestId;
+}
+
+function normalizeIsoInstant(value: string, name: string): string {
+  const millis = Date.parse(value);
+  if (!Number.isFinite(millis)) {
+    throw new StorageValidationError("invalid_timestamp", `${name} must be an ISO-8601 timestamp.`);
+  }
+  return new Date(millis).toISOString();
+}
+
+function clampLogTail(value: number | undefined): number {
+  if (value === undefined) return 100;
+  if (!Number.isFinite(value) || value < 1) return 100;
+  return Math.min(Math.floor(value), 1000);
+}
+
+function clampRetentionMs(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value) || value < 60_000) {
+    return CORE_FUNCTION_RESOURCE_DEFAULTS.localLogRetentionMs;
+  }
+  return Math.min(Math.floor(value), 7 * 24 * 60 * 60 * 1000);
+}
+
+function clampRetentionBytes(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value) || value < 1024) {
+    return CORE_FUNCTION_RESOURCE_DEFAULTS.localLogRetentionBytes;
+  }
+  return Math.min(Math.floor(value), 1024 * 1024 * 1024);
+}
+
+function functionLogRow(row: FunctionLogRow): CoreFunctionLogEntry {
+  return {
+    timestamp: iso(row.timestamp),
+    request_id: row.request_id,
+    project_id: row.project_id,
+    release_id: row.release_id,
+    function_name: row.function_name,
+    stream: row.stream,
+    level: row.level,
+    message: row.message,
+    redacted: row.redacted,
+  };
 }
 
 function encodeSecretValue(value: string): string {

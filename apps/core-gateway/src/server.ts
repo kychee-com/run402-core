@@ -29,7 +29,10 @@ import {
   type ContentStorePort,
   type CoreFunctionActorContext,
   type CoreFunctionBundleMetadata,
+  type CoreFunctionInvocationRecord,
+  type CoreFunctionLogEntry,
   type CoreProject,
+  type FunctionLogPort,
   type RuntimeKernelPorts,
   type ProjectCatalogPort,
 } from "@run402/runtime-kernel";
@@ -77,6 +80,7 @@ export interface CoreGatewayRuntime {
   functions?: RuntimeKernelPorts["functions"];
   functionBundles?: FunctionBundleLookupPort;
   functionExecutor?: FunctionExecutorPort;
+  functionLogs?: FunctionLogPort;
   roleGates?: FunctionRoleGatePort;
   secrets?: RuntimeKernelPorts["secrets"];
   migrations?: RuntimeKernelPorts["migrations"];
@@ -165,6 +169,7 @@ export async function createGatewayRuntime(config: CoreGatewayConfig): Promise<C
     cleanup: storage,
     functionBundles: storage,
     functionExecutor: config.functionWorkerUrl ? new HttpFunctionWorkerClient(config.functionWorkerUrl) : undefined,
+    functionLogs: storage,
     roleGates: new PostgresFunctionRoleGateStore(pool),
     secrets: storage,
     migrations: applyStore,
@@ -634,6 +639,23 @@ export async function coreGatewayResponse(
     }
   }
 
+  const functionLogsMatch = /^\/projects\/v1\/([^/]+)\/functions\/logs$/.exec(pathname);
+  if (method === "GET" && functionLogsMatch) {
+    const logs = runtime.functionLogs;
+    if (!logs) return unavailable("function_logs_unavailable", "Run402 Core function logs are not configured.");
+    const auth = await requireProjectService(runtime, functionLogsMatch[1], headers);
+    if ("status" in auth) return auth;
+    try {
+      const listed = await logs.listLogs({
+        projectId: auth.project_id,
+        ...functionLogQuery(query),
+      });
+      return { status: 200, body: { logs: listed } };
+    } catch (error) {
+      return storageRouteError(error);
+    }
+  }
+
   if (method === "POST" && pathname === "/functions/v1/invoke") {
     try {
       const input = directInvokeInput(request.body);
@@ -1086,6 +1108,32 @@ function expectSecretScope(value: unknown): "project" | "release" | "function" {
   throw new RangeError("scope must be project, release, or function.");
 }
 
+function functionLogQuery(query: URLSearchParams): {
+  functionName?: string;
+  requestId?: string;
+  since?: string;
+  tail?: number;
+} {
+  const functionName = query.get("function_name") ?? query.get("functionName") ?? undefined;
+  const requestId = query.get("request_id") ?? query.get("requestId") ?? undefined;
+  const since = query.get("since") ?? undefined;
+  const rawTail = query.get("tail");
+  let tail: number | undefined;
+  if (rawTail !== null) {
+    tail = Number.parseInt(rawTail, 10);
+    if (!Number.isFinite(tail) || tail < 1) {
+      throw new RangeError("tail must be a positive integer.");
+    }
+    tail = Math.min(tail, 1000);
+  }
+  return {
+    ...(functionName ? { functionName } : {}),
+    ...(requestId ? { requestId } : {}),
+    ...(since ? { since } : {}),
+    ...(tail !== undefined ? { tail } : {}),
+  };
+}
+
 function createDevToken(body: unknown, secret: string): {
   token: string;
   authorization: string;
@@ -1351,12 +1399,13 @@ async function invokeRoutedFunction(
     defaultLocale: string | null;
   },
 ): Promise<CoreGatewayResult> {
+  const requestId = newFunctionRequestId();
   if (!runtime.functionExecutor || !runtime.functionBundles) {
     const error = new DynamicRuntimeUnavailableError("Run402 Core dynamic functions runtime is not configured.", {
       route_pattern: input.route.pattern,
       function_name: input.route.target.name,
     });
-    return { status: error.status, body: runtimeKernelErrorEnvelope(error) };
+    return withRequestIdHeader({ status: error.status, body: runtimeKernelErrorEnvelope(error) }, requestId);
   }
   const bundle = await runtime.functionBundles.getFunctionBundle({
     projectId: input.projectId,
@@ -1369,7 +1418,7 @@ async function invokeRoutedFunction(
       function_name: input.route.target.name,
       release_id: input.releaseId,
     });
-    return { status: error.status, body: runtimeKernelErrorEnvelope(error) };
+    return withRequestIdHeader({ status: error.status, body: runtimeKernelErrorEnvelope(error) }, requestId);
   }
 
   const gate = await resolveFunctionGate(runtime, {
@@ -1377,13 +1426,12 @@ async function invokeRoutedFunction(
     headers: input.headers,
     bundle,
   });
-  if ("status" in gate) return gate;
+  if ("status" in gate) return withRequestIdHeader(gate, requestId);
   const secrets = await resolveFunctionSecrets(runtime, input.projectId, bundle);
-  if (isGatewayResult(secrets)) return secrets;
+  if (isGatewayResult(secrets)) return withRequestIdHeader(secrets, requestId);
 
-  const requestId = `req_${randomBytes(12).toString("hex")}`;
   try {
-    const result = await runtime.functionExecutor.invoke({
+    const result = await invokeFunctionWithDiagnostics(runtime, {
       projectId: input.projectId,
       releaseId: input.releaseId,
       functionName: input.route.target.name,
@@ -1424,10 +1472,14 @@ async function invokeRoutedFunction(
           defaultLocale: input.defaultLocale,
         },
       },
+    }, secrets, {
+      routePattern: input.route.pattern,
+      method: input.method,
+      path: input.publicPath,
     });
     return functionResultToGateway(result, input.method);
   } catch (error) {
-    return applyErrorResponse(error);
+    return functionErrorToGateway(error, requestId);
   }
 }
 
@@ -1481,8 +1533,8 @@ async function invokeDirectFunction(
   const secrets = await resolveFunctionSecrets(runtime, input.projectId, bundle);
   if (isGatewayResult(secrets)) return secrets;
 
-  const requestId = `req_${randomBytes(12).toString("hex")}`;
-  const result = await runtime.functionExecutor.invoke({
+  const requestId = newFunctionRequestId();
+  const result = await invokeFunctionWithDiagnostics(runtime, {
     projectId: input.projectId,
     releaseId: base.release_id,
     functionName: input.functionName,
@@ -1491,7 +1543,7 @@ async function invokeDirectFunction(
     actor: gate.actor,
     secrets,
     bundle,
-  });
+  }, secrets);
   return {
     status: 200,
     body: {
@@ -1501,6 +1553,222 @@ async function invokeDirectFunction(
       duration_ms: result.duration_ms,
     },
   };
+}
+
+interface FunctionDiagnosticsContext {
+  routePattern?: string;
+  method?: string;
+  path?: string;
+}
+
+async function invokeFunctionWithDiagnostics(
+  runtime: CoreGatewayRuntime,
+  input: LocalFunctionExecutorInput,
+  secrets: Record<string, string>,
+  context: FunctionDiagnosticsContext = {},
+): Promise<LocalFunctionExecutorResult> {
+  if (!runtime.functionExecutor) {
+    throw new DynamicRuntimeUnavailableError("Run402 Core dynamic functions runtime is not configured.", {
+      function_name: input.functionName,
+    });
+  }
+  const startedAt = new Date();
+  const startedLog = platformLog(input, "info", {
+    event: "function_invocation_started",
+    invocation_kind: input.invocationKind,
+    ...context,
+  }, startedAt);
+
+  try {
+    const result = await runtime.functionExecutor.invoke(input);
+    const finishedAt = new Date();
+    const redactionValues = await functionRedactionValues(runtime, input.projectId, secrets);
+    const userLogs = redactFunctionLogs(result.logs, redactionValues);
+    const durationMs = Math.max(0, result.duration_ms ?? finishedAt.getTime() - startedAt.getTime());
+    const completedLog = platformLog(input, "info", {
+      event: "function_invocation_completed",
+      invocation_kind: input.invocationKind,
+      status: result.response.status,
+      duration_ms: durationMs,
+      ...context,
+    }, finishedAt);
+    await recordFunctionInvocation(runtime, {
+      input,
+      status: "succeeded",
+      startedAt,
+      finishedAt,
+      durationMs,
+      errorCode: null,
+      logs: [startedLog, ...userLogs, completedLog],
+    });
+    return {
+      ...result,
+      logs: userLogs,
+      duration_ms: durationMs,
+    };
+  } catch (error) {
+    const finishedAt = new Date();
+    const durationMs = Math.max(0, finishedAt.getTime() - startedAt.getTime());
+    const errorCode = runtimeErrorCode(error);
+    const failedLog = platformLog(input, "error", {
+      event: "function_invocation_failed",
+      invocation_kind: input.invocationKind,
+      error: errorCode,
+      status: runtimeErrorStatus(error),
+      duration_ms: durationMs,
+      ...context,
+    }, finishedAt);
+    await recordFunctionInvocation(runtime, {
+      input,
+      status: "failed",
+      startedAt,
+      finishedAt,
+      durationMs,
+      errorCode,
+      logs: [startedLog, failedLog],
+    });
+    throw error;
+  }
+}
+
+async function recordFunctionInvocation(
+  runtime: CoreGatewayRuntime,
+  input: {
+    input: LocalFunctionExecutorInput;
+    status: CoreFunctionInvocationRecord["status"];
+    startedAt: Date;
+    finishedAt: Date;
+    durationMs: number;
+    errorCode: string | null;
+    logs: CoreFunctionLogEntry[];
+  },
+): Promise<void> {
+  if (!runtime.functionLogs) return;
+  await runtime.functionLogs.recordInvocation({
+    invocation: {
+      request_id: input.input.requestId,
+      project_id: input.input.projectId,
+      release_id: input.input.releaseId,
+      function_name: input.input.functionName,
+      invocation_kind: input.input.invocationKind,
+      status: input.status,
+      started_at: input.startedAt.toISOString(),
+      finished_at: input.finishedAt.toISOString(),
+      duration_ms: input.durationMs,
+      error_code: input.errorCode,
+    },
+    logs: input.logs,
+    retention: {
+      maxAgeMs: CORE_FUNCTION_RESOURCE_DEFAULTS.localLogRetentionMs,
+      maxBytes: CORE_FUNCTION_RESOURCE_DEFAULTS.localLogRetentionBytes,
+    },
+  });
+}
+
+function platformLog(
+  input: LocalFunctionExecutorInput,
+  level: CoreFunctionLogEntry["level"],
+  message: Record<string, unknown>,
+  timestamp = new Date(),
+): CoreFunctionLogEntry {
+  return {
+    timestamp: timestamp.toISOString(),
+    request_id: input.requestId,
+    project_id: input.projectId,
+    release_id: input.releaseId,
+    function_name: input.functionName,
+    stream: "platform",
+    level,
+    message: stableLogJson(message),
+    redacted: false,
+  };
+}
+
+function stableLogJson(record: Record<string, unknown>): string {
+  return JSON.stringify(Object.fromEntries(Object.entries(record).sort(([a], [b]) => a.localeCompare(b))));
+}
+
+async function functionRedactionValues(
+  runtime: CoreGatewayRuntime,
+  projectId: string,
+  secrets: Record<string, string>,
+): Promise<string[]> {
+  const values = new Set<string>();
+  for (const value of Object.values(secrets)) {
+    if (value) values.add(value);
+  }
+  if (runtime.jwtSecret) values.add(runtime.jwtSecret);
+  const project = await runtime.projects?.inspect(projectId).catch(() => null);
+  if (project) {
+    values.add(project.service_key);
+    values.add(project.anon_key);
+  }
+  return [...values].filter((value) => Buffer.byteLength(value) >= 4).sort((a, b) => b.length - a.length);
+}
+
+function redactFunctionLogs(
+  logs: CoreFunctionLogEntry[],
+  knownValues: readonly string[],
+): CoreFunctionLogEntry[] {
+  return logs.map((entry) => {
+    const redacted = redactLogMessage(entry.message, knownValues);
+    return {
+      ...entry,
+      message: redacted.message,
+      redacted: entry.redacted || redacted.redacted,
+    };
+  });
+}
+
+function redactLogMessage(message: string, knownValues: readonly string[]): { message: string; redacted: boolean } {
+  let output = message;
+  for (const value of knownValues) {
+    output = output.split(value).join("[redacted]");
+  }
+  output = output
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{6,}\b/gi, "Bearer [redacted]")
+    .replace(/\b(authorization|cookie|set-cookie|apikey|api-key|x-api-key|x-run402-payment|x-402-payment|payment|service[_-]?key|token|secret)\s*[:=]\s*[^ \r\n\t,;]+/gi, "$1=[redacted]")
+    .replace(/\b(?:sk|pk|rk|r402|run402|secret|token|api[_-]?key)[A-Za-z0-9_-]*[:=_-][A-Za-z0-9._~+/=-]{8,}\b/gi, "[redacted]");
+  return {
+    message: output,
+    redacted: output !== message,
+  };
+}
+
+function runtimeErrorCode(error: unknown): string {
+  return error instanceof RuntimeKernelTypedError ? error.code : "internal_error";
+}
+
+function runtimeErrorStatus(error: unknown): number {
+  return error instanceof RuntimeKernelTypedError ? error.status : 500;
+}
+
+function functionErrorToGateway(error: unknown, requestId: string): CoreGatewayResult {
+  const status = runtimeErrorStatus(error);
+  const code = runtimeErrorCode(error);
+  return {
+    status,
+    headers: { "X-Run402-Request-Id": requestId },
+    body: {
+      error: code,
+      message: "Function invocation failed.",
+      request_id: requestId,
+    },
+  };
+}
+
+function withRequestIdHeader(result: CoreGatewayResult, requestId: string): CoreGatewayResult {
+  return {
+    ...result,
+    headers: {
+      ...result.headers,
+      "X-Run402-Request-Id": requestId,
+    },
+  };
+}
+
+function newFunctionRequestId(): string {
+  return `req_${randomBytes(12).toString("hex")}`;
 }
 
 async function resolveFunctionGate(
