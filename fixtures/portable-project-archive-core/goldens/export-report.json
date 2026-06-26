@@ -1,0 +1,19 @@
+{
+  "schema_version": "run402.project_archive.export_report.v1",
+  "export_scope": "portable-runtime-v1",
+  "auth_export": "stubs",
+  "consistency": "core_fixture_v1",
+  "omitted_sensitive_resource_count": 0,
+  "unsupported_resource_count": 1,
+  "counts": {
+    "tables": 1,
+    "rows": 2,
+    "storage_objects": 2,
+    "functions": 2,
+    "auth_subject_stubs": 2
+  },
+  "bytes": {
+    "storage": 130,
+    "runtime": 194
+  }
+}

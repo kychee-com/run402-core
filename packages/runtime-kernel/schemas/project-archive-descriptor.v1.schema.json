@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://run402.com/schemas/project-archive-descriptor.v1.schema.json",
+  "title": "Run402 Project Archive Descriptor v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["mediaType", "digest", "size"],
+  "properties": {
+    "mediaType": {
+      "type": "string",
+      "minLength": 1
+    },
+    "digest": {
+      "$ref": "#/$defs/sha256_digest"
+    },
+    "size": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "path": {
+      "$ref": "#/$defs/archive_path"
+    },
+    "annotations": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    }
+  },
+  "$defs": {
+    "sha256_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "archive_path": {
+      "type": "string",
+      "minLength": 1,
+      "not": {
+        "anyOf": [
+          { "pattern": "^/" },
+          { "pattern": "\\\\" },
+          { "pattern": "(^|/)\\.\\.(/|$)" },
+          { "pattern": "(^|/)\\.(/|$)" },
+          { "pattern": "//" },
+          { "pattern": "[\\u0000-\\u001f\\u007f]" }
+        ]
+      }
+    }
+  }
+}

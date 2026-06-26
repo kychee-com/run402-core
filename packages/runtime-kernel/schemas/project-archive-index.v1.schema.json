@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://run402.com/schemas/project-archive-index.v1.schema.json",
+  "title": "Run402 Project Archive Index v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "archive_version",
+    "mediaType",
+    "core_compatibility",
+    "source",
+    "required_capabilities",
+    "identity_descriptors",
+    "descriptors"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "run402.project_archive.index.v1"
+    },
+    "archive_version": {
+      "const": "run402-project-archive.v1"
+    },
+    "mediaType": {
+      "const": "application/vnd.run402.project-archive.index.v1+json"
+    },
+    "archive_digest": {
+      "$ref": "#/$defs/sha256_digest"
+    },
+    "core_compatibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runtime_kernel", "release_spec"],
+      "properties": {
+        "runtime_kernel": { "type": "string", "minLength": 1 },
+        "release_spec": { "type": "string", "minLength": 1 }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["platform"],
+      "properties": {
+        "platform": {
+          "enum": ["run402-cloud", "run402-core", "run402-core-fixture"]
+        },
+        "label": {
+          "type": "string"
+        }
+      }
+    },
+    "required_capabilities": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "identity_descriptors": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "descriptors": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "https://run402.com/schemas/project-archive-descriptor.v1.schema.json"
+      }
+    },
+    "consistency": {
+      "$ref": "#/$defs/consistency"
+    },
+    "annotations": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    }
+  },
+  "$defs": {
+    "sha256_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "consistency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode"],
+      "properties": {
+        "mode": {
+          "enum": ["cloud_write_pause_v1", "core_fixture_v1"]
+        },
+        "pinned_release_id": {
+          "type": ["string", "null"]
+        },
+        "started_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "completed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "database": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "postgres_version": { "type": "string" },
+            "snapshot": { "type": ["string", "null"] },
+            "wal_lsn": { "type": ["string", "null"] }
+          }
+        },
+        "storage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mutation_pause"],
+          "properties": {
+            "mutation_pause": {
+              "enum": ["not_applicable", "paused", "unavailable"]
+            }
+          }
+        },
+        "runtime": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["artifact_capture"],
+          "properties": {
+            "artifact_capture": {
+              "enum": ["captured", "not_applicable", "unavailable"]
+            }
+          }
+        }
+      }
+    }
+  }
+}

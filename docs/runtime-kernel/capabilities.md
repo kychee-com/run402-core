@@ -33,6 +33,9 @@
 - one Node 22 ESM SSR target with Web `Request` input and buffered Web `Response` output
 - SSR fallback after static aliases, public assets, prerendered HTML, and function routes
 - inherited function runtime request IDs, logs, required secrets, env allowlist, timeout, body/response caps, and trusted-local-code isolation profile
+- portable archive Developer Preview verification for `run402-project-archive.v1`
+- offline archive inspect/verify from directory and uncompressed tar transports
+- content-addressed archive descriptors, canonical logical digest computation, duplicate JSON key rejection, and untrusted-input safety checks
 
 ## Explicitly Unsupported
 
@@ -50,10 +53,17 @@ Unsupported required capabilities fail with `unsupported_capability`.
 - `site.patch`
 - hosted OAuth
 - managed subdomains and custom domains
-- export/import
+- Cloud archive export creation
+- Core project archive import and existing-project archive merge
 - Cloud import
 - Cloud billing, fleet scheduling, managed backups, monitoring, and abuse controls
 
 ## Route Subset
 
 The current server serves active-release entries from `site.public_paths` explicit or implicit mode, exact static alias routes, supported function targets, and one `astro.ssr.v1` fallback. Resolution order is explicit static alias, public static asset path, prerendered static HTML, dynamic function route, Astro SSR fallback, then 404. Core does not provide global routing compatibility, custom domains, CDN invalidation, arbitrary SPA fallback, or managed edge operations in this slice.
+
+## Portable Archive Subset
+
+Core can inspect and verify `run402-project-archive.v1` archives locally without Cloud credentials. Verification checks integrity and compatibility only; an archive remains untrusted input. Core rejects unsafe paths, links, device entries, duplicate paths, duplicate JSON object keys, unsupported required capabilities, unsupported media types, digest mismatches, missing blobs, excessive file count, excessive expanded size, excessive descriptor size, and excessive descriptor depth.
+
+Archive import into a new local project is still outside this slice. Cloud import, existing-project merge import, logs export, credential export, billing/allowance state, managed backups, custom domains, global routing, and managed production operations remain unsupported.

@@ -4,6 +4,13 @@ import {
   releasePackageInfo,
 } from "@run402/release";
 import {
+  PROJECT_ARCHIVE_DEFAULT_EXTENSION,
+  PROJECT_ARCHIVE_TRANSPORTS,
+  PROJECT_ARCHIVE_VERSION,
+  SUPPORTED_ARCHIVE_CAPABILITIES,
+  type PortableArchiveLimits,
+} from "./archive.js";
+import {
   coreAstroSsrRuntimeCapability,
   type CoreAstroSsrRuntimeCapability,
   coreFunctionRuntimeCapability,
@@ -44,6 +51,12 @@ export const SUPPORTED_RUNTIME_FEATURES = [
   "astro.ssr.fallback.local",
   "astro.ssr.static-precedence",
   "astro.ssr.trusted-local-code",
+  "archives.format.run402-project-archive-v1",
+  "archives.inspect.local",
+  "archives.verify.local",
+  "archives.transport.directory",
+  "archives.transport.tar",
+  "archives.untrusted-input-verifier",
 ] as const;
 
 export const UNSUPPORTED_RUNTIME_FEATURES = [
@@ -104,6 +117,33 @@ export interface RuntimeCapabilityDocument {
   };
   functions_runtime: CoreFunctionRuntimeCapability;
   astro_ssr_runtime: CoreAstroSsrRuntimeCapability;
+  portable_archives: CorePortableArchiveCapability;
+}
+
+export interface CorePortableArchiveCapability {
+  maturity: "developer_preview";
+  format_versions: [typeof PROJECT_ARCHIVE_VERSION];
+  transports: Array<(typeof PROJECT_ARCHIVE_TRANSPORTS)[number]>;
+  default_extension: typeof PROJECT_ARCHIVE_DEFAULT_EXTENSION;
+  local_inspect: true;
+  local_verify: true;
+  local_import: false;
+  cloud_import: false;
+  existing_project_merge: false;
+  auth_export_modes: ["none", "stubs"];
+  required_capabilities: Array<(typeof SUPPORTED_ARCHIVE_CAPABILITIES)[number]>;
+  limits: Pick<PortableArchiveLimits, "maxDescriptorDepth" | "maxDescriptorBytes"> & {
+    max_files_default: number;
+    max_expanded_bytes_default: number;
+  };
+  untrusted_archive_model: {
+    safe_path_required: true;
+    rejects_links_and_devices: true;
+    rejects_duplicate_json_keys: true;
+    verifies_descriptor_digests: true;
+    verifies_blob_digests: true;
+  };
+  known_exclusions: string[];
 }
 
 export function runtimeCapabilities(version = "0.1.1"): RuntimeCapabilityDocument {
@@ -134,5 +174,40 @@ export function runtimeCapabilities(version = "0.1.1"): RuntimeCapabilityDocumen
     },
     functions_runtime: coreFunctionRuntimeCapability(),
     astro_ssr_runtime: coreAstroSsrRuntimeCapability(),
+    portable_archives: corePortableArchiveCapability(),
+  };
+}
+
+export function corePortableArchiveCapability(): CorePortableArchiveCapability {
+  return {
+    maturity: "developer_preview",
+    format_versions: [PROJECT_ARCHIVE_VERSION],
+    transports: [...PROJECT_ARCHIVE_TRANSPORTS],
+    default_extension: PROJECT_ARCHIVE_DEFAULT_EXTENSION,
+    local_inspect: true,
+    local_verify: true,
+    local_import: false,
+    cloud_import: false,
+    existing_project_merge: false,
+    auth_export_modes: ["none", "stubs"],
+    required_capabilities: [...SUPPORTED_ARCHIVE_CAPABILITIES],
+    limits: {
+      maxDescriptorDepth: 64,
+      maxDescriptorBytes: 2 * 1024 * 1024,
+      max_files_default: 20_000,
+      max_expanded_bytes_default: 512 * 1024 * 1024,
+    },
+    untrusted_archive_model: {
+      safe_path_required: true,
+      rejects_links_and_devices: true,
+      rejects_duplicate_json_keys: true,
+      verifies_descriptor_digests: true,
+      verifies_blob_digests: true,
+    },
+    known_exclusions: [
+      "Cloud export creation is implemented in Run402 Cloud, not Core.",
+      "Core import into a new local project is not activated until the importer lands.",
+      "Cloud import, existing-project merge, logs export, credential export, billing, allowance, and managed operations are excluded.",
+    ],
   };
 }

@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://run402.com/schemas/project-archive-import-result.v1.schema.json",
+  "title": "Run402 Project Archive Import Result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "status", "archive_digest", "diagnostics"],
+  "properties": {
+    "schema_version": {
+      "const": "run402.project_archive.import_result.v1"
+    },
+    "status": {
+      "enum": ["verified", "dry_run", "imported", "blocked", "failed"]
+    },
+    "project_id": {
+      "type": "string"
+    },
+    "project_name": {
+      "type": "string"
+    },
+    "archive_digest": {
+      "type": ["string", "null"],
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "release_id": {
+      "type": ["string", "null"]
+    },
+    "required_secrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    },
+    "diagnostics": {
+      "type": "array",
+      "items": {
+        "$ref": "https://run402.com/schemas/project-archive-portability-report.v1.schema.json#/$defs/entry"
+      }
+    },
+    "next_action": {
+      "$ref": "https://run402.com/schemas/project-archive-portability-report.v1.schema.json#/$defs/next_action"
+    }
+  }
+}

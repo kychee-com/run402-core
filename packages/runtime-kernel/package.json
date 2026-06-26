@@ -9,10 +9,12 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    }
+    },
+    "./schemas/*": "./schemas/*"
   },
   "files": [
     "dist",
+    "schemas",
     "README.md",
     "LICENSE"
   ],

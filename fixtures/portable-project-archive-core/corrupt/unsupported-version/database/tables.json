@@ -1,0 +1,29 @@
+{
+  "schema_version": "run402.project_archive.database_tables.v1",
+  "tables": [
+    {
+      "id": "todos",
+      "schema": "public",
+      "name": "todos",
+      "copy_path": "database/data/todos.copy",
+      "row_count": 2,
+      "columns": [
+        {
+          "name": "id",
+          "type": "bigint",
+          "nullable": false
+        },
+        {
+          "name": "owner_id",
+          "type": "text",
+          "nullable": false
+        },
+        {
+          "name": "title",
+          "type": "text",
+          "nullable": false
+        }
+      ]
+    }
+  ]
+}

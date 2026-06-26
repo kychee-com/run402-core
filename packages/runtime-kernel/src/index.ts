@@ -1,4 +1,5 @@
 export * from "./apply.js";
+export * from "./archive.js";
 export * from "./capabilities.js";
 export * from "./errors.js";
 export * from "./functions-runtime.js";

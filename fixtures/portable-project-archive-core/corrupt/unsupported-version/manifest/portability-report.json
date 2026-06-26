@@ -1,0 +1,39 @@
+{
+  "schema_version": "run402.project_archive.portability_report.v1",
+  "entries": [
+    {
+      "code": "AUTH_SUBJECT_STUBS_IMPORTED",
+      "severity": "info",
+      "resource_type": "auth_subject",
+      "message": "Disabled auth subject stubs preserve database references but cannot sign in.",
+      "next_action": {
+        "type": "none"
+      },
+      "retryable": false
+    },
+    {
+      "code": "SECRET_VALUES_REQUIRED",
+      "severity": "warning",
+      "resource_type": "secret",
+      "resource_id": "OPENAI_API_KEY",
+      "message": "Set OPENAI_API_KEY before requiring runnable import.",
+      "next_action": {
+        "type": "set_secret",
+        "env_var": "OPENAI_API_KEY"
+      },
+      "retryable": true
+    },
+    {
+      "code": "CLOUD_ONLY_FEATURE_EXCLUDED",
+      "severity": "warning",
+      "resource_type": "custom_domain",
+      "resource_id": "example.com",
+      "message": "Custom domains are Cloud operations and are not runnable state in Core archive v1.",
+      "next_action": {
+        "type": "remove_unsupported_feature",
+        "message": "Recreate custom domains in your target platform."
+      },
+      "retryable": false
+    }
+  ]
+}

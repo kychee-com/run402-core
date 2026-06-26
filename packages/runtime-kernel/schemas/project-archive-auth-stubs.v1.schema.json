@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://run402.com/schemas/project-archive-auth-stubs.v1.schema.json",
+  "title": "Run402 Project Archive Auth Stubs v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["subject_id", "disabled"],
+  "properties": {
+    "subject_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "disabled": {
+      "const": true
+    },
+    "references": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    }
+  }
+}

@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://run402.com/schemas/project-archive-portability-report.v1.schema.json",
+  "title": "Run402 Project Archive Portability Report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "entries"],
+  "properties": {
+    "schema_version": {
+      "const": "run402.project_archive.portability_report.v1"
+    },
+    "entries": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/entry" }
+    }
+  },
+  "$defs": {
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "severity", "resource_type", "message", "next_action", "retryable"],
+      "properties": {
+        "code": { "type": "string", "minLength": 1 },
+        "severity": { "enum": ["info", "warning", "blocking"] },
+        "resource_type": { "type": "string", "minLength": 1 },
+        "resource_id": { "type": "string" },
+        "path": { "type": "string" },
+        "message": { "type": "string", "minLength": 1 },
+        "next_action": { "$ref": "#/$defs/next_action" },
+        "retryable": { "type": "boolean" },
+        "context": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "next_action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "enum": [
+            "run_command",
+            "set_secret",
+            "change_export_scope",
+            "remove_unsupported_feature",
+            "retry_later",
+            "contact_support",
+            "read_docs",
+            "none"
+          ]
+        },
+        "command": { "type": "string" },
+        "env_var": { "type": "string" },
+        "docs_url": { "type": "string", "format": "uri" },
+        "message": { "type": "string" }
+      }
+    }
+  }
+}

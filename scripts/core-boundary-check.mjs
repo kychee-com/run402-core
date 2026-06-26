@@ -12,6 +12,7 @@ const checkedRoots = [
   "docker",
   "fixtures/astro-ssr-core",
   "fixtures/functions-runtime-core",
+  "fixtures/portable-project-archive-core",
   "fixtures/runtime-kernel-static-rest",
   "fixtures/storage-routing-core",
   "scripts",
@@ -40,6 +41,40 @@ const forbiddenText = [
   "tenantId",
   "billing_ledger",
   "operator_only",
+];
+const archiveForbiddenText = [
+  "tenant_id",
+  "tenantId",
+  "provider_account_id",
+  "providerAccountId",
+  "aurora_cluster",
+  "auroraCluster",
+  "CloudWatch",
+  "cloudwatch",
+  "log_group",
+  "logGroup",
+  "log_stream",
+  "logStream",
+  "fleet_id",
+  "fleetId",
+  "scheduler_id",
+  "schedulerId",
+  "billing_ledger",
+  "billingLedger",
+  "allowance_id",
+  "allowanceId",
+  "spend_cap",
+  "spendCap",
+  "abuse_decision",
+  "abuseDecision",
+  "support_note",
+  "supportNote",
+  "operator_note",
+  "operatorNote",
+  "signed_url",
+  "signedUrl",
+  "secret_value",
+  "secretValue",
 ];
 const forbiddenImports = [
   "@aws-sdk/",
@@ -80,6 +115,13 @@ for (const relativeRoot of checkedRoots) {
     for (const forbidden of forbiddenText) {
       if (text.includes(forbidden)) {
         failures.push(`${relative(file)} contains forbidden text: ${forbidden}`);
+      }
+    }
+    if (isArchiveBoundaryFile(file)) {
+      for (const forbidden of archiveForbiddenText) {
+        if (text.includes(forbidden)) {
+          failures.push(`${relative(file)} contains forbidden archive metadata marker: ${forbidden}`);
+        }
       }
     }
     for (const line of text.split("\n")) {
@@ -212,4 +254,10 @@ function isTextFile(name) {
 
 function relative(file) {
   return path.relative(root, file);
+}
+
+function isArchiveBoundaryFile(file) {
+  const rel = relative(file);
+  return rel.startsWith("fixtures/portable-project-archive-core/") ||
+    rel.startsWith("packages/runtime-kernel/schemas/");
 }

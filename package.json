@@ -37,7 +37,8 @@
     "core:functions": "node scripts/core-functions-smoke.mjs",
     "core:astro-ssr": "node scripts/core-astro-ssr-smoke.mjs",
     "core:conformance": "npm run core:apply-smoke && npm run core:storage-routing && npm run core:functions && npm run core:astro-ssr",
-    "core:boundary": "node scripts/core-boundary-check.mjs"
+    "core:boundary": "node scripts/core-boundary-check.mjs",
+    "fixtures:portable-archive": "node --import tsx scripts/generate-portable-archive-fixture.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

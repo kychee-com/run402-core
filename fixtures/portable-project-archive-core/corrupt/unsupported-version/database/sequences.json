@@ -1,0 +1,11 @@
+{
+  "schema_version": "run402.project_archive.database_sequences.v1",
+  "sequences": [
+    {
+      "schema": "public",
+      "name": "todos_id_seq",
+      "value": "2",
+      "is_called": true
+    }
+  ]
+}

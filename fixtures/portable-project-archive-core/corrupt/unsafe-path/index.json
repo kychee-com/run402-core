@@ -1,0 +1,176 @@
+{
+  "schema_version": "run402.project_archive.index.v1",
+  "archive_version": "run402-project-archive.v1",
+  "mediaType": "application/vnd.run402.project-archive.index.v1+json",
+  "core_compatibility": {
+    "runtime_kernel": ">=0.1.5",
+    "release_spec": "run402.release_spec.v1"
+  },
+  "source": {
+    "platform": "run402-core-fixture",
+    "label": "public portable archive fixture"
+  },
+  "required_capabilities": [
+    "run402.core.release-state.v1",
+    "run402.core.database.phased-postgres-copy.v1",
+    "run402.core.storage.cas.v1",
+    "run402.core.functions.node22.v1",
+    "run402.core.astro-ssr.v1",
+    "run402.core.auth-stubs.v1",
+    "run402.core.secret-requirements.v1"
+  ],
+  "identity_descriptors": [
+    "release_spec",
+    "portable_release_state",
+    "fact_set",
+    "portability_report",
+    "database.pre_data_sql",
+    "database.tables",
+    "database.data.todos",
+    "database.sequences",
+    "database.post_data_sql",
+    "auth.config",
+    "auth.subjects",
+    "storage.index",
+    "runtime.index",
+    "secret_requirements",
+    "secret_env_template",
+    "blob.static.index",
+    "blob.storage.public",
+    "blob.function.api",
+    "blob.function.ssr"
+  ],
+  "descriptors": {
+    "release_spec": {
+      "mediaType": "application/vnd.run402.release-spec.v1+json",
+      "path": "manifest/release-spec.json",
+      "digest": "sha256:6cd06f24d68658f4d9bbc264eeb88d9e944ab808c65552f5826838c1f907521f",
+      "size": 952
+    },
+    "portable_release_state": {
+      "mediaType": "application/vnd.run402.portable-release-state.v1+json",
+      "path": "manifest/portable-release-state.json",
+      "digest": "sha256:2e126a36bdc9cc8d689abb7cca6ad121584f8e0cbcdbf856d19fbf5093c7abbb",
+      "size": 2275
+    },
+    "fact_set": {
+      "mediaType": "application/vnd.run402.release-fact-set.v1+json",
+      "path": "manifest/fact-set.json",
+      "digest": "sha256:49dedad8d98887694570e60c27b7afe33a05872256148d544362bbf8f02d1bc9",
+      "size": 619
+    },
+    "portability_report": {
+      "mediaType": "application/vnd.run402.project-archive.portability-report.v1+json",
+      "path": "manifest/portability-report.json",
+      "digest": "sha256:3bc7f5fd2343107f5df97b29fb2f7b30cc53edbcfaa1f67053cb93b4805ff69d",
+      "size": 1178
+    },
+    "export_report": {
+      "mediaType": "application/vnd.run402.project-archive.export-report.v1+json",
+      "path": "../export-report.json",
+      "digest": "sha256:94454c8d826cc383b32e555f949a88036898774299b6e6da6185a70e004a7b31",
+      "size": 427
+    },
+    "database.pre_data_sql": {
+      "mediaType": "application/sql; dialect=postgresql",
+      "path": "database/pre-data.sql",
+      "digest": "sha256:95aee5d62249a634da0fad03cba6fbd54d1fd6a919c59011cdc77546492ec2d1",
+      "size": 149
+    },
+    "database.tables": {
+      "mediaType": "application/vnd.run402.project-archive.database-tables.v1+json",
+      "path": "database/tables.json",
+      "digest": "sha256:4c0b7a37d3f7cef0f7f0d49771800a610affb2d71d5ccebc2b309b2546211824",
+      "size": 572
+    },
+    "database.data.todos": {
+      "mediaType": "application/vnd.postgresql.copy.text",
+      "path": "database/data/todos.copy",
+      "digest": "sha256:1f6d4179e83b9de02b287e60a23fa7cb0fda8f3f1282767fc951c2bfb23b3f08",
+      "size": 85
+    },
+    "database.sequences": {
+      "mediaType": "application/vnd.run402.project-archive.database-sequences.v1+json",
+      "path": "database/sequences.json",
+      "digest": "sha256:66c0c6dc4ba3e03739c8d4b690e265afb759234ea074e22e23199e104ac398dd",
+      "size": 205
+    },
+    "database.post_data_sql": {
+      "mediaType": "application/sql; dialect=postgresql",
+      "path": "database/post-data.sql",
+      "digest": "sha256:b5e8b40b157972f620885864f33a9a8728d1b8580b59a58bb3baa2ab80a533b8",
+      "size": 127
+    },
+    "auth.config": {
+      "mediaType": "application/vnd.run402.project-archive.auth-config.v1+json",
+      "path": "auth/config.json",
+      "digest": "sha256:8a43abad41983071392033e924d574111775e7043effada05eaf21010cd3de0b",
+      "size": 139
+    },
+    "auth.subjects": {
+      "mediaType": "application/x-ndjson; profile=run402-auth-subject-stubs-v1",
+      "path": "auth/subjects.ndjson",
+      "digest": "sha256:6d59cf9f3c14795d69e5fb548a4f512152a9ac0f7d5b6314c53d32cd66f7438f",
+      "size": 166
+    },
+    "storage.index": {
+      "mediaType": "application/vnd.run402.project-archive.storage-index.v1+json",
+      "path": "storage/index.json",
+      "digest": "sha256:1fb58268282038d6f6b9ded6f3af82af91daf0be08799e1dd0abbdccd6e05b18",
+      "size": 926
+    },
+    "runtime.index": {
+      "mediaType": "application/vnd.run402.project-archive.runtime-index.v1+json",
+      "path": "runtime/index.json",
+      "digest": "sha256:c424365d0564bd4ca568361e338549672ca95ce73c48aed6e17a5eed4dec76cc",
+      "size": 888
+    },
+    "secret_requirements": {
+      "mediaType": "application/vnd.run402.project-archive.secret-requirements.v1+json",
+      "path": "secrets/requirements.json",
+      "digest": "sha256:00e7e743d902bce3ec5289b0cf21ee51bc199d4075b46aff3c4f649a28f23ca4",
+      "size": 259
+    },
+    "secret_env_template": {
+      "mediaType": "text/plain; profile=run402-required-env-template-v1",
+      "path": "secrets/required.env.template",
+      "digest": "sha256:a6fa3fba3845bda1b64b03eb365c97d2b87b402303e01aa912f93a71e2475126",
+      "size": 16
+    },
+    "blob.static.index": {
+      "mediaType": "application/octet-stream",
+      "path": "blobs/sha256/d9f5613b7b61289760c1a69dcf586412bf665978fb49dee673dcaf9c1308e887",
+      "digest": "sha256:d9f5613b7b61289760c1a69dcf586412bf665978fb49dee673dcaf9c1308e887",
+      "size": 95
+    },
+    "blob.storage.public": {
+      "mediaType": "application/octet-stream",
+      "path": "blobs/sha256/4c9ca00e1494af814a638b1cdd4d061e53fb200879ff9c374a72eb14b1442a27",
+      "digest": "sha256:4c9ca00e1494af814a638b1cdd4d061e53fb200879ff9c374a72eb14b1442a27",
+      "size": 35
+    },
+    "blob.function.api": {
+      "mediaType": "application/octet-stream",
+      "path": "blobs/sha256/22962145d8c4024cf8f3b1f95565675f77824f13daa04c6740ed5fd17bc6298b",
+      "digest": "sha256:22962145d8c4024cf8f3b1f95565675f77824f13daa04c6740ed5fd17bc6298b",
+      "size": 105
+    },
+    "blob.function.ssr": {
+      "mediaType": "application/octet-stream",
+      "path": "blobs/sha256/a729e40888aa6ec1ed065a852f8047ec57120b8fdb98870a0546de6920de0daf",
+      "digest": "sha256:a729e40888aa6ec1ed065a852f8047ec57120b8fdb98870a0546de6920de0daf",
+      "size": 89
+    }
+  },
+  "consistency": {
+    "mode": "core_fixture_v1",
+    "pinned_release_id": "rel_public_portable_archive_fixture_v1",
+    "storage": {
+      "mutation_pause": "not_applicable"
+    },
+    "runtime": {
+      "artifact_capture": "captured"
+    }
+  },
+  "archive_digest": "sha256:43df72f602176a3da1089c817a5f3092589334af11f9d6fb562f53c43c23b674"
+}

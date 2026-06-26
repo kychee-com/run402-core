@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://run402.com/schemas/project-archive-storage-index.v1.schema.json",
+  "title": "Run402 Project Archive Storage Index v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "objects"],
+  "properties": {
+    "schema_version": {
+      "const": "run402.project_archive.storage_index.v1"
+    },
+    "objects": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key", "visibility", "content_type", "size", "digest", "blob_path"],
+        "properties": {
+          "key": { "type": "string", "minLength": 1 },
+          "visibility": { "enum": ["public", "private"] },
+          "content_type": { "type": "string", "minLength": 1 },
+          "cache_control": { "type": "string" },
+          "immutable": { "type": "boolean" },
+          "size": { "type": "integer", "minimum": 0 },
+          "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+          "blob_path": { "type": "string", "minLength": 1 },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      }
+    }
+  }
+}

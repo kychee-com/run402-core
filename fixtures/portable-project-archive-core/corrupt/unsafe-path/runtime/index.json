@@ -1,0 +1,29 @@
+{
+  "schema_version": "run402.project_archive.runtime_index.v1",
+  "functions": [
+    {
+      "name": "api",
+      "runtime": "node22",
+      "entrypoint": "index.mjs",
+      "artifact_digest": "sha256:22962145d8c4024cf8f3b1f95565675f77824f13daa04c6740ed5fd17bc6298b",
+      "artifact_path": "blobs/sha256/22962145d8c4024cf8f3b1f95565675f77824f13daa04c6740ed5fd17bc6298b",
+      "required_secrets": [
+        "OPENAI_API_KEY"
+      ],
+      "class": "standard"
+    },
+    {
+      "name": "ssr",
+      "runtime": "node22",
+      "entrypoint": "server.mjs",
+      "artifact_digest": "sha256:a729e40888aa6ec1ed065a852f8047ec57120b8fdb98870a0546de6920de0daf",
+      "artifact_path": "blobs/sha256/a729e40888aa6ec1ed065a852f8047ec57120b8fdb98870a0546de6920de0daf",
+      "required_secrets": [],
+      "class": "ssr"
+    }
+  ],
+  "astro_ssr": {
+    "enabled": true,
+    "function": "ssr"
+  }
+}

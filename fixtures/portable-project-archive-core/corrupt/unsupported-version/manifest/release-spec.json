@@ -1,0 +1,52 @@
+{
+  "project": "portable-archive-fixture",
+  "base": {
+    "release": "empty"
+  },
+  "database": {
+    "migrations": [
+      {
+        "id": "001_archive_fixture",
+        "checksum": "sha256:8bb7e9214568f6f4d7a0b2e1e122b6236c59b15a8d038d2ee04a35597d4fef77",
+        "sql": "create table todos (id bigint primary key, owner_id text not null, title text not null);"
+      }
+    ],
+    "expose": {
+      "schemas": [
+        "public"
+      ],
+      "tables": [
+        "todos"
+      ]
+    }
+  },
+  "secrets": {
+    "require": [
+      "OPENAI_API_KEY"
+    ]
+  },
+  "routes": {
+    "replace": [
+      {
+        "pattern": "/api",
+        "methods": [
+          "GET"
+        ],
+        "target": {
+          "type": "function",
+          "name": "api"
+        }
+      },
+      {
+        "pattern": "/*",
+        "methods": [
+          "GET"
+        ],
+        "target": {
+          "type": "function",
+          "name": "ssr"
+        }
+      }
+    ]
+  }
+}

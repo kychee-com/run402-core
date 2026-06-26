@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://run402.com/schemas/project-archive-database-tables.v1.schema.json",
+  "title": "Run402 Project Archive Database Tables v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "tables"],
+  "properties": {
+    "schema_version": {
+      "const": "run402.project_archive.database_tables.v1"
+    },
+    "tables": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name", "copy_path", "row_count"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "schema": { "type": "string" },
+          "name": { "type": "string", "minLength": 1 },
+          "copy_path": { "type": "string", "minLength": 1 },
+          "row_count": { "type": "integer", "minimum": 0 },
+          "columns": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["name", "type"],
+              "properties": {
+                "name": { "type": "string", "minLength": 1 },
+                "type": { "type": "string", "minLength": 1 },
+                "nullable": { "type": "boolean" }
+              }
+            }
+          },
+          "digest": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://run402.com/schemas/project-archive-runtime-index.v1.schema.json",
+  "title": "Run402 Project Archive Runtime Index v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version"],
+  "properties": {
+    "schema_version": {
+      "const": "run402.project_archive.runtime_index.v1"
+    },
+    "functions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "runtime", "artifact_digest", "artifact_path"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "runtime": { "const": "node22" },
+          "entrypoint": { "type": "string" },
+          "artifact_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+          "artifact_path": { "type": "string", "minLength": 1 },
+          "required_secrets": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "class": { "enum": ["standard", "ssr"] }
+        }
+      }
+    },
+    "astro_ssr": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "function": { "type": "string" }
+      }
+    }
+  }
+}

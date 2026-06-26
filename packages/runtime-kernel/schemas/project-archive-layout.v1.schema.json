@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://run402.com/schemas/project-archive-layout.v1.schema.json",
+  "title": "Run402 Project Archive Layout v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "archive_version",
+    "mediaType",
+    "index",
+    "blobs",
+    "transports",
+    "checksum_lists_authoritative"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "run402.project_archive.layout.v1"
+    },
+    "archive_version": {
+      "const": "run402-project-archive.v1"
+    },
+    "mediaType": {
+      "const": "application/vnd.run402.project-archive.layout.v1+json"
+    },
+    "index": {
+      "const": "index.json"
+    },
+    "blobs": {
+      "const": "blobs/sha256"
+    },
+    "transports": {
+      "type": "array",
+      "contains": { "const": "directory" },
+      "items": {
+        "enum": ["directory", "tar"]
+      },
+      "uniqueItems": true
+    },
+    "checksum_lists_authoritative": {
+      "const": false
+    }
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://run402.com/schemas/project-archive-export-report.v1.schema.json",
+  "title": "Run402 Project Archive Export Report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "export_scope", "auth_export", "consistency"],
+  "properties": {
+    "schema_version": {
+      "const": "run402.project_archive.export_report.v1"
+    },
+    "export_scope": {
+      "const": "portable-runtime-v1"
+    },
+    "auth_export": {
+      "enum": ["none", "stubs"]
+    },
+    "consistency": {
+      "enum": ["cloud_write_pause_v1", "core_fixture_v1"]
+    },
+    "omitted_sensitive_resource_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "unsupported_resource_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 0
+      }
+    },
+    "bytes": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 0
+      }
+    }
+  }
+}
