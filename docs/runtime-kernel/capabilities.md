@@ -22,7 +22,12 @@
 - Core Functions Developer Preview contract for trusted local Node 22 functions
 - pre-bundled function source refs with no external npm dependencies
 - function bundle content digest verification during apply commit
-- function route targets that fail closed with typed dynamic-runtime errors until the worker executor is configured
+- routed HTTP function targets through the local worker executor
+- service-key local direct function invocation
+- `requireAuth` and `requireRole` gates with generated local user/role context
+- local function secrets with metadata-only readback and required-secret commit/invocation checks
+- structured local function logs, generated request IDs, timestamp/request-id/tail filters, retention pruning, and best-effort stdout/stderr redaction
+- function route targets that fail closed with typed dynamic-runtime errors when the worker executor is not configured
 - machine-readable functions isolation profile, resource defaults, dependency policy, and known exclusions
 
 ## Explicitly Unsupported
@@ -44,6 +49,6 @@ Unsupported required capabilities fail with `unsupported_capability`.
 - Cloud import
 - Cloud billing, fleet scheduling, managed backups, monitoring, and abuse controls
 
-## Static Route Subset
+## Route Subset
 
-The current static server serves active-release entries from `site.public_paths` explicit or implicit mode and exact static alias routes. Function targets are recognized in the route manifest and fail closed with `dynamic_runtime_unavailable` until the worker executor is configured. SSR targets remain unsupported. Core does not provide global routing compatibility, custom domains, CDN invalidation, SPA fallback, or managed edge operations in this slice.
+The current server serves active-release entries from `site.public_paths` explicit or implicit mode, exact static alias routes, and supported function targets. SSR targets remain unsupported. Core does not provide global routing compatibility, custom domains, CDN invalidation, SPA fallback, or managed edge operations in this slice.

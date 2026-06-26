@@ -53,6 +53,13 @@ const forbiddenImports = [
   "s3",
   "S3",
 ];
+const requiredRedactionFixtureMarkers = [
+  "Authorization: Bearer",
+  "cookie=sessionid",
+  "x-run402-payment",
+  "API_TOKEN=",
+  "api_key=",
+];
 
 const failures = [];
 const packageManifests = [];
@@ -80,6 +87,13 @@ for (const relativeRoot of checkedRoots) {
       packageManifests.push(relative(file));
       checkPackageManifest(file, JSON.parse(text));
     }
+  }
+}
+
+const redactionFixture = await readFile(path.join(root, "fixtures/functions-runtime-core/functions/api-v1.mjs"), "utf8");
+for (const marker of requiredRedactionFixtureMarkers) {
+  if (!redactionFixture.includes(marker)) {
+    failures.push(`functions redaction fixture is missing marker: ${marker}`);
   }
 }
 

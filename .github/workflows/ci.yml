@@ -42,6 +42,9 @@ jobs:
       - name: Core boundary check
         run: npm run core:boundary
 
+      - name: Core Compose config
+        run: docker compose config --quiet
+
       - name: Core Compose boot
         run: docker compose up -d postgres postgrest core
 

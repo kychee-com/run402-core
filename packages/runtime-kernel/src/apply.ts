@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  canonicalizeJson,
   digestApplyRequest,
   digestMaterializedRelease,
   emptyPortableReleaseState,
@@ -425,10 +426,12 @@ function isEmptyFunctionEffects(effects: CoreFunctionApplyEffects): boolean {
 }
 
 function stableFunctionSlice(state: PortableReleaseState): string {
-  return JSON.stringify({
-    functions: state.functions,
-    dynamic_routes: state.routes.entries.filter((entry) => entry.target.type === "function"),
-    secrets: state.secrets.keys,
+  return canonicalizeJson({
+    functions: [...state.functions].sort((a, b) => a.name.localeCompare(b.name)),
+    dynamic_routes: state.routes.entries
+      .filter((entry) => entry.target.type === "function")
+      .sort((a, b) => a.pattern.localeCompare(b.pattern) || (a.methods ?? []).join(",").localeCompare((b.methods ?? []).join(","))),
+    secrets: [...state.secrets.keys].sort(),
   });
 }
 

@@ -53,7 +53,7 @@ The child environment is allowlisted:
 - `RUN402_FUNCTION_NAME`
 - `RUN402_REQUEST_ID`
 
-Gateway secrets, database URLs, host environment variables, npm tokens, and operator credentials are not inherited. App secrets are not injected yet; section 5 owns local secret metadata and invocation injection.
+Gateway secrets, database URLs, host environment variables, npm tokens, and operator credentials are not inherited. Declared app secrets are injected only when they are required by the active release and present in the local Core secret store. Secret values are never returned by read APIs.
 
 Current hardening limits:
 
@@ -94,14 +94,43 @@ Temp-dir byte quotas and `node_modules` byte quotas are documented resource defa
 | dependencies | no external deps; platform package `@run402/functions` only |
 | route targets | `{ "type": "function", "name": "..." }` in route manifests |
 | routed envelope | `run402.routed_http.v1` |
-| direct invoke | typed local surface, executor pending |
-| auth gates | typed local surface, enforcement pending |
+| direct invoke | local `/functions/v1/invoke`, service-key authorized |
+| auth gates | `requireAuth` enforced before user-code dispatch |
 | role gates | `cacheTtl: 0` only; positive cache TTL rejected |
-| secrets | metadata/port contract first; value injection pending |
-| logs | worker stdout/stderr capture first; listing/retention API pending |
+| secrets | local metadata APIs, required-secret commit checks, target invocation injection, no readback |
+| logs | structured platform logs, capped stdout/stderr capture, service-key log reads, request-id/since/tail filters, retention pruning |
 | Astro SSR | unsupported; separate follow-up |
 | schedules/background jobs | unsupported |
 | WebSockets/streaming | unsupported |
+
+## Local Secrets
+
+Set and list local function secrets through Core preview endpoints:
+
+```bash
+curl -X POST "$CORE_URL/projects/v1/$PROJECT_ID/functions/secrets" \
+  -H "content-type: application/json" \
+  -H "apikey: $SERVICE_KEY" \
+  -d '{"name":"API_TOKEN","value":"local-secret"}'
+
+curl "$CORE_URL/projects/v1/$PROJECT_ID/functions/secrets" \
+  -H "apikey: $SERVICE_KEY"
+```
+
+The list response contains metadata only: name, scope, function name, and timestamps. A release that declares `secrets.require` fails commit with `missing_required_secret` until all required names exist. If a required value disappears after activation, invocation fails closed before user code runs.
+
+## Logs And Diagnostics
+
+Routed dynamic responses include `X-Run402-Request-Id: req_...`. Logs can be read with the project service key:
+
+```bash
+curl "$CORE_URL/projects/v1/$PROJECT_ID/functions/logs?request_id=$REQUEST_ID&tail=100" \
+  -H "apikey: $SERVICE_KEY"
+```
+
+Supported filters are `request_id`, `function_name`, `since` as an ISO-8601 timestamp, and `tail` capped at 1000 rows. Responses are chronological within the selected tail. Platform log messages are structured JSON strings and intentionally omit headers, bodies, raw env, provider metadata, and raw user exception text. User stdout/stderr is capped and best-effort redacted for known secret values, authorization/cookie/payment/service-key patterns, and secret-looking tokens.
+
+Local retention defaults to 10 MiB or 24h, whichever prunes first. The cleanup path reports function log cleanup counts; bundle-directory cleanup remains conservative in Developer Preview and must preserve active release references.
 
 ## Dependency Policy
 

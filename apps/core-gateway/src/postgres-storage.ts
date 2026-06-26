@@ -1072,6 +1072,7 @@ export class PostgresStorageStore implements StoragePort, SignedReadPort, Cleanu
     removed_objects: number;
     removed_versions: number;
     removed_cas_objects: number;
+    removed_function_logs: number;
     retained_live_sha256: string[];
   }> {
     const projectPredicate = projectId ? "AND project_id = $1" : "";
@@ -1093,6 +1094,14 @@ export class PostgresStorageStore implements StoragePort, SignedReadPort, Cleanu
           ${projectPredicate}
       `,
       params,
+    );
+    const expiredFunctionLogs = await this.#pool.query(
+      `
+        DELETE FROM internal.core_function_logs
+        WHERE timestamp < now() - ($${params.length + 1}::bigint * interval '1 millisecond')
+          ${projectPredicate}
+      `,
+      [...params, CORE_FUNCTION_RESOURCE_DEFAULTS.localLogRetentionMs],
     );
     const live = await this.#pool.query<{ sha256: string }>(
       `
@@ -1154,6 +1163,7 @@ export class PostgresStorageStore implements StoragePort, SignedReadPort, Cleanu
       removed_objects: 0,
       removed_versions: expiredVersions.rowCount ?? 0,
       removed_cas_objects: 0,
+      removed_function_logs: expiredFunctionLogs.rowCount ?? 0,
       retained_live_sha256: live.rows.map((row) => row.sha256),
     };
   }

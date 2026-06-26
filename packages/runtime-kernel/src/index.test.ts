@@ -588,6 +588,74 @@ test("function reapply with identical bundle and routes is a no-op", async () =>
   assert.deepEqual(order, ["plan.markCommitted"]);
 });
 
+test("function no-op comparison tolerates JSONB key and array ordering", async () => {
+  const source = Buffer.from("export default async function handler() { return { status: 200 }; }\n");
+  const sourceSha = sha256Hex(source);
+  const sourceRef = {
+    sha256: sourceSha,
+    size: source.byteLength,
+    contentType: "application/javascript",
+  };
+  const spec = {
+    project: "prj_0000000000000001",
+    base: { release: "empty" },
+    secrets: { require: ["API_TOKEN"] },
+    functions: {
+      replace: {
+        api: { runtime: "node22", source: sourceRef },
+        admin: {
+          runtime: "node22",
+          source: sourceRef,
+          requireAuth: true,
+          requireRole: {
+            table: "members",
+            idColumn: "user_id",
+            roleColumn: "role",
+            allowed: ["admin"],
+            cacheTtl: 0,
+          },
+        },
+      },
+    },
+    routes: {
+      replace: [
+        { pattern: "/api/*", target: { type: "function", name: "api" } },
+        { pattern: "/admin/*", target: { type: "function", name: "admin" } },
+      ],
+    },
+  };
+  const secretPorts = new MemoryRuntimePorts({
+    contentPresent: true,
+    secrets: new MemorySecretPort({ API_TOKEN: "secret-value" }),
+  });
+
+  const firstPlan = await createApplyPlan(secretPorts, { spec });
+  const firstResult = await commitApplyPlan(secretPorts, { plan_id: firstPlan.plan_id });
+  assert.equal(firstResult.status, "committed");
+
+  const current = await secretPorts.releases.getBase("prj_0000000000000001", "current");
+  const jsonbLike = JSON.parse(JSON.stringify(current.state)) as typeof current.state;
+  const admin = jsonbLike.functions.find((entry) => entry.name === "admin");
+  if (admin?.require_role) {
+    admin.require_role = {
+      allowed: admin.require_role.allowed,
+      cacheTtl: admin.require_role.cacheTtl,
+      roleColumn: admin.require_role.roleColumn,
+      idColumn: admin.require_role.idColumn,
+      table: admin.require_role.table,
+    };
+  }
+  secretPorts.seedRelease(firstResult.release_id, jsonbLike);
+
+  const secondPlan = await createApplyPlan(secretPorts, {
+    spec: {
+      ...spec,
+      base: { release: "current" },
+    },
+  });
+  assert.equal(secondPlan.noop, true);
+});
+
 test("function commit rejects stale plans before staging content", async () => {
   const ports = new MemoryRuntimePorts({ contentPresent: true });
   const plan = await createApplyPlan(ports, {

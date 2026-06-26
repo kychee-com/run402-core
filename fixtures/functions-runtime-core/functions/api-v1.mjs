@@ -1,3 +1,5 @@
+import { auth } from "@run402/functions";
+
 const VERSION = "v1";
 const RESPONSE_LIMIT_BYTES = 6 * 1024 * 1024;
 
@@ -27,6 +29,12 @@ export default async function handler(event) {
         locale: event.context.locale,
         defaultLocale: event.context.defaultLocale,
       }, 203);
+    case "/api/logs":
+      console.log(`fixture log Authorization: Bearer abcdef123456 cookie=sessionid API_TOKEN=${process.env.API_TOKEN ?? ""}`);
+      console.error("fixture payment x-run402-payment: paytoken api_key=abcd1234abcd1234");
+      return jsonResponse({ logged: true, requestId: event.context.requestId, version: VERSION });
+    case "/api/throw":
+      throw new Error(`fixture uncaught raw ${process.env.API_TOKEN ?? ""}`);
     case "/api/binary":
       return bytesResponse(Buffer.from([0, 1, 2, 255]), "application/octet-stream");
     case "/api/cookies":
@@ -48,6 +56,25 @@ export default async function handler(event) {
       return jsonResponse({ tooSlow: true });
     case "/api/version":
       return jsonResponse({ version: VERSION });
+    case "/auth/user": {
+      const user = await auth.user();
+      return jsonResponse({
+        authenticated: Boolean(user),
+        userId: user?.id ?? null,
+        headerUserId: headerValue(event.headers, "x-run402-user-id"),
+        role: await auth.role(),
+      });
+    }
+    case "/admin/role":
+      return jsonResponse({
+        role: await auth.role(),
+        headerRole: headerValue(event.headers, "x-run402-user-role"),
+      });
+    case "/secret/value":
+      return jsonResponse({
+        hasSecret: process.env.API_TOKEN === "core-secret-value",
+        secretLength: process.env.API_TOKEN?.length ?? 0,
+      });
     default:
       return jsonResponse({ path: event.path, version: VERSION });
   }
@@ -80,4 +107,9 @@ function bytesResponse(bytes, contentType) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function headerValue(headers, name) {
+  const found = headers.find(([candidate]) => candidate.toLowerCase() === name.toLowerCase());
+  return found?.[1] ?? null;
 }

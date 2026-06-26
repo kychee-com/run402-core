@@ -19,6 +19,11 @@ Default credentials are local-development credentials. Do not expose this stack 
 - trusted-code functions Developer Preview capability fields
 - explicit functions resource defaults and dependency policy
 - pre-bundled/no-external-deps function apply validation
+- function code runs outside the gateway process in the Compose worker path
+- local auth/role gates run before function dispatch
+- required function secrets fail closed and secret values are never returned by list APIs
+- platform diagnostics omit headers, bodies, env, provider metadata, and raw user exception text
+- user stdout/stderr is capped and best-effort redacted
 
 ## Not Included
 
