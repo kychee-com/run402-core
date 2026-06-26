@@ -1,5 +1,6 @@
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import {
+  CORE_FUNCTION_RESOURCE_DEFAULTS,
   runtimeKernelErrorEnvelope,
   RuntimeKernelTypedError,
   type CoreFunctionBundleMetadata,
@@ -86,10 +87,15 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
   for await (const chunk of req) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     size += buffer.byteLength;
-    if (size > 1024 * 1024) throw new RangeError("Function worker request body is too large.");
+    if (size > workerInvokeBodyLimit()) throw new RangeError("Function worker request body is too large.");
     chunks.push(buffer);
   }
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+}
+
+function workerInvokeBodyLimit(): number {
+  return Math.ceil((CORE_FUNCTION_RESOURCE_DEFAULTS.requestBodyLimitBytes + 1024) * 4 / 3) +
+    1024 * 1024;
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {

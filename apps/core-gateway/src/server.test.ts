@@ -522,6 +522,7 @@ test("dynamic static routes invoke local functions with routed HTTP envelope", a
   assert.match(String(response.headers?.["X-Run402-Request-Id"]), /^req_/);
   assert.deepEqual(response.headers?.["Set-Cookie"], ["a=1; Path=/", "b=2; Path=/"]);
   assert.equal(response.headers?.["Cache-Control"], "private, no-store");
+  assert.equal(response.headers?.["x-run402-cache"], "dynamic-bypass");
   assert.equal(response.headers?.connection, undefined);
 
   const invocation = executor.last;

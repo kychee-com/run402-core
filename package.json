@@ -34,7 +34,8 @@
     "core:smoke": "node scripts/core-project-smoke.mjs",
     "core:apply-smoke": "node scripts/core-apply-smoke.mjs",
     "core:storage-routing": "node scripts/core-storage-routing-smoke.mjs",
-    "core:conformance": "npm run core:apply-smoke && npm run core:storage-routing",
+    "core:functions": "node scripts/core-functions-smoke.mjs",
+    "core:conformance": "npm run core:apply-smoke && npm run core:storage-routing && npm run core:functions",
     "core:boundary": "node scripts/core-boundary-check.mjs"
   },
   "devDependencies": {

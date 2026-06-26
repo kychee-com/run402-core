@@ -1426,6 +1426,7 @@ function functionResultToGateway(result: LocalFunctionExecutorResult, method: st
   headers["X-Run402-Request-Id"] = result.requestId;
   if (!headerValue(headers, "Cache-Control")) {
     headers["Cache-Control"] = "private, no-store";
+    headers["x-run402-cache"] = "dynamic-bypass";
   }
   if (!headerValue(headers, "Content-Length")) {
     headers["Content-Length"] = String(body.byteLength);

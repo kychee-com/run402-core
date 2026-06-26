@@ -1,4 +1,5 @@
 import {
+  DynamicRuntimeUnavailableError,
   LocalExecutorError,
   RuntimeKernelTypedError,
   type RuntimeKernelTypedErrorDetails,
@@ -16,11 +17,19 @@ export class HttpFunctionWorkerClient {
   }
 
   async invoke(input: LocalFunctionExecutorInput): Promise<LocalFunctionExecutorResult> {
-    const response = await fetch(`${this.#baseUrl}/invoke`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(input),
-    });
+    let response: Response;
+    try {
+      response = await fetch(`${this.#baseUrl}/invoke`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input),
+      });
+    } catch (error) {
+      throw new DynamicRuntimeUnavailableError("Run402 Core function worker is unavailable.", {
+        function_name: input.functionName,
+        cause: error instanceof Error ? error.message : String(error),
+      });
+    }
     const body = await response.json().catch(() => null) as {
       error?: string;
       message?: string;

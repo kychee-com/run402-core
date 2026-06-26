@@ -1,0 +1,83 @@
+const VERSION = "v1";
+const RESPONSE_LIMIT_BYTES = 6 * 1024 * 1024;
+
+export default async function handler(event) {
+  console.log(`functions-runtime fixture ${VERSION} ${event.requestId}`);
+  if (event.invocationKind === "direct" || !event.version) {
+    return jsonResponse({
+      kind: event.invocationKind,
+      requestId: event.requestId,
+      version: VERSION,
+    });
+  }
+
+  const url = new URL(event.url);
+  switch (event.path) {
+    case "/api/json":
+      return jsonResponse({
+        version: VERSION,
+        method: event.method,
+        path: event.path,
+        rawQuery: event.rawQuery,
+        requestId: event.context.requestId,
+        cookie: event.cookies.raw,
+        body: event.body ? Buffer.from(event.body.data, "base64").toString("utf8") : null,
+        headers: event.headers,
+        routePattern: event.context.routePattern,
+        locale: event.context.locale,
+        defaultLocale: event.context.defaultLocale,
+      }, 203);
+    case "/api/binary":
+      return bytesResponse(Buffer.from([0, 1, 2, 255]), "application/octet-stream");
+    case "/api/cookies":
+      return {
+        status: 302,
+        headers: [["location", "/next"]],
+        cookies: ["a=1; Path=/", "b=2; Path=/"],
+        body: null,
+      };
+    case "/api/cors":
+      return jsonResponse({ cors: true }, 200, [["access-control-allow-origin", "https://allowed.example"]]);
+    case "/api/large":
+      return bytesResponse(Buffer.alloc(RESPONSE_LIMIT_BYTES + 1, "x"), "text/plain");
+    case "/api/sleep":
+      await sleep(Math.min(Number(url.searchParams.get("ms") ?? "100"), 2_000));
+      return jsonResponse({ slept: true, version: VERSION });
+    case "/api/slow":
+      await sleep(11_000);
+      return jsonResponse({ tooSlow: true });
+    case "/api/version":
+      return jsonResponse({ version: VERSION });
+    default:
+      return jsonResponse({ path: event.path, version: VERSION });
+  }
+}
+
+function jsonResponse(value, status = 200, headers = []) {
+  const bytes = Buffer.from(JSON.stringify(value), "utf8");
+  return {
+    status,
+    headers: [["content-type", "application/json; charset=utf-8"], ...headers],
+    body: {
+      encoding: "base64",
+      data: bytes.toString("base64"),
+      size: bytes.byteLength,
+    },
+  };
+}
+
+function bytesResponse(bytes, contentType) {
+  return {
+    status: 200,
+    headers: [["content-type", contentType]],
+    body: {
+      encoding: "base64",
+      data: bytes.toString("base64"),
+      size: bytes.byteLength,
+    },
+  };
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}

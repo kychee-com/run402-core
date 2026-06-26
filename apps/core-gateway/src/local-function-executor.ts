@@ -191,7 +191,7 @@ export class LocalFunctionExecutor {
       child.stderr.setEncoding("utf8");
       child.stdout.on("data", (chunk: string) => {
         stdout += chunk;
-        if (stdout.length > 1024 * 1024 && !settled) {
+        if (Buffer.byteLength(stdout) > controlStdoutLimit(this.#responseBodyLimitBytes) && !settled) {
           settled = true;
           clearTimeout(timeout);
           killChildTree(child);
@@ -296,6 +296,12 @@ function enforceResponseLimit(
 ): void {
   const size = response.body?.size ?? 0;
   if (size > limitBytes) throw new ResponseBodyTooLargeError(limitBytes);
+}
+
+function controlStdoutLimit(responseBodyLimitBytes: number): number {
+  return Math.ceil((responseBodyLimitBytes + 1024) * 4 / 3) +
+    CORE_FUNCTION_RESOURCE_DEFAULTS.stdoutStderrLimitBytes +
+    1024 * 1024;
 }
 
 function safeSegment(value: string): string {

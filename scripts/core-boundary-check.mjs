@@ -10,6 +10,7 @@ const checkedRoots = [
   "apps/core-gateway",
   "packages/runtime-kernel",
   "docker",
+  "fixtures/functions-runtime-core",
   "fixtures/runtime-kernel-static-rest",
   "fixtures/storage-routing-core",
   "scripts",
