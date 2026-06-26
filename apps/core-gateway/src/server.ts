@@ -605,6 +605,21 @@ export async function coreGatewayResponse(
     return await staticDiagnostics(runtime, auth.project_id);
   }
 
+  if (method === "POST" && pathname === "/functions/v1/invoke") {
+    try {
+      const input = directInvokeInput(request.body);
+      const auth = await requireProjectService(runtime, input.project_id, headers);
+      if ("status" in auth) return auth;
+      return await invokeDirectFunction(runtime, {
+        projectId: auth.project_id,
+        functionName: input.function_name,
+        releaseId: input.release_id,
+      });
+    } catch (error) {
+      return applyErrorResponse(error);
+    }
+  }
+
   if (pathname.startsWith("/functions")) {
     const error = new DynamicRuntimeUnavailableError();
     return { status: error.status, body: runtimeKernelErrorEnvelope(error) };
@@ -980,6 +995,28 @@ function commitInput(body: unknown): { release_spec_digest?: string } {
   return { release_spec_digest: digest };
 }
 
+function directInvokeInput(body: unknown): {
+  project_id: string;
+  function_name: string;
+  release_id?: string;
+} {
+  if (body === undefined || body === null || typeof body !== "object" || Array.isArray(body)) {
+    throw new RangeError("Direct invoke body must be a JSON object.");
+  }
+  const record = body as Record<string, unknown>;
+  const projectId = expectString(record.project_id ?? record.projectId, "project_id");
+  const functionName = expectString(record.function_name ?? record.functionName, "function_name");
+  const releaseId = record.release_id ?? record.releaseId;
+  if (releaseId !== undefined && typeof releaseId !== "string") {
+    throw new RangeError("release_id must be a string.");
+  }
+  return {
+    project_id: projectId,
+    function_name: functionName,
+    ...(releaseId ? { release_id: releaseId } : {}),
+  };
+}
+
 function createDevToken(body: unknown, secret: string): {
   token: string;
   authorization: string;
@@ -1310,6 +1347,75 @@ async function invokeRoutedFunction(
   } catch (error) {
     return applyErrorResponse(error);
   }
+}
+
+async function invokeDirectFunction(
+  runtime: CoreGatewayRuntime,
+  input: {
+    projectId: string;
+    functionName: string;
+    releaseId?: string;
+  },
+): Promise<CoreGatewayResult> {
+  if (!runtime.releases) {
+    return unavailable("runtime_kernel_unavailable", "Run402 Core runtime kernel is not fully configured.");
+  }
+  if (!runtime.functionExecutor || !runtime.functionBundles) {
+    const error = new DynamicRuntimeUnavailableError();
+    return { status: error.status, body: runtimeKernelErrorEnvelope(error) };
+  }
+  const base = await runtime.releases.getBase(
+    input.projectId,
+    input.releaseId ? { release_id: input.releaseId } : "current",
+  );
+  if (!base.release_id) {
+    return {
+      status: 404,
+      body: {
+        error: "release_not_found",
+        message: "Project has no active release for direct function invocation.",
+      },
+    };
+  }
+  const bundle = await runtime.functionBundles.getFunctionBundle({
+    projectId: input.projectId,
+    releaseId: base.release_id,
+    functionName: input.functionName,
+  });
+  if (!bundle) {
+    const error = new DynamicRuntimeUnavailableError("Run402 Core function bundle metadata is not available.", {
+      function_name: input.functionName,
+      release_id: base.release_id,
+    });
+    return { status: error.status, body: runtimeKernelErrorEnvelope(error) };
+  }
+  if (bundle.require_auth || bundle.require_role) {
+    const error = new DynamicRuntimeUnavailableError("Run402 Core direct invoke auth gates are not configured yet.", {
+      function_name: input.functionName,
+      require_auth: bundle.require_auth,
+      require_role: bundle.require_role !== null,
+    });
+    return { status: error.status, body: runtimeKernelErrorEnvelope(error) };
+  }
+
+  const requestId = `req_${randomBytes(12).toString("hex")}`;
+  const result = await runtime.functionExecutor.invoke({
+    projectId: input.projectId,
+    releaseId: base.release_id,
+    functionName: input.functionName,
+    invocationKind: "direct",
+    requestId,
+    bundle,
+  });
+  return {
+    status: 200,
+    body: {
+      request_id: result.requestId,
+      response: result.response,
+      logs: result.logs,
+      duration_ms: result.duration_ms,
+    },
+  };
 }
 
 function functionResultToGateway(result: LocalFunctionExecutorResult, method: string): CoreGatewayResult {

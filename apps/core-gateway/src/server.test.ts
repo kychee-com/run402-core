@@ -550,6 +550,66 @@ test("dynamic static routes invoke local functions with routed HTTP envelope", a
   assert.equal(head.headers?.["Content-Length"], "2");
 });
 
+test("direct function invoke requires project service auth and fails closed for gated functions", async () => {
+  const catalog = new MemoryProjectCatalog();
+  const project = await catalog.create({ name: "functions app" });
+  const state = emptyCoreReleaseState();
+  const executor = new MemoryFunctionExecutor();
+  const runtime = {
+    projects: catalog,
+    releases: new MemoryReleaseState(state),
+    content: new MemoryContentStore(),
+    functionBundles: new MemoryFunctionBundles(functionBundle("c".repeat(64), 12)),
+    functionExecutor: executor,
+  };
+
+  const unauthorized = await coreGatewayResponse({
+    method: "POST",
+    pathname: "/functions/v1/invoke",
+    body: {
+      project_id: project.project_id,
+      function_name: "api",
+    },
+  }, runtime);
+  assert.equal(unauthorized.status, 401);
+
+  const direct = await coreGatewayResponse({
+    method: "POST",
+    pathname: "/functions/v1/invoke",
+    headers: { apikey: project.service_key },
+    body: {
+      project_id: project.project_id,
+      function_name: "api",
+    },
+  }, runtime);
+
+  assert.equal(direct.status, 200);
+  assert.equal((direct.body as { response?: { status?: number } }).response?.status, 201);
+  assert.equal(executor.last?.invocationKind, "direct");
+  assert.equal(executor.last?.request, undefined);
+
+  const gatedBundle = functionBundle("d".repeat(64), 12);
+  gatedBundle.require_auth = true;
+  const gatedExecutor = new MemoryFunctionExecutor();
+  const gated = await coreGatewayResponse({
+    method: "POST",
+    pathname: "/functions/v1/invoke",
+    headers: { apikey: project.service_key },
+    body: {
+      project_id: project.project_id,
+      function_name: "api",
+    },
+  }, {
+    ...runtime,
+    functionBundles: new MemoryFunctionBundles(gatedBundle),
+    functionExecutor: gatedExecutor,
+  });
+
+  assert.equal(gated.status, 503);
+  assert.equal((gated.body as { error?: string }).error, "dynamic_runtime_unavailable");
+  assert.equal(gatedExecutor.last, null);
+});
+
 class MemoryFunctionBundles {
   readonly #bundle: CoreFunctionBundleMetadata;
 
