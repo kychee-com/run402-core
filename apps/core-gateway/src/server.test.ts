@@ -8,6 +8,7 @@ import {
   verifyStorageReadSignature,
   verifyContentRefBytes,
   CORE_FUNCTION_DEPENDENCY_MODE,
+  CORE_FUNCTION_RESOURCE_DEFAULTS,
   runtimeCapabilities,
   type CoreFunctionBundleMetadata,
   type CoreProject,
@@ -548,6 +549,42 @@ test("dynamic static routes invoke local functions with routed HTTP envelope", a
   assert.equal(head.status, 201);
   assert.equal((head.body as Uint8Array).byteLength, 0);
   assert.equal(head.headers?.["Content-Length"], "2");
+});
+
+test("dynamic static routes reject oversized request bodies before invoking functions", async () => {
+  const catalog = new MemoryProjectCatalog();
+  const project = await catalog.create({ name: "routes app" });
+  const state: PortableReleaseState = {
+    ...emptyCoreReleaseState(),
+    routes: {
+      manifest_sha256: "route-manifest-test",
+      entries: [{
+        pattern: "/api/*",
+        kind: "prefix",
+        prefix: "/api/",
+        methods: ["POST"],
+        target: { type: "function", name: "api" },
+      }],
+    },
+  };
+  const executor = new MemoryFunctionExecutor();
+  const runtime = {
+    projects: catalog,
+    releases: new MemoryReleaseState(state),
+    content: new MemoryContentStore(),
+    functionBundles: new MemoryFunctionBundles(functionBundle("e".repeat(64), 12)),
+    functionExecutor: executor,
+  };
+
+  const response = await coreGatewayResponse({
+    method: "POST",
+    pathname: `/projects/v1/${project.project_id}/static/api/too-big`,
+    body: Buffer.alloc(CORE_FUNCTION_RESOURCE_DEFAULTS.requestBodyLimitBytes + 1),
+  }, runtime);
+
+  assert.equal(response.status, 413);
+  assert.equal((response.body as { error?: string }).error, "request_body_too_large");
+  assert.equal(executor.last, null);
 });
 
 test("direct function invoke requires project service auth and fails closed for gated functions", async () => {

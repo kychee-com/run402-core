@@ -16,6 +16,7 @@ import {
   ProjectNotFoundError,
   projectNotFoundEnvelope,
   CORE_FUNCTION_RESOURCE_DEFAULTS,
+  RequestBodyTooLargeError,
   runtimeCapabilities,
   runtimeHealth,
   RuntimeKernelTypedError,
@@ -1505,7 +1506,7 @@ function routedBody(body: unknown): NonNullable<LocalFunctionExecutorInput["requ
     ? Buffer.from(body)
     : Buffer.from(typeof body === "string" ? body : JSON.stringify(body), "utf8");
   if (bytes.byteLength > CORE_FUNCTION_RESOURCE_DEFAULTS.requestBodyLimitBytes) {
-    throw new RangeError(`Function request body exceeds ${CORE_FUNCTION_RESOURCE_DEFAULTS.requestBodyLimitBytes} bytes.`);
+    throw new RequestBodyTooLargeError(CORE_FUNCTION_RESOURCE_DEFAULTS.requestBodyLimitBytes);
   }
   return {
     encoding: "base64",

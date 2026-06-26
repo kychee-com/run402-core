@@ -174,10 +174,12 @@ function appendLog(stream: "stdout" | "stderr", chunk: string | Uint8Array): voi
   const currentPayload = payload;
   if (!currentPayload) return;
   const raw = typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
-  const max = currentPayload.max_log_line_bytes;
-  const message = raw.length > max ? `${raw.slice(0, max)}...[truncated]` : raw;
+  const message = truncateUtf8(raw, currentPayload.max_log_line_bytes);
   const used = logs.reduce((sum, entry) => sum + Buffer.byteLength(entry.message), 0);
-  if (used >= currentPayload.stdout_stderr_limit_bytes) return;
+  const remaining = currentPayload.stdout_stderr_limit_bytes - used;
+  if (remaining <= 0) return;
+  const cappedMessage = truncateUtf8(message, remaining);
+  if (!cappedMessage) return;
   logs.push({
     timestamp: new Date().toISOString(),
     request_id: currentPayload.invocation.requestId,
@@ -186,9 +188,26 @@ function appendLog(stream: "stdout" | "stderr", chunk: string | Uint8Array): voi
     function_name: currentPayload.invocation.functionName,
     stream,
     level: stream === "stderr" ? "error" : "info",
-    message,
+    message: cappedMessage,
     redacted: false,
   });
+}
+
+function truncateUtf8(value: string, maxBytes: number): string {
+  const suffix = "...[truncated]";
+  if (Buffer.byteLength(value) <= maxBytes) return value;
+  const suffixBytes = Buffer.byteLength(suffix);
+  if (maxBytes <= suffixBytes) return "";
+  const contentLimit = maxBytes - suffixBytes;
+  let output = "";
+  let used = 0;
+  for (const char of value) {
+    const next = Buffer.byteLength(char);
+    if (used + next > contentLimit) break;
+    output += char;
+    used += next;
+  }
+  return `${output}${suffix}`;
 }
 
 function readStdin(): Promise<string> {

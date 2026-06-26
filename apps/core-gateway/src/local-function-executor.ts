@@ -33,6 +33,7 @@ export interface LocalFunctionExecutorOptions {
   invocationTimeoutMs?: number;
   responseBodyLimitBytes?: number;
   maxConcurrentInvocations?: number;
+  maxPendingInvocations?: number;
   nodeExecArgv?: string[];
 }
 
@@ -64,8 +65,10 @@ export class LocalFunctionExecutor {
   readonly #invocationTimeoutMs: number;
   readonly #responseBodyLimitBytes: number;
   readonly #maxConcurrentInvocations: number;
+  readonly #maxPendingInvocations: number;
   readonly #nodeExecArgv: string[];
   #activeInvocations = 0;
+  readonly #pendingInvocations: Array<() => void> = [];
 
   constructor(options: LocalFunctionExecutorOptions) {
     this.#content = options.content;
@@ -74,17 +77,12 @@ export class LocalFunctionExecutor {
     this.#invocationTimeoutMs = options.invocationTimeoutMs ?? CORE_FUNCTION_RESOURCE_DEFAULTS.invocationTimeoutMs;
     this.#responseBodyLimitBytes = options.responseBodyLimitBytes ?? CORE_FUNCTION_RESOURCE_DEFAULTS.responseBodyLimitBytes;
     this.#maxConcurrentInvocations = options.maxConcurrentInvocations ?? CORE_FUNCTION_RESOURCE_DEFAULTS.maxConcurrentInvocationsPerProject;
+    this.#maxPendingInvocations = options.maxPendingInvocations ?? CORE_FUNCTION_RESOURCE_DEFAULTS.maxPendingInvocationQueue;
     this.#nodeExecArgv = options.nodeExecArgv ?? defaultNodeExecArgv(this.#runnerPath);
   }
 
   async invoke(input: LocalFunctionExecutorInput): Promise<LocalFunctionExecutorResult> {
-    if (this.#activeInvocations >= this.#maxConcurrentInvocations) {
-      throw new DynamicRuntimeBusyError("Run402 Core local function executor is busy.", {
-        function_name: input.functionName,
-        max_concurrent_invocations: this.#maxConcurrentInvocations,
-      });
-    }
-    this.#activeInvocations += 1;
+    await this.#acquireInvocationSlot(input);
     const started = Date.now();
     try {
       const modulePath = await this.#stageBundle(input);
@@ -119,8 +117,34 @@ export class LocalFunctionExecutor {
         duration_ms: Date.now() - started,
       };
     } finally {
-      this.#activeInvocations -= 1;
+      this.#releaseInvocationSlot();
     }
+  }
+
+  async #acquireInvocationSlot(input: LocalFunctionExecutorInput): Promise<void> {
+    if (this.#activeInvocations < this.#maxConcurrentInvocations) {
+      this.#activeInvocations += 1;
+      return;
+    }
+    if (this.#pendingInvocations.length >= this.#maxPendingInvocations) {
+      throw new DynamicRuntimeBusyError("Run402 Core local function executor is busy.", {
+        function_name: input.functionName,
+        max_concurrent_invocations: this.#maxConcurrentInvocations,
+        max_pending_invocations: this.#maxPendingInvocations,
+      });
+    }
+    await new Promise<void>((resolve) => {
+      this.#pendingInvocations.push(resolve);
+    });
+  }
+
+  #releaseInvocationSlot(): void {
+    const next = this.#pendingInvocations.shift();
+    if (next) {
+      queueMicrotask(next);
+      return;
+    }
+    this.#activeInvocations -= 1;
   }
 
   async #stageBundle(input: LocalFunctionExecutorInput): Promise<string> {

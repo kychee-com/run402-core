@@ -4,6 +4,7 @@ import { rm } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import {
+  CORE_FUNCTION_RESOURCE_DEFAULTS,
   DynamicRuntimeBusyError,
   DynamicRuntimeTimeoutError,
   CORE_FUNCTION_DEPENDENCY_MODE,
@@ -67,7 +68,7 @@ test("local function executor rejects busy and timed-out invocations", async () 
       await new Promise((resolve) => setTimeout(resolve, 150));
       return { ok: true };
     }
-  `, { maxConcurrentInvocations: 1 });
+  `, { maxConcurrentInvocations: 1, maxPendingInvocations: 0 });
   try {
     const first = busy.executor.invoke({
       projectId: PROJECT_ID,
@@ -117,6 +118,40 @@ test("local function executor rejects busy and timed-out invocations", async () 
   }
 });
 
+test("local function executor queues pending invocations within the configured limit", async () => {
+  const fixture = await createExecutorFixture(`
+    export default async function handler(event) {
+      await new Promise((resolve) => setTimeout(resolve, 75));
+      return { requestId: event.requestId };
+    }
+  `, { maxConcurrentInvocations: 1, maxPendingInvocations: 1 });
+  try {
+    const first = fixture.executor.invoke({
+      projectId: PROJECT_ID,
+      releaseId: RELEASE_ID,
+      functionName: "queued",
+      invocationKind: "direct",
+      requestId: "req_queue_1",
+      bundle: fixture.bundle,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const second = fixture.executor.invoke({
+      projectId: PROJECT_ID,
+      releaseId: RELEASE_ID,
+      functionName: "queued",
+      invocationKind: "direct",
+      requestId: "req_queue_2",
+      bundle: fixture.bundle,
+    });
+
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+    assert.deepEqual(decodeJsonBody(firstResult.response.body), { requestId: "req_queue_1" });
+    assert.deepEqual(decodeJsonBody(secondResult.response.body), { requestId: "req_queue_2" });
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test("local function executor enforces response body limit", async () => {
   const fixture = await createExecutorFixture(`
     export default async function handler() {
@@ -140,9 +175,39 @@ test("local function executor enforces response body limit", async () => {
   }
 });
 
+test("local function executor caps stdout and stderr logs", async () => {
+  const fixture = await createExecutorFixture(`
+    export default async function handler() {
+      console.error("y".repeat(${CORE_FUNCTION_RESOURCE_DEFAULTS.maxLogLineBytes + 1024}));
+      for (let i = 0; i < 80; i += 1) console.log("line-" + i + "-" + "x".repeat(2048));
+      return { ok: true };
+    }
+  `);
+  try {
+    const result = await fixture.executor.invoke({
+      projectId: PROJECT_ID,
+      releaseId: RELEASE_ID,
+      functionName: "logs",
+      invocationKind: "direct",
+      requestId: "req_logs_1",
+      bundle: fixture.bundle,
+    });
+    const totalLogBytes = result.logs.reduce((sum, entry) => sum + Buffer.byteLength(entry.message), 0);
+    assert.ok(totalLogBytes <= CORE_FUNCTION_RESOURCE_DEFAULTS.stdoutStderrLimitBytes);
+    assert.equal(
+      result.logs.every((entry) => Buffer.byteLength(entry.message) <= CORE_FUNCTION_RESOURCE_DEFAULTS.maxLogLineBytes),
+      true,
+    );
+    assert.equal(result.logs.some((entry) => entry.message.includes("...[truncated]")), true);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 async function createExecutorFixture(source: string, options: {
   invocationTimeoutMs?: number;
   maxConcurrentInvocations?: number;
+  maxPendingInvocations?: number;
   responseBodyLimitBytes?: number;
 } = {}) {
   const id = randomUUID();
@@ -164,6 +229,7 @@ async function createExecutorFixture(source: string, options: {
       workDir: path.join(root, "work"),
       invocationTimeoutMs: options.invocationTimeoutMs,
       maxConcurrentInvocations: options.maxConcurrentInvocations,
+      maxPendingInvocations: options.maxPendingInvocations,
       responseBodyLimitBytes: options.responseBodyLimitBytes,
     }),
     cleanup: () => rm(root, { recursive: true, force: true }),
