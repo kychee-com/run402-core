@@ -144,6 +144,7 @@ export async function createGatewayRuntime(config: CoreGatewayConfig): Promise<C
           release: context.target_release,
           expectedBaseReleaseId: context.plan.base_release_id,
           effects: context.storage_effects,
+          functionEffects: context.function_effects,
         });
         return { status: "activated", release_id: context.release_id };
       },

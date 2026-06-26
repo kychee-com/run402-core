@@ -15,6 +15,7 @@ import {
   StorageValidationError,
   verifyStorageReadSignature,
   type CoreImmutableObjectVersion,
+  type CoreFunctionApplyEffects,
   type CoreStorageObject,
   type CoreStorageObjectList,
   type CoreUploadSession,
@@ -469,6 +470,7 @@ export class PostgresStorageStore implements StoragePort, SignedReadPort, Cleanu
     release: PortableReleaseState;
     expectedBaseReleaseId: string | null;
     effects?: CoreStorageApplyEffects;
+    functionEffects?: CoreFunctionApplyEffects;
   }): Promise<void> {
     const client = await this.#pool.connect();
     try {
@@ -485,6 +487,9 @@ export class PostgresStorageStore implements StoragePort, SignedReadPort, Cleanu
       }
       if (input.effects && !input.effects.noop) {
         await this.#applyStorageEffects(client, input.projectId, input.effects);
+      }
+      if (input.functionEffects) {
+        await this.#replaceFunctionBundles(client, input.projectId, input.releaseId, input.functionEffects);
       }
       await client.query(
         `
@@ -509,6 +514,83 @@ export class PostgresStorageStore implements StoragePort, SignedReadPort, Cleanu
       throw error;
     } finally {
       client.release();
+    }
+  }
+
+  async #replaceFunctionBundles(
+    client: Pick<PgPool, "query">,
+    projectId: string,
+    releaseId: string,
+    effects: CoreFunctionApplyEffects,
+  ): Promise<void> {
+    await client.query(
+      `
+        DELETE FROM internal.core_function_bundles
+        WHERE project_id = $1 AND release_id = $2
+      `,
+      [projectId, releaseId],
+    );
+
+    for (const bundle of effects.bundles) {
+      await client.query(
+        `
+          INSERT INTO internal.core_function_bundles (
+            project_id,
+            release_id,
+            name,
+            runtime,
+            entrypoint,
+            bundle_sha256,
+            bundle_size_bytes,
+            dependency_mode,
+            dependency_lock_digest,
+            deps,
+            required_secrets,
+            require_auth,
+            require_role,
+            class,
+            capabilities,
+            timeout_ms,
+            memory_bytes
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb, $12, $13::jsonb, $14, $15::jsonb, $16, $17)
+          ON CONFLICT (project_id, release_id, name)
+          DO UPDATE SET
+            runtime = EXCLUDED.runtime,
+            entrypoint = EXCLUDED.entrypoint,
+            bundle_sha256 = EXCLUDED.bundle_sha256,
+            bundle_size_bytes = EXCLUDED.bundle_size_bytes,
+            dependency_mode = EXCLUDED.dependency_mode,
+            dependency_lock_digest = EXCLUDED.dependency_lock_digest,
+            deps = EXCLUDED.deps,
+            required_secrets = EXCLUDED.required_secrets,
+            require_auth = EXCLUDED.require_auth,
+            require_role = EXCLUDED.require_role,
+            class = EXCLUDED.class,
+            capabilities = EXCLUDED.capabilities,
+            timeout_ms = EXCLUDED.timeout_ms,
+            memory_bytes = EXCLUDED.memory_bytes
+        `,
+        [
+          projectId,
+          releaseId,
+          bundle.name,
+          bundle.runtime,
+          bundle.entrypoint,
+          bundle.bundle_sha256,
+          bundle.bundle_size_bytes,
+          bundle.dependency_mode,
+          bundle.dependency_lock_digest,
+          JSON.stringify(bundle.deps),
+          JSON.stringify(bundle.required_secrets),
+          bundle.require_auth,
+          bundle.require_role ? JSON.stringify(bundle.require_role) : null,
+          bundle.class,
+          JSON.stringify(bundle.capabilities),
+          bundle.timeout_ms,
+          bundle.memory_bytes,
+        ],
+      );
     }
   }
 
@@ -744,6 +826,20 @@ export class PostgresStorageStore implements StoragePort, SignedReadPort, Cleanu
             CROSS JOIN LATERAL jsonb_array_elements(COALESCE(r.state->'site'->'paths', '[]'::jsonb)) AS path(value)
            WHERE path.value ? 'content_sha256'
              ${projectId ? "AND p.project_id = $1" : ""}
+          UNION
+          SELECT bundle.bundle_sha256 AS sha256
+            FROM internal.core_projects p
+            JOIN internal.core_function_bundles bundle
+              ON bundle.project_id = p.project_id
+             AND bundle.release_id = p.active_release_id
+           WHERE bundle.bundle_sha256 IS NOT NULL
+             ${projectId ? "AND p.project_id = $1" : ""}
+          UNION
+          SELECT bundle.value->'source'->>'sha256' AS sha256
+            FROM internal.core_apply_plans plan
+            CROSS JOIN LATERAL jsonb_array_elements(COALESCE(plan.function_effects->'bundles', '[]'::jsonb)) AS bundle(value)
+           WHERE plan.status = 'planned'
+             ${projectId ? "AND plan.project_id = $1" : ""}
           UNION
           SELECT put.value->>'sha256' AS sha256
             FROM internal.core_apply_plans plan

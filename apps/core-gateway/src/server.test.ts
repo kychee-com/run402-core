@@ -307,6 +307,48 @@ test("storage routes upload, serve, sign, preserve immutable versions, delete, a
   );
 });
 
+test("storage upload completion rejects content digest mismatches", async () => {
+  const catalog = new MemoryProjectCatalog();
+  const project = await catalog.create({ name: "storage app" });
+  const content = new MemoryContentStore();
+  const storage = new MemoryStoragePort("http://127.0.0.1:4020");
+  const runtime = { projects: catalog, content, storage };
+  const headers = { apikey: project.service_key };
+  const bytes = Buffer.from("actual bundle bytes");
+
+  const create = await coreGatewayResponse({
+    method: "POST",
+    pathname: `/projects/v1/${project.project_id}/storage/uploads`,
+    headers,
+    body: {
+      key: "functions/api.js",
+      size_bytes: bytes.byteLength,
+      sha256: "a".repeat(64),
+      content_type: "application/javascript",
+      visibility: "private",
+      immutable: true,
+    },
+  }, runtime);
+  assert.equal(create.status, 201);
+  const session = create.body as CoreUploadSession;
+  assert.equal((await coreGatewayResponse({
+    method: "PUT",
+    pathname: `/projects/v1/${project.project_id}/storage/uploads/${session.upload_id}/bytes`,
+    headers,
+    body: bytes,
+  }, runtime)).status, 200);
+
+  const complete = await coreGatewayResponse({
+    method: "POST",
+    pathname: `/projects/v1/${project.project_id}/storage/uploads/${session.upload_id}/complete`,
+    headers,
+  }, runtime);
+
+  assert.equal(complete.status, 409);
+  assert.equal((complete.body as { error?: string }).error, "content_digest_mismatch");
+  assert.equal(await storage.getObject({ projectId: project.project_id, key: "functions/api.js" }), null);
+});
+
 test("static route manifest serving honors explicit paths, aliases, methods, diagnostics, and dynamic fail-closed", async () => {
   const catalog = new MemoryProjectCatalog();
   const project = await catalog.create({ name: "routes app" });

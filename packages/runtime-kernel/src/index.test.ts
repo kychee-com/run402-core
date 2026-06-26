@@ -443,7 +443,8 @@ test("asset reapply with identical object metadata is a no-op", async () => {
 test("apply plan accepts first-slice prebundled function metadata", async () => {
   const source = Buffer.from("export default async function handler() { return { status: 200 }; }\n");
   const sourceSha = sha256Hex(source);
-  const ports = new MemoryRuntimePorts({ contentPresent: true });
+  const order: string[] = [];
+  const ports = new MemoryRuntimePorts({ contentPresent: true, order });
 
   const plan = await createApplyPlan(ports, {
     spec: {
@@ -488,6 +489,12 @@ test("apply plan accepts first-slice prebundled function metadata", async () => 
 
   const result = await commitApplyPlan(ports, { plan_id: plan.plan_id });
   assert.equal(result.status, "committed");
+  assert.equal(ports.activeReleaseId, result.release_id);
+  assert.deepEqual(order, [
+    "content.hasContent",
+    "release.setActiveRelease",
+    "plan.markCommitted",
+  ]);
 });
 
 test("function apply verifies source content before activation", async () => {
@@ -500,6 +507,93 @@ test("function apply verifies source content before activation", async () => {
     commitApplyPlan(ports, { plan_id: plan.plan_id }),
     (error) => error instanceof ApplyInvariantError && error.code === "content_digest_missing",
   );
+});
+
+test("function apply forwards effects to lifecycle activation", async () => {
+  const source = Buffer.from("export default async function handler() { return { status: 200 }; }\n");
+  const sourceSha = sha256Hex(source);
+  let activatedBundleNames: string[] = [];
+  const ports = new MemoryRuntimePorts({
+    contentPresent: true,
+    lifecycle: {
+      async activate(context) {
+        activatedBundleNames = context.function_effects?.bundles.map((bundle) => bundle.name) ?? [];
+        return { status: "activated" };
+      },
+    },
+  });
+
+  const plan = await createApplyPlan(ports, {
+    spec: prebundledFunctionSpec(sourceSha, source.byteLength),
+  });
+  const result = await commitApplyPlan(ports, { plan_id: plan.plan_id });
+
+  assert.equal(result.status, "committed");
+  assert.deepEqual(activatedBundleNames, ["api"]);
+});
+
+test("function reapply with identical bundle and routes is a no-op", async () => {
+  const source = Buffer.from("export default async function handler() { return { status: 200 }; }\n");
+  const sourceSha = sha256Hex(source);
+  const order: string[] = [];
+  const ports = new MemoryRuntimePorts({ contentPresent: true, order });
+
+  const firstPlan = await createApplyPlan(ports, {
+    spec: prebundledFunctionSpec(sourceSha, source.byteLength),
+  });
+  const firstResult = await commitApplyPlan(ports, { plan_id: firstPlan.plan_id });
+  assert.equal(firstResult.status, "committed");
+  order.length = 0;
+
+  const secondPlan = await createApplyPlan(ports, {
+    spec: prebundledCurrentFunctionSpec(sourceSha, source.byteLength),
+  });
+  assert.equal(secondPlan.noop, true);
+
+  const secondResult = await commitApplyPlan(ports, { plan_id: secondPlan.plan_id });
+
+  assert.equal(secondResult.status, "noop");
+  assert.equal(secondResult.release_id, firstResult.release_id);
+  assert.equal(ports.activeReleaseId, firstResult.release_id);
+  assert.deepEqual(order, ["plan.markCommitted"]);
+});
+
+test("function commit rejects stale plans before staging content", async () => {
+  const ports = new MemoryRuntimePorts({ contentPresent: true });
+  const plan = await createApplyPlan(ports, {
+    spec: prebundledFunctionSpec("e".repeat(64), 12),
+  });
+  ports.seedRelease("rel_concurrent", emptyCoreReleaseState());
+  ports.setActiveReleaseId("rel_concurrent");
+
+  await assert.rejects(
+    commitApplyPlan(ports, { plan_id: plan.plan_id }),
+    (error) => error instanceof ApplyInvariantError && error.code === "stale_plan",
+  );
+});
+
+test("function activation failure leaves previous release active and plan planned", async () => {
+  const ports = new MemoryRuntimePorts({
+    activeReleaseId: "rel_previous",
+    contentPresent: true,
+    lifecycle: {
+      async activate() {
+        throw new FunctionBundleValidationError("invalid_function_bundle", "activation failed");
+      },
+    },
+  });
+  ports.seedRelease("rel_previous", emptyCoreReleaseState());
+  const plan = await createApplyPlan(ports, {
+    spec: prebundledCurrentFunctionSpec("f".repeat(64), 12),
+  });
+
+  await assert.rejects(
+    commitApplyPlan(ports, { plan_id: plan.plan_id }),
+    (error) => error instanceof FunctionBundleValidationError,
+  );
+
+  assert.equal(ports.activeReleaseId, "rel_previous");
+  assert.equal((await ports.plans.get(plan.plan_id))?.status, "planned");
 });
 
 test("function apply rejects external deps and positive role cache ttl", async () => {
@@ -546,6 +640,35 @@ test("function apply rejects external deps and positive role cache ttl", async (
   );
 });
 
+test("function apply rejects unsupported runtimes and commit digest mismatches", async () => {
+  await assert.rejects(
+    createApplyPlan(new MemoryRuntimePorts(), {
+      spec: {
+        ...prebundledFunctionSpec("a".repeat(64), 12),
+        functions: {
+          replace: {
+            api: {
+              runtime: "node20",
+              source: { sha256: "a".repeat(64), size: 12 },
+            },
+          },
+        },
+      },
+    }),
+    (error) => error instanceof Error && error.message === "function runtime must be node22",
+  );
+
+  const ports = new MemoryRuntimePorts({ contentPresent: true });
+  const plan = await createApplyPlan(ports, {
+    spec: prebundledFunctionSpec("a".repeat(64), 12),
+  });
+
+  await assert.rejects(
+    commitApplyPlan(ports, { plan_id: plan.plan_id, release_spec_digest: "sha256:not-this-plan" }),
+    (error) => error instanceof ApplyInvariantError && error.code === "release_spec_digest_mismatch",
+  );
+});
+
 class MemoryProjectCatalog implements ProjectCatalogPort {
   readonly createdNames: string[] = [];
   readonly projects = new Map<string, CoreProject>();
@@ -586,7 +709,7 @@ class MemoryRuntimePorts implements RuntimeKernelPorts {
 
   readonly #plans = new Map<string, StoredCoreApplyPlan>();
   readonly #releases = new Map<string, ReturnType<typeof emptyCoreReleaseState>>();
-  readonly #activeReleaseId: string | null;
+  #activeReleaseId: string | null;
   readonly #order: string[];
 
   constructor(options: {
@@ -615,7 +738,7 @@ class MemoryRuntimePorts implements RuntimeKernelPorts {
           static_base_url: "http://127.0.0.1:4020/projects/v1/prj_0000000000000001/static",
           storage_base_url: "http://127.0.0.1:4020/projects/v1/prj_0000000000000001/storage",
         },
-        active_release_id: null,
+        active_release_id: this.#activeReleaseId,
         capabilities: runtimeCapabilities("test"),
       }),
     };
@@ -630,7 +753,12 @@ class MemoryRuntimePorts implements RuntimeKernelPorts {
           state: releaseId ? this.#releases.get(releaseId) ?? emptyCoreReleaseState() : emptyCoreReleaseState(),
         };
       },
-      setActiveRelease: async () => {
+      setActiveRelease: async (input) => {
+        if (this.#activeReleaseId !== input.expectedBaseReleaseId) {
+          throw new ApplyInvariantError("stale_plan", "Apply plan base release no longer matches the active release.");
+        }
+        this.#releases.set(input.releaseId, input.release as ReturnType<typeof emptyCoreReleaseState>);
+        this.#activeReleaseId = input.releaseId;
         this.#order.push("release.setActiveRelease");
       },
     };
@@ -674,6 +802,14 @@ class MemoryRuntimePorts implements RuntimeKernelPorts {
 
   seedRelease(releaseId: string, state: ReturnType<typeof emptyCoreReleaseState>): void {
     this.#releases.set(releaseId, state);
+  }
+
+  setActiveReleaseId(releaseId: string | null): void {
+    this.#activeReleaseId = releaseId;
+  }
+
+  get activeReleaseId(): string | null {
+    return this.#activeReleaseId;
   }
 }
 
@@ -788,6 +924,30 @@ function prebundledFunctionSpec(sha256: string, size: number) {
   return {
     project: "prj_0000000000000001",
     base: { release: "empty" },
+    functions: {
+      replace: {
+        api: {
+          runtime: "node22",
+          source: {
+            sha256,
+            size,
+            contentType: "application/javascript",
+          },
+        },
+      },
+    },
+    routes: {
+      replace: [{
+        pattern: "/api/*",
+        target: { type: "function", name: "api" },
+      }],
+    },
+  };
+}
+
+function prebundledCurrentFunctionSpec(sha256: string, size: number) {
+  return {
+    project: "prj_0000000000000001",
     functions: {
       replace: {
         api: {
