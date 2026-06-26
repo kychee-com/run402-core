@@ -11,11 +11,16 @@ npm run build
 npm test
 docker compose up -d --build core
 npm run core:health
+npm run core:smoke
 npm run core:conformance
 CORE_CONFORMANCE_RESTART=1 npm run core:storage-routing
 CORE_CONFORMANCE_RESTART=1 npm run core:functions
 CORE_CONFORMANCE_RESTART=1 npm run core:astro-ssr
 ```
+
+Run the `CORE_CONFORMANCE_RESTART=1` commands one at a time. Each fixture restarts Core services during the test.
+
+For a step-by-step Docker-hosted Core Gateway verification run, see [docker-compose-howto.md](./docker-compose-howto.md).
 
 ## What The Conformance Fixture Proves
 

@@ -117,6 +117,8 @@ docker compose down -v
 
 See [docs/runtime-kernel/quickstart.md](./docs/runtime-kernel/quickstart.md), [docs/runtime-kernel/capabilities.md](./docs/runtime-kernel/capabilities.md), [docs/runtime-kernel/storage-routing.md](./docs/runtime-kernel/storage-routing.md), [docs/runtime-kernel/portable-archives.md](./docs/runtime-kernel/portable-archives.md), [docs/runtime-kernel/security-defaults.md](./docs/runtime-kernel/security-defaults.md), and [docs/open-source-readiness.md](./docs/open-source-readiness.md).
 
+For the full Docker-hosted Core Gateway verification path, see [docs/runtime-kernel/docker-compose-howto.md](./docs/runtime-kernel/docker-compose-howto.md).
+
 ## Cloud Vs Core
 
 Run402 Cloud is the managed service. Run402 Core is the public runtime and release-semantics code that can move toward self-hosting and portability over time.
