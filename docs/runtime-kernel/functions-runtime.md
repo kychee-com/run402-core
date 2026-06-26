@@ -36,6 +36,37 @@ The machine-readable capability document exposes:
 
 Dynamic code must execute outside the gateway/control-plane process once invocation is enabled. The legacy private in-process fallback is not a Core conformance path.
 
+## Local Executor Adapter
+
+The first public adapter is a Docker Compose `function-worker` service built from the same open Core image and started with `node apps/core-gateway/dist/function-worker.js`. The gateway container does not import or execute application code.
+
+The worker service exposes a local `/invoke` control endpoint, verifies the function `source` content ref, writes the bundle under `CORE_FUNCTION_WORK_DIR`, and spawns a per-invocation Node child process to import the user module. The child is launched without a shell, with a scrubbed environment, a request timeout, Node old-space memory derived from the function bundle metadata, and a process-group kill on timeout where the platform supports it.
+
+The child environment is allowlisted:
+
+- `PATH`
+- `NODE_ENV`
+- `HOME`
+- `TMPDIR`
+- `RUN402_PROJECT_ID`
+- `RUN402_RELEASE_ID`
+- `RUN402_FUNCTION_NAME`
+- `RUN402_REQUEST_ID`
+
+Gateway secrets, database URLs, host environment variables, npm tokens, and operator credentials are not inherited. App secrets are not injected yet; section 5 owns local secret metadata and invocation injection.
+
+Current hardening limits:
+
+- No shell execution.
+- No npm install mode.
+- Max concurrent local invocations defaults to 4.
+- Invocation timeout defaults to 10s.
+- Response body cap defaults to 6 MiB.
+- stdout/stderr capture is capped at 64 KiB per invocation and 16 KiB per line.
+- Docker Compose sets the worker service memory limit to 512 MiB.
+
+Temp-dir byte quotas and `node_modules` byte quotas are documented resource defaults but are not yet enforced by a filesystem quota in this Developer Preview adapter.
+
 ## Resource Defaults
 
 | Setting | Default |
@@ -67,7 +98,7 @@ Dynamic code must execute outside the gateway/control-plane process once invocat
 | auth gates | typed local surface, enforcement pending |
 | role gates | `cacheTtl: 0` only; positive cache TTL rejected |
 | secrets | metadata/port contract first; value injection pending |
-| logs | metadata/port contract first; local capture pending |
+| logs | worker stdout/stderr capture first; listing/retention API pending |
 | Astro SSR | unsupported; separate follow-up |
 | schedules/background jobs | unsupported |
 | WebSockets/streaming | unsupported |

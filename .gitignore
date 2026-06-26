@@ -1,6 +1,7 @@
 node_modules/
 dist/
 coverage/
+.run402-core/
 .DS_Store
 *.log
 *.tgz

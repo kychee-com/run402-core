@@ -11,10 +11,12 @@ COPY apps/core-gateway/package.json apps/core-gateway/package.json
 RUN npm ci
 
 COPY packages/release packages/release
+COPY packages/functions packages/functions
 COPY packages/runtime-kernel packages/runtime-kernel
 COPY apps/core-gateway apps/core-gateway
 
-RUN npm run build -w packages/release \
+RUN npm run build -w packages/functions \
+  && npm run build -w packages/release \
   && npm run build -w packages/runtime-kernel \
   && npm run build -w apps/core-gateway
 
@@ -29,6 +31,8 @@ COPY --from=build /app/package.json /app/package-lock.json ./
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/packages/release/package.json ./packages/release/package.json
 COPY --from=build /app/packages/release/dist ./packages/release/dist
+COPY --from=build /app/packages/functions/package.json ./packages/functions/package.json
+COPY --from=build /app/packages/functions/dist ./packages/functions/dist
 COPY --from=build /app/packages/runtime-kernel/package.json ./packages/runtime-kernel/package.json
 COPY --from=build /app/packages/runtime-kernel/dist ./packages/runtime-kernel/dist
 COPY --from=build /app/apps/core-gateway/package.json ./apps/core-gateway/package.json
