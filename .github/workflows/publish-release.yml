@@ -3,35 +3,64 @@ name: Publish @run402/release
 on:
   workflow_dispatch:
     inputs:
+      bump:
+        description: Version bump kind
+        required: true
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
       tag:
         description: npm dist-tag
         default: latest
         required: true
       dry_run:
-        description: Run npm publish with --dry-run
-        default: true
-        required: true
+        description: Dry run (build + smoke test only; no publish, no commit, no tag)
         type: boolean
+        default: false
 
-permissions:
-  contents: read
-  id-token: write
+concurrency:
+  group: publish-release
+  cancel-in-progress: false
 
 jobs:
   publish:
+    name: Bump, smoke, publish, tag
     runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+
+    permissions:
+      contents: write
+      id-token: write
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 24
+          registry-url: https://registry.npmjs.org
           cache: npm
 
-      - name: Install
+      - name: Verify npm has OIDC publish support
+        run: |
+          NPM_VER=$(npm --version)
+          echo "npm version: $NPM_VER"
+          node -e "const [a,b,c] = process.argv[1].split('.').map(Number); if (a < 11 || (a === 11 && b < 5) || (a === 11 && b === 5 && c < 1)) { console.error('npm '+process.argv[1]+' lacks OIDC trusted-publisher exchange (needs 11.5.1+)'); process.exit(1); }" "$NPM_VER"
+
+      - name: Configure git for commit + push
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+      - name: Install dependencies
         run: npm ci
 
       - name: Verify
@@ -39,12 +68,120 @@ jobs:
           npm run lint
           npm run build
           npm test
-          npm run test:release:smoke
 
-      - name: Publish dry run
-        if: ${{ inputs.dry_run }}
-        run: npm publish -w packages/release --access public --tag "${{ inputs.tag }}" --dry-run
+      - name: Bump version
+        id: bump
+        run: |
+          set -euo pipefail
+          cd packages/release
+          CUR=$(node -p "require('./package.json').version")
+          npm version "${{ inputs.bump }}" --no-git-tag-version >/dev/null
+          NEW=$(node -p "require('./package.json').version")
+          echo "Bumping @run402/release: $CUR -> $NEW"
+          echo "old=$CUR" >> "$GITHUB_OUTPUT"
+          echo "new=$NEW" >> "$GITHUB_OUTPUT"
 
-      - name: Publish
+      - name: Sync lockfile to reflect new version
+        run: npm install --package-lock-only
+
+      - name: Tarball smoke test
+        run: npm run test:release:smoke
+
+      - name: Publish to npm
         if: ${{ !inputs.dry_run }}
-        run: npm publish -w packages/release --provenance --access public --tag "${{ inputs.tag }}"
+        run: |
+          publish_idempotent() {
+            local label="$1"
+            local attempt=0
+            local out
+            while [ "$attempt" -lt 3 ]; do
+              attempt=$((attempt + 1))
+              if out=$(npm publish -w packages/release --access public --provenance --tag "${{ inputs.tag }}" 2>&1); then
+                echo "$out"
+                echo "[$label] published (attempt $attempt)"
+                return 0
+              fi
+              echo "$out"
+              if echo "$out" | grep -qiE "cannot publish over|previously published|EPUBLISHCONFLICT"; then
+                echo "[$label] already published at this version - idempotent skip."
+                return 0
+              fi
+              if echo "$out" | grep -qiE "TLOG_CREATE_ENTRY_ERROR|rekor\.sigstore\.dev|tlog entry|ETIMEDOUT|ECONNRESET|socket hang up|aborted"; then
+                echo "[$label] transient provenance/network error - retry $attempt/3"
+                sleep 10
+                continue
+              fi
+              echo "[$label] non-retryable publish error."
+              return 1
+            done
+            echo "[$label] exhausted retries."
+            return 1
+          }
+          publish_idempotent "@run402/release"
+
+      - name: Commit version bump
+        if: ${{ !inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          NEW="${{ steps.bump.outputs.new }}"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin main
+            git reset --hard origin/main
+            npm version "$NEW" -w packages/release --no-git-tag-version --allow-same-version >/dev/null
+            npm install --package-lock-only >/dev/null
+            git add packages/release/package.json package-lock.json
+            if git diff --cached --quiet; then
+              echo "main is already at @run402/release v$NEW - nothing to commit."
+              break
+            fi
+            git commit -m "chore(release): bump @run402/release to v$NEW"
+            if git push origin HEAD:main; then
+              echo "Pushed @run402/release v$NEW bump on attempt $attempt."
+              break
+            fi
+            if [ "$attempt" -eq 5 ]; then
+              echo "::error::Could not push the @run402/release v$NEW bump to main after 5 attempts."
+              exit 1
+            fi
+            echo "Push rejected; rebuilding on fresh main and retrying ($attempt/5)."
+            sleep "$((attempt * 2))"
+          done
+
+      - name: Tag and push
+        if: ${{ !inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          NEW="${{ steps.bump.outputs.new }}"
+          TAG="v$NEW-release"
+          git tag "$TAG"
+          git push origin "$TAG"
+
+      - name: Create GitHub release
+        if: ${{ !inputs.dry_run }}
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: v${{ steps.bump.outputs.new }}-release
+          name: '@run402/release v${{ steps.bump.outputs.new }}'
+          generate_release_notes: true
+          target_commitish: main
+
+      - name: Summary
+        run: |
+          NEW="${{ steps.bump.outputs.new }}"
+          OLD="${{ steps.bump.outputs.old }}"
+          DRY="${{ inputs.dry_run }}"
+          {
+            echo "## @run402/release publish summary"
+            echo ""
+            echo "- **Bump:** \`${{ inputs.bump }}\` ($OLD -> $NEW)"
+            echo "- **npm dist-tag:** \`${{ inputs.tag }}\`"
+            echo "- **Dry run:** $DRY"
+            if [ "$DRY" = "true" ]; then
+              echo ""
+              echo "_Dry run - no publish, no commit, no tag was made._"
+            else
+              echo "- **npm:** https://www.npmjs.com/package/@run402/release/v/$NEW"
+              echo "- **Tag:** \`v$NEW-release\`"
+              echo "- **Provenance attestation:** auto-generated via OIDC"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
