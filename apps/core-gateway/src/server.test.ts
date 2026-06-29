@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  ApplyInvariantError,
   createStorageReadSignature,
   emptyCoreReleaseState,
   verifyStorageReadSignature,
@@ -20,7 +21,9 @@ import {
   type CoreUploadSession,
   type FunctionLogPort,
   type ProjectCatalogPort,
+  type RuntimeKernelPorts,
   type SignedReadPort,
+  type StoredCoreApplyPlan,
   type StorageObjectVisibility,
   type StoragePort,
 } from "@run402/runtime-kernel";
@@ -37,7 +40,10 @@ test("loadConfig does not require Cloud environment variables", () => {
     port: 4020,
     databaseUrl: undefined,
     publicBaseUrl: "http://127.0.0.1:4020",
+    functionApiBaseUrl: "http://127.0.0.1:4020",
+    postgrestUrl: "http://127.0.0.1:4300",
     postgrestPublicUrl: "http://127.0.0.1:4300",
+    rootProjectId: undefined,
     contentDir: ".run402-core/content",
     jwtSecret: "run402-core-local-jwt-secret-change-me",
     signedReadSecret: "run402-core-local-signed-read-secret-change-me",
@@ -111,6 +117,30 @@ test("project inspect maps invalid and missing ids", async () => {
   assert.equal((missing.body as { error?: string }).error, "project_not_found");
 });
 
+test("apply plan route accepts SDK project_id alias inside request spec", async () => {
+  const runtime = new MemoryRuntimePorts();
+  const projectId = "prj_0000000000000001";
+
+  const response = await coreGatewayResponse({
+    method: "POST",
+    pathname: "/apply/v1/plans",
+    body: {
+      spec: {
+        project_id: projectId,
+        routes: { replace: [] },
+      },
+    },
+  }, runtime);
+
+  assert.equal(response.status, 201);
+  assert.equal((response.body as { project_id?: string }).project_id, projectId);
+
+  const stored = await runtime.plans.get("plan_1");
+  assert.ok(stored);
+  assert.equal((stored.spec as { project?: string }).project, projectId);
+  assert.equal("project_id" in (stored.spec as Record<string, unknown>), false);
+});
+
 test("dev token route is deterministic for stable fixture inputs", async () => {
   const body = {
     project_id: "prj_0000000000000001",
@@ -134,6 +164,235 @@ test("dev token route is deterministic for stable fixture inputs", async () => {
     (second.body as { token?: string }).token,
   );
   assert.match((first.body as { authorization?: string }).authorization ?? "", /^Bearer /);
+});
+
+test("routed functions receive Run402 helper env and redact injected keys from logs", async () => {
+  const catalog = new MemoryProjectCatalog();
+  const project = await catalog.create({ name: "env app" });
+  const state: PortableReleaseState = {
+    ...emptyCoreReleaseState(),
+    routes: {
+      manifest_sha256: "env-route-test",
+      entries: [{
+        pattern: "/api/*",
+        kind: "prefix",
+        prefix: "/api/",
+        methods: ["GET"],
+        target: { type: "function", name: "api" },
+      }],
+    },
+  };
+  const functionLogs = new MemoryFunctionLogs();
+  const executor = new MemoryFunctionExecutor({
+    logs: (input) => [
+      userLog(
+        input,
+        "stdout",
+        `RUN402_SERVICE_KEY=${input.run402Env?.serviceKey} RUN402_ANON_KEY=${input.run402Env?.anonKey}`,
+      ),
+    ],
+  });
+  const runtime = {
+    projects: catalog,
+    releases: new MemoryReleaseState(state),
+    content: new MemoryContentStore(),
+    functionBundles: new MemoryFunctionBundles(functionBundle("a".repeat(64), 12)),
+    functionExecutor: executor,
+    functionLogs,
+    publicBaseUrl: "https://public.core.test",
+    functionApiBaseUrl: "http://core:4020",
+    jwtSecret: "env-test-secret",
+  };
+
+  const response = await coreGatewayResponse({
+    method: "GET",
+    pathname: `/projects/v1/${project.project_id}/static/api/env`,
+  }, runtime);
+
+  assert.equal(response.status, 201);
+  assert.deepEqual(executor.last?.run402Env, {
+    apiBaseUrl: "http://core:4020",
+    anonKey: project.anon_key,
+    serviceKey: project.service_key,
+    jwtSecret: "env-test-secret",
+  });
+
+  const logs = await coreGatewayResponse({
+    method: "GET",
+    pathname: `/projects/v1/${project.project_id}/functions/logs?request_id=${executor.last?.requestId}`,
+    headers: { apikey: project.service_key },
+  }, runtime);
+  assert.equal(logs.status, 200);
+  const text = (logs.body as { logs: CoreFunctionLogEntry[] }).logs.map((entry) => entry.message).join("\n");
+  assert.equal(text.includes(project.service_key), false);
+  assert.equal(text.includes(project.anon_key), false);
+  assert.equal(text.includes("[redacted]"), true);
+});
+
+test("caller REST compatibility proxies anon and authenticated project-scoped JWTs", async () => {
+  const catalog = new MemoryProjectCatalog();
+  const project = await catalog.create({ name: "caller rest app" });
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  const runtime = {
+    projects: catalog,
+    projectKeys: catalog,
+    postgrestUrl: "http://postgrest.local",
+    jwtSecret: "caller-rest-secret",
+    fetch: async (url: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      return new Response(JSON.stringify([{ key: "value" }]), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  };
+
+  const anonymous = await coreGatewayResponse({
+    method: "GET",
+    pathname: "/rest/v1/site_config?select=*",
+    headers: { apikey: project.anon_key },
+  }, runtime);
+  assert.equal(anonymous.status, 200);
+  assert.deepEqual(jsonFromRaw(anonymous), [{ key: "value" }]);
+  assert.equal(calls[0]?.url, "http://postgrest.local/site_config?select=*");
+  assert.equal((calls[0]?.init.headers as Record<string, string>)["accept-profile"], project.schema_slot);
+  const anonClaims = jwtPayload((calls[0]?.init.headers as Record<string, string>).authorization);
+  assert.equal(anonClaims.role, "anon");
+  assert.equal(anonClaims.project_id, project.project_id);
+
+  const token = await coreGatewayResponse({
+    method: "POST",
+    pathname: "/auth/v1/dev-tokens",
+    body: { project_id: project.project_id, role: "authenticated", sub: "user_a" },
+  }, { jwtSecret: "caller-rest-secret" });
+  const userAuth = (token.body as { authorization: string }).authorization;
+  const authenticated = await coreGatewayResponse({
+    method: "GET",
+    pathname: "/rest/v1/sections?select=id",
+    headers: { apikey: project.anon_key, authorization: userAuth },
+  }, runtime);
+  assert.equal(authenticated.status, 200);
+  assert.equal((calls[1]?.init.headers as Record<string, string>).authorization, userAuth);
+
+  const wrongProjectToken = await coreGatewayResponse({
+    method: "POST",
+    pathname: "/auth/v1/dev-tokens",
+    body: { project_id: "prj_0000000000000002", role: "authenticated", sub: "user_b" },
+  }, { jwtSecret: "caller-rest-secret" });
+  const rejected = await coreGatewayResponse({
+    method: "GET",
+    pathname: "/rest/v1/sections?select=id",
+    headers: {
+      apikey: project.anon_key,
+      authorization: (wrongProjectToken.body as { authorization: string }).authorization,
+    },
+  }, runtime);
+  assert.equal(rejected.status, 403);
+  assert.equal(calls.length, 2);
+
+  const missingKey = await coreGatewayResponse({
+    method: "GET",
+    pathname: "/rest/v1/sections?select=id",
+  }, runtime);
+  assert.equal(missingKey.status, 401);
+});
+
+test("service REST compatibility requires service key and proxies as service role", async () => {
+  const catalog = new MemoryProjectCatalog();
+  const project = await catalog.create({ name: "service rest app" });
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  const runtime = {
+    projects: catalog,
+    projectKeys: catalog,
+    postgrestUrl: "http://postgrest.local",
+    jwtSecret: "service-rest-secret",
+    fetch: async (url: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(url), init: init ?? {} });
+      return new Response(JSON.stringify([{ id: 1 }]), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  };
+
+  const read = await coreGatewayResponse({
+    method: "GET",
+    pathname: "/admin/v1/rest/site_config?select=*",
+    headers: { apikey: project.service_key, authorization: `Bearer ${project.service_key}` },
+  }, runtime);
+  assert.equal(read.status, 200);
+  assert.deepEqual(jsonFromRaw(read), [{ id: 1 }]);
+  assert.equal(calls[0]?.url, "http://postgrest.local/site_config?select=*");
+  const claims = jwtPayload((calls[0]?.init.headers as Record<string, string>).authorization);
+  assert.equal(claims.role, "service_role");
+  assert.equal(claims.project_id, project.project_id);
+  assert.equal((calls[0]?.init.headers as Record<string, string>)["content-profile"], project.schema_slot);
+
+  const anonRejected = await coreGatewayResponse({
+    method: "GET",
+    pathname: "/admin/v1/rest/site_config?select=*",
+    headers: { apikey: project.anon_key },
+  }, runtime);
+  assert.equal(anonRejected.status, 401);
+
+  const missingRejected = await coreGatewayResponse({
+    method: "GET",
+    pathname: "/admin/v1/rest/site_config?select=*",
+  }, runtime);
+  assert.equal(missingRejected.status, 401);
+  assert.equal(calls.length, 1);
+});
+
+test("admin SQL compatibility is service-key only and project scoped", async () => {
+  const catalog = new MemoryProjectCatalog();
+  const project = await catalog.create({ name: "sql app" });
+  const projectSql = new MemoryProjectSql();
+  const runtime = {
+    projects: catalog,
+    projectSql,
+  };
+
+  const response = await coreGatewayResponse({
+    method: "POST",
+    pathname: `/projects/v1/admin/${project.project_id}/sql`,
+    headers: { apikey: project.service_key },
+    body: "SELECT key FROM site_config",
+  }, runtime);
+  assert.equal(response.status, 200);
+  assert.deepEqual(response.body, {
+    status: "ok",
+    schema: project.schema_slot,
+    rows: [{ ok: true }],
+    row_count: 1,
+    fields: [{ name: "ok", type: "bool" }],
+  });
+  assert.equal(projectSql.last?.project.project_id, project.project_id);
+  assert.equal(projectSql.last?.sql, "SELECT key FROM site_config");
+
+  const jsonBody = await coreGatewayResponse({
+    method: "POST",
+    pathname: `/projects/v1/admin/${project.project_id}/sql`,
+    headers: { apikey: project.service_key },
+    body: { sql: "SELECT $1::int AS n", params: [42] },
+  }, runtime);
+  assert.equal(jsonBody.status, 200);
+  assert.deepEqual(projectSql.last?.params, [42]);
+
+  const anonRejected = await coreGatewayResponse({
+    method: "POST",
+    pathname: `/projects/v1/admin/${project.project_id}/sql`,
+    headers: { apikey: project.anon_key },
+    body: "SELECT 1",
+  }, runtime);
+  assert.equal(anonRejected.status, 401);
+
+  const crossSchemaRejected = await coreGatewayResponse({
+    method: "POST",
+    pathname: `/projects/v1/admin/${project.project_id}/sql`,
+    headers: { apikey: project.service_key },
+    body: "SELECT * FROM project_0000000000000002.site_config",
+  }, runtime);
+  assert.equal(crossSchemaRejected.status, 403);
 });
 
 test("storage routes upload, serve, sign, preserve immutable versions, delete, and paginate", async () => {
@@ -477,6 +736,22 @@ test("static route manifest serving honors explicit paths, aliases, methods, dia
   assert.deepEqual((diagnostics.body as { non_public_asset_paths: string[] }).non_public_asset_paths, ["hidden.txt"]);
 });
 
+test("static routes map missing projects to a response instead of throwing", async () => {
+  const response = await coreGatewayResponse({
+    method: "GET",
+    pathname: "/projects/v1/prj_011f366f766/static/index.html",
+  }, {
+    releases: new MissingProjectReleaseState(),
+    content: new MemoryContentStore(),
+  });
+
+  assert.equal(response.status, 404);
+  assert.deepEqual(response.body, {
+    error: "project_not_found",
+    message: "Run402 Core project not found: prj_011f366f766",
+  });
+});
+
 test("dynamic static routes invoke local functions with routed HTTP envelope", async () => {
   const catalog = new MemoryProjectCatalog();
   const project = await catalog.create({ name: "routes app" });
@@ -555,6 +830,169 @@ test("dynamic static routes invoke local functions with routed HTTP envelope", a
   assert.equal(head.status, 201);
   assert.equal((head.body as Uint8Array).byteLength, 0);
   assert.equal(head.headers?.["Content-Length"], "2");
+});
+
+test("root project mount serves app paths without taking over control-plane routes", async () => {
+  const catalog = new MemoryProjectCatalog();
+  const project = await catalog.create({ name: "root-mounted app" });
+  const content = new MemoryContentStore();
+  const index = Buffer.from("<script src=\"/js/env.js\"></script>");
+  const env = Buffer.from("window.__APP=1;");
+  const indexSha = sha256Hex(index);
+  const envSha = sha256Hex(env);
+  await content.putStatic({ sha256: indexSha, bytes: index, contentType: "text/html" });
+  await content.putStatic({ sha256: envSha, bytes: env, contentType: "text/javascript" });
+
+  const state: PortableReleaseState = {
+    ...emptyCoreReleaseState(),
+    site: {
+      paths: [
+        { path: "index.html", content_sha256: indexSha, content_type: "text/html", size_bytes: index.byteLength },
+        { path: "js/env.js", content_sha256: envSha, content_type: "text/javascript", size_bytes: env.byteLength },
+      ],
+    },
+    static_manifest: {
+      version: STATIC_MANIFEST_VERSION,
+      public_path_mode: "explicit",
+      files: {
+        "/": {
+          sha256: indexSha,
+          size: index.byteLength,
+          content_type: "text/html",
+          cache_class: "html",
+          cache_class_source: "declared",
+          asset_path: "index.html",
+          direct: true,
+          authority: "explicit_public_path",
+        },
+        "/js/env.js": {
+          sha256: envSha,
+          size: env.byteLength,
+          content_type: "text/javascript",
+          cache_class: "revalidating_asset",
+          cache_class_source: "declared",
+          asset_path: "js/env.js",
+          direct: true,
+          authority: "explicit_public_path",
+        },
+      },
+    },
+    routes: {
+      manifest_sha256: "root-route-test",
+      entries: [{
+        pattern: "/api/*",
+        kind: "prefix",
+        prefix: "/api/",
+        methods: ["POST"],
+        target: { type: "function", name: "api" },
+      }],
+    },
+  };
+  const executor = new MemoryFunctionExecutor();
+  const runtime = {
+    projects: catalog,
+    releases: new MemoryReleaseState(state),
+    content,
+    functionBundles: new MemoryFunctionBundles(functionBundle("0".repeat(64), 12)),
+    functionExecutor: executor,
+    rootProjectId: project.project_id,
+  };
+
+  const health = await coreGatewayResponse("/health", runtime);
+  assert.equal(health.status, 200);
+  assert.equal((health.body as { mode?: string }).mode, "core");
+
+  const root = await coreGatewayResponse("/", runtime);
+  assert.equal(root.status, 200);
+  assert.equal(Buffer.from(root.body as Uint8Array).toString("utf8"), "<script src=\"/js/env.js\"></script>");
+
+  const asset = await coreGatewayResponse("/js/env.js", runtime);
+  assert.equal(asset.status, 200);
+  assert.equal(Buffer.from(asset.body as Uint8Array).toString("utf8"), "window.__APP=1;");
+
+  const api = await coreGatewayResponse({
+    method: "POST",
+    pathname: "/api/kychon",
+    headers: { host: "app.local" },
+    body: { ok: true },
+  }, runtime);
+  assert.equal(api.status, 201);
+  assert.equal(executor.last?.request?.path, "/api/kychon");
+  assert.equal(executor.last?.request?.url, "http://app.local/api/kychon");
+
+  const projectInspect = await coreGatewayResponse({
+    method: "GET",
+    pathname: `/projects/v1/${project.project_id}`,
+  }, runtime);
+  assert.equal(projectInspect.status, 200);
+  assert.equal((projectInspect.body as { project_id?: string }).project_id, project.project_id);
+});
+
+test("implicit static html paths resolve clean URLs before SSR fallback", async () => {
+  const catalog = new MemoryProjectCatalog();
+  const project = await catalog.create({ name: "implicit clean app" });
+  const content = new MemoryContentStore();
+  const events = Buffer.from("<h1>Events</h1>");
+  const eventsSha = sha256Hex(events);
+  await content.putStatic({ sha256: eventsSha, bytes: events, contentType: "text/html" });
+
+  const state: PortableReleaseState = {
+    ...emptyCoreReleaseState(),
+    site: {
+      paths: [
+        { path: "events.html", content_sha256: eventsSha, content_type: "text/html", size_bytes: events.byteLength },
+      ],
+    },
+    static_manifest: {
+      version: STATIC_MANIFEST_VERSION,
+      files: {
+        "/events.html": {
+          sha256: eventsSha,
+          size: events.byteLength,
+          content_type: "text/html",
+          cache_class: "html",
+          cache_class_source: "declared",
+          asset_path: "events.html",
+          direct: true,
+          authority: "implicit_file_path",
+        },
+      },
+    },
+    functions: [
+      portableFunction("ssr", "ssr", [CORE_ASTRO_SSR_OUTPUT_CONTRACT_VERSION]),
+    ],
+    routes: {
+      manifest_sha256: "implicit-clean-url-test",
+      entries: [],
+    },
+  };
+  const ssrBundle = functionBundle("5".repeat(64), 12);
+  ssrBundle.name = "ssr";
+  ssrBundle.class = "ssr";
+  ssrBundle.capabilities = [CORE_ASTRO_SSR_OUTPUT_CONTRACT_VERSION];
+  const executor = new MemoryFunctionExecutor();
+  const runtime = {
+    projects: catalog,
+    releases: new MemoryReleaseState(state),
+    content,
+    functionBundles: new MemoryFunctionBundles({ ssr: ssrBundle }),
+    functionExecutor: executor,
+  };
+
+  const read = await coreGatewayResponse({
+    method: "GET",
+    pathname: `/projects/v1/${project.project_id}/static/events`,
+  }, runtime);
+  assert.equal(read.status, 200);
+  assert.equal(Buffer.from(read.body as Uint8Array).toString("utf8"), "<h1>Events</h1>");
+  assert.equal(executor.last, null);
+
+  const post = await coreGatewayResponse({
+    method: "POST",
+    pathname: `/projects/v1/${project.project_id}/static/events`,
+  }, runtime);
+  assert.equal(post.status, 405);
+  assert.equal(executor.last, null);
 });
 
 test("dynamic static routes reject oversized request bodies before invoking functions", async () => {
@@ -1399,6 +1837,17 @@ function userLog(
   };
 }
 
+function jsonFromRaw(response: { body: unknown }): unknown {
+  return JSON.parse(Buffer.from(response.body as Uint8Array).toString("utf8")) as unknown;
+}
+
+function jwtPayload(authorization: string): Record<string, unknown> {
+  const token = authorization.replace(/^Bearer\s+/i, "");
+  const payload = token.split(".")[1];
+  assert.ok(payload);
+  return JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as Record<string, unknown>;
+}
+
 class MemoryProjectCatalog implements ProjectCatalogPort {
   readonly createdNames: string[] = [];
   readonly projects = new Map<string, CoreProject>();
@@ -1426,6 +1875,111 @@ class MemoryProjectCatalog implements ProjectCatalogPort {
   async inspect(projectId: string): Promise<CoreProject | null> {
     return this.projects.get(projectId) ?? null;
   }
+
+  async inspectByKey(key: string): Promise<CoreProject | null> {
+    for (const project of this.projects.values()) {
+      if (project.anon_key === key || project.service_key === key) return project;
+    }
+    return null;
+  }
+}
+
+class MemoryProjectSql {
+  last: { project: CoreProject; sql: string; params?: unknown[] } | null = null;
+
+  async execute(input: {
+    project: CoreProject;
+    sql: string;
+    params?: unknown[];
+  }) {
+    this.last = input;
+    return {
+      status: "ok" as const,
+      schema: input.project.schema_slot,
+      rows: [{ ok: true }],
+      row_count: 1,
+      fields: [{ name: "ok", type: "bool" }],
+    };
+  }
+}
+
+class MemoryRuntimePorts implements RuntimeKernelPorts {
+  readonly projects: RuntimeKernelPorts["projects"];
+  readonly releases: RuntimeKernelPorts["releases"];
+  readonly plans: RuntimeKernelPorts["plans"];
+  readonly content: RuntimeKernelPorts["content"];
+  readonly migrations: RuntimeKernelPorts["migrations"];
+
+  readonly #plans = new Map<string, StoredCoreApplyPlan>();
+  readonly #releases = new Map<string, PortableReleaseState>();
+  #activeReleaseId: string | null = null;
+
+  constructor(projectId = "prj_0000000000000001") {
+    const project: CoreProject = {
+      project_id: projectId,
+      schema_slot: "project_0000000000000001",
+      public_id: "local_0000000000000001",
+      anon_key: "anon_test",
+      service_key: "service_test",
+      endpoints: {
+        rest_url: "http://127.0.0.1:4300",
+        static_base_url: `http://127.0.0.1:4020/projects/v1/${projectId}/static`,
+        storage_base_url: `http://127.0.0.1:4020/projects/v1/${projectId}/storage`,
+      },
+      active_release_id: this.#activeReleaseId,
+      capabilities: runtimeCapabilities("test"),
+    };
+    this.projects = {
+      create: async () => project,
+      inspect: async (candidateProjectId) => candidateProjectId === project.project_id ? project : null,
+    };
+    this.releases = {
+      getBase: async (_projectId, target) => {
+        if (target === "empty") {
+          return { release_id: null, state: emptyCoreReleaseState() };
+        }
+        const releaseId = typeof target === "string" ? this.#activeReleaseId : target.release_id;
+        return {
+          release_id: releaseId,
+          state: releaseId ? this.#releases.get(releaseId) ?? emptyCoreReleaseState() : emptyCoreReleaseState(),
+        };
+      },
+      setActiveRelease: async (input) => {
+        if (this.#activeReleaseId !== input.expectedBaseReleaseId) {
+          throw new ApplyInvariantError("stale_plan", "Apply plan base release no longer matches the active release.");
+        }
+        this.#releases.set(input.releaseId, input.release);
+        this.#activeReleaseId = input.releaseId;
+      },
+    };
+    this.plans = {
+      create: async (input) => {
+        const plan: StoredCoreApplyPlan = {
+          ...input,
+          plan_id: `plan_${this.#plans.size + 1}`,
+          status: "planned",
+          created_at: new Date(0).toISOString(),
+        };
+        this.#plans.set(plan.plan_id, plan);
+        return plan;
+      },
+      get: async (planId) => this.#plans.get(planId) ?? null,
+      markCommitted: async (planId) => {
+        const plan = this.#plans.get(planId);
+        if (!plan) return;
+        this.#plans.set(planId, { ...plan, status: "committed" });
+      },
+    };
+    this.content = {
+      putStatic: async () => undefined,
+      hasContent: async () => true,
+      readStatic: async () => null,
+    };
+    this.migrations = {
+      check: async () => ({ state: "absent" }),
+      applyInline: async () => undefined,
+    };
+  }
 }
 
 class MemoryReleaseState {
@@ -1437,6 +1991,16 @@ class MemoryReleaseState {
 
   async getBase(): Promise<{ release_id: string | null; state: PortableReleaseState }> {
     return { release_id: "rel_test", state: this.#state };
+  }
+
+  async setActiveRelease(): Promise<void> {
+    throw new Error("not used");
+  }
+}
+
+class MissingProjectReleaseState {
+  async getBase(projectId: string): Promise<never> {
+    throw new ApplyInvariantError("project_not_found", `Run402 Core project not found: ${projectId}`);
   }
 
   async setActiveRelease(): Promise<void> {

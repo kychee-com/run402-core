@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import pg, { type Pool as PgPool, type PoolClient } from "pg";
+import pg, { type Pool as PgPool, type PoolClient, type QueryResult } from "pg";
 import {
   runtimeCapabilities,
   type CoreProject,
@@ -61,6 +61,12 @@ export class PostgresProjectCatalog implements ProjectCatalogPort {
 
       CREATE INDEX IF NOT EXISTS core_projects_created_at_idx
         ON internal.core_projects (created_at);
+
+      CREATE UNIQUE INDEX IF NOT EXISTS core_projects_anon_key_idx
+        ON internal.core_projects (anon_key);
+
+      CREATE UNIQUE INDEX IF NOT EXISTS core_projects_service_key_idx
+        ON internal.core_projects (service_key);
     `);
   }
 
@@ -138,6 +144,20 @@ export class PostgresProjectCatalog implements ProjectCatalogPort {
     return result.rows[0] ? this.#toCoreProject(result.rows[0]) : null;
   }
 
+  async inspectByKey(key: string): Promise<CoreProject | null> {
+    const result = await this.#pool.query<ProjectRow>(
+      `
+        SELECT project_id, name, schema_slot, public_id, anon_key, service_key, active_release_id
+        FROM internal.core_projects
+        WHERE anon_key = $1 OR service_key = $1
+        LIMIT 1
+      `,
+      [key],
+    );
+
+    return result.rows[0] ? this.#toCoreProject(result.rows[0]) : null;
+  }
+
   #toCoreProject(row: ProjectRow): CoreProject {
     return {
       project_id: row.project_id,
@@ -154,6 +174,101 @@ export class PostgresProjectCatalog implements ProjectCatalogPort {
       capabilities: this.#capabilities,
     };
   }
+}
+
+export interface ProjectSqlResult {
+  status: "ok";
+  schema: string;
+  rows: Record<string, unknown>[];
+  row_count: number;
+  fields: Array<{ name: string; type: string }>;
+}
+
+export class PostgresProjectSql {
+  readonly #pool: PgPool;
+
+  constructor(pool: PgPool) {
+    this.#pool = pool;
+  }
+
+  async execute(input: {
+    project: CoreProject;
+    sql: string;
+    params?: unknown[];
+  }): Promise<ProjectSqlResult> {
+    const client = await this.#pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(`SET LOCAL search_path TO ${quoteIdentifier(input.project.schema_slot)}, public, auth`);
+      await client.query(
+        "SELECT set_config('request.jwt.claims', $1, true)",
+        [JSON.stringify({
+          project_id: input.project.project_id,
+          role: "service_role",
+          sub: "service",
+          iss: "run402-core",
+        })],
+      );
+      const result = input.params && input.params.length > 0
+        ? await client.query(input.sql, input.params)
+        : await client.query(input.sql);
+      await client.query("COMMIT");
+      const normalized = normalizeQueryResult(result);
+      return {
+        status: "ok",
+        schema: input.project.schema_slot,
+        rows: normalized.last.rows as Record<string, unknown>[],
+        row_count: normalized.rowCount,
+        fields: normalized.last.fields.map((field) => ({
+          name: field.name,
+          type: pgTypeName(field.dataTypeID),
+        })),
+      };
+    } catch (error) {
+      await rollbackQuietly(client);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+}
+
+function normalizeQueryResult(result: QueryResult | QueryResult[]): {
+  last: QueryResult;
+  rowCount: number;
+} {
+  if (Array.isArray(result)) {
+    const last = result[result.length - 1] ?? { rows: [], rowCount: 0, fields: [] };
+    return {
+      last,
+      rowCount: result.reduce((sum, item) => sum + (item.rowCount ?? 0), 0),
+    };
+  }
+  return {
+    last: result,
+    rowCount: result.rowCount ?? 0,
+  };
+}
+
+function pgTypeName(typeOid: number): string {
+  const names: Record<number, string> = {
+    16: "bool",
+    20: "int8",
+    21: "int2",
+    23: "int4",
+    25: "text",
+    700: "float4",
+    701: "float8",
+    1043: "varchar",
+    1082: "date",
+    1114: "timestamp",
+    1184: "timestamptz",
+    1700: "numeric",
+    2950: "uuid",
+    3802: "jsonb",
+    1009: "text[]",
+  };
+  return names[typeOid] ?? `oid:${typeOid}`;
 }
 
 async function createProjectSchema(client: PoolClient, schemaSlot: string): Promise<void> {

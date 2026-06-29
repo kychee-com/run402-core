@@ -75,11 +75,11 @@ async function main(): Promise<void> {
 }
 
 function handlerInput(current: RunnerPayload): unknown {
-  if (current.function_class !== "ssr") {
-    return current.invocation.request ?? current.invocation;
-  }
   if (!current.invocation.request) {
-    throw new Error("Astro SSR invocation requires routed HTTP request metadata.");
+    if (current.function_class === "ssr") {
+      throw new Error("Astro SSR invocation requires routed HTTP request metadata.");
+    }
+    return current.invocation;
   }
   return webRequestFromRouted(current.invocation.request);
 }
@@ -92,7 +92,16 @@ function webRequestFromRouted(request: RoutedHttpRequestV1): Request {
   if (request.method !== "GET" && request.method !== "HEAD" && request.body) {
     init.body = Buffer.from(request.body.data, "base64");
   }
-  return new Request(request.url, init);
+  const webRequest = new Request(request.url, init);
+  Object.defineProperties(webRequest, {
+    version: { value: request.version, enumerable: true },
+    path: { value: request.path, enumerable: true },
+    rawQuery: { value: request.rawQuery, enumerable: true },
+    cookies: { value: request.cookies, enumerable: true },
+    context: { value: request.context, enumerable: true },
+    routedBody: { value: request.body, enumerable: true },
+  });
+  return webRequest;
 }
 
 function selectHandler(mod: Record<string, unknown>, entrypoint: string): (event: unknown) => Promise<unknown> | unknown {

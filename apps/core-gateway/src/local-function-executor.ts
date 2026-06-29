@@ -20,6 +20,12 @@ import {
 export interface LocalFunctionExecutorInput extends CoreFunctionInvocationInput {
   bundle: CoreFunctionBundleMetadata;
   secrets?: Record<string, string>;
+  run402Env?: {
+    apiBaseUrl: string;
+    anonKey: string;
+    serviceKey: string;
+    jwtSecret?: string;
+  };
 }
 
 export interface LocalFunctionExecutorResult extends CoreFunctionInvocationResult {
@@ -288,6 +294,12 @@ function killChildTree(child: ChildProcessWithoutNullStreams): void {
 function executorEnv(input: LocalFunctionExecutorInput): Record<string, string> {
   return {
     ...(input.secrets ?? {}),
+    ...(input.run402Env ? {
+      RUN402_API_BASE: input.run402Env.apiBaseUrl,
+      RUN402_ANON_KEY: input.run402Env.anonKey,
+      RUN402_SERVICE_KEY: input.run402Env.serviceKey,
+      ...(input.run402Env.jwtSecret ? { RUN402_JWT_SECRET: input.run402Env.jwtSecret } : {}),
+    } : {}),
     RUN402_PROJECT_ID: input.projectId,
     RUN402_RELEASE_ID: input.releaseId ?? "",
     RUN402_FUNCTION_NAME: input.functionName,

@@ -1,0 +1,7 @@
+services:
+  core:
+    environment:
+      CORE_PUBLIC_URL: "http://${RUN402_CORE_PUBLIC_HOST:?Set RUN402_CORE_PUBLIC_HOST to the EC2 public DNS name or IPv4 address}:4020"
+      CORE_POSTGREST_PUBLIC_URL: "http://${RUN402_CORE_PUBLIC_HOST:?Set RUN402_CORE_PUBLIC_HOST to the EC2 public DNS name or IPv4 address}:4300"
+    volumes:
+      - ./imports:/imports:ro

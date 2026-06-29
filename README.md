@@ -119,6 +119,8 @@ See [docs/runtime-kernel/quickstart.md](./docs/runtime-kernel/quickstart.md), [d
 
 For the full Docker-hosted Core Gateway verification path, see [docs/runtime-kernel/docker-compose-howto.md](./docs/runtime-kernel/docker-compose-howto.md).
 
+For the first generic AWS target, see [docs/deployment/aws-ec2/README.md](./docs/deployment/aws-ec2/README.md).
+
 ## Cloud Vs Core
 
 Run402 Cloud is the managed service. Run402 Core is the public runtime and release-semantics code that can move toward self-hosting and portability over time.

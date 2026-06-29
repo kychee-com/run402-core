@@ -7,14 +7,16 @@ services:
       PORT: "4020"
       CORE_GATEWAY_HOST: "0.0.0.0"
       CORE_PUBLIC_URL: "http://127.0.0.1:4020"
+      CORE_FUNCTION_API_BASE: "http://core:4020"
       CORE_DATABASE_URL: "postgres://run402_core:run402_core_dev@postgres:5432/run402_core"
       CORE_POSTGREST_URL: "http://postgrest:3000"
       CORE_POSTGREST_PUBLIC_URL: "http://127.0.0.1:4300"
+      RUN402_CORE_ROOT_PROJECT_ID: "${RUN402_CORE_ROOT_PROJECT_ID:-}"
       CORE_CONTENT_DIR: "/var/lib/run402-core/content"
       CORE_FUNCTION_WORKER_URL: "http://function-worker:4021"
       CORE_JWT_SECRET: "run402-core-local-jwt-secret-change-me"
     ports:
-      - "127.0.0.1:4020:4020"
+      - "${CORE_GATEWAY_BIND:-127.0.0.1}:4020:4020"
     volumes:
       - run402-core-content-data:/var/lib/run402-core/content
     depends_on:
@@ -58,7 +60,7 @@ services:
       POSTGRES_USER: run402_core
       POSTGRES_PASSWORD: run402_core_dev
     ports:
-      - "127.0.0.1:55432:5432"
+      - "${CORE_POSTGRES_BIND:-127.0.0.1}:55432:5432"
     volumes:
       - run402-core-postgres-data:/var/lib/postgresql/data
       - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
@@ -80,7 +82,7 @@ services:
       postgres:
         condition: service_healthy
     ports:
-      - "127.0.0.1:4300:3000"
+      - "${CORE_POSTGREST_BIND:-127.0.0.1}:4300:3000"
 
   bootstrap:
     image: postgres:16.11-bookworm

@@ -46,6 +46,7 @@ import {
   cacheControlForStaticCacheClass,
   computeStaticManifestSha256,
   ReleaseCoreError,
+  staticManifestPublicPathMode,
   type ContentRefHex,
   type PortableReleaseState,
   type RouteEntry,
@@ -60,7 +61,7 @@ import type {
 } from "./local-function-executor.js";
 import { PostgresApplyStore } from "./postgres-apply.js";
 import { PostgresArchiveImporter } from "./postgres-archive-importer.js";
-import { createPostgresPool, PostgresProjectCatalog } from "./postgres-projects.js";
+import { createPostgresPool, PostgresProjectCatalog, PostgresProjectSql, type ProjectSqlResult } from "./postgres-projects.js";
 import { PostgresStorageStore } from "./postgres-storage.js";
 
 export interface CoreGatewayConfig {
@@ -68,7 +69,10 @@ export interface CoreGatewayConfig {
   port: number;
   databaseUrl?: string;
   publicBaseUrl: string;
+  functionApiBaseUrl: string;
+  postgrestUrl: string;
   postgrestPublicUrl: string;
+  rootProjectId?: string;
   contentDir: string;
   jwtSecret: string;
   signedReadSecret: string;
@@ -78,6 +82,8 @@ export interface CoreGatewayConfig {
 
 export interface CoreGatewayRuntime {
   projects?: ProjectCatalogPort;
+  projectKeys?: ProjectKeyLookupPort;
+  projectSql?: ProjectSqlPort;
   releases?: RuntimeKernelPorts["releases"];
   plans?: RuntimeKernelPorts["plans"];
   content?: ContentStorePort;
@@ -93,9 +99,26 @@ export interface CoreGatewayRuntime {
   migrations?: RuntimeKernelPorts["migrations"];
   archiveImporter?: RuntimeKernelPorts["archiveImporter"];
   lifecycle?: RuntimeKernelPorts["lifecycle"];
+  rootProjectId?: string;
+  publicBaseUrl?: string;
+  functionApiBaseUrl?: string;
+  postgrestUrl?: string;
   jwtSecret?: string;
   maxObjectBytes?: number;
+  fetch?: typeof fetch;
   close?: () => Promise<void>;
+}
+
+export interface ProjectKeyLookupPort {
+  inspectByKey(key: string): Promise<CoreProject | null>;
+}
+
+export interface ProjectSqlPort {
+  execute(input: {
+    project: CoreProject;
+    sql: string;
+    params?: unknown[];
+  }): Promise<ProjectSqlResult>;
 }
 
 export interface FunctionBundleLookupPort {
@@ -137,7 +160,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): CoreGatewayCon
     port,
     databaseUrl: env.CORE_DATABASE_URL,
     publicBaseUrl: env.CORE_PUBLIC_URL || `http://${host}:${port}`,
+    functionApiBaseUrl: env.CORE_FUNCTION_API_BASE || env.CORE_PUBLIC_URL || `http://${host}:${port}`,
+    postgrestUrl: env.CORE_POSTGREST_URL || "http://127.0.0.1:4300",
     postgrestPublicUrl: env.CORE_POSTGREST_PUBLIC_URL || env.CORE_POSTGREST_URL || "http://127.0.0.1:4300",
+    rootProjectId: normalizeOptionalProjectId(env.RUN402_CORE_ROOT_PROJECT_ID),
     contentDir: env.CORE_CONTENT_DIR || ".run402-core/content",
     jwtSecret: env.CORE_JWT_SECRET || "run402-core-local-jwt-secret-change-me",
     signedReadSecret: env.CORE_SIGNED_READ_SECRET || env.CORE_JWT_SECRET || "run402-core-local-signed-read-secret-change-me",
@@ -148,7 +174,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): CoreGatewayCon
 
 export async function createGatewayRuntime(config: CoreGatewayConfig): Promise<CoreGatewayRuntime> {
   if (!config.databaseUrl) {
-    return {};
+    return {
+      rootProjectId: config.rootProjectId,
+      publicBaseUrl: config.publicBaseUrl,
+      functionApiBaseUrl: config.functionApiBaseUrl,
+      postgrestUrl: config.postgrestUrl,
+      jwtSecret: config.jwtSecret,
+    };
   }
 
   const pool = createPostgresPool(config.databaseUrl);
@@ -174,6 +206,8 @@ export async function createGatewayRuntime(config: CoreGatewayConfig): Promise<C
 
   return {
     projects,
+    projectKeys: projects,
+    projectSql: new PostgresProjectSql(pool),
     releases: applyStore,
     plans: applyStore,
     content,
@@ -187,6 +221,10 @@ export async function createGatewayRuntime(config: CoreGatewayConfig): Promise<C
     secrets: storage,
     migrations: applyStore,
     archiveImporter,
+    rootProjectId: config.rootProjectId,
+    publicBaseUrl: config.publicBaseUrl,
+    functionApiBaseUrl: config.functionApiBaseUrl,
+    postgrestUrl: config.postgrestUrl,
     lifecycle: {
       activate: async (context) => {
         await storage.activateReleaseWithStorage({
@@ -567,6 +605,64 @@ export async function coreGatewayResponse(
     return { status: 201, body: token };
   }
 
+  if (pathname === "/rest/v1" || pathname.startsWith("/rest/v1/")) {
+    return await proxyCallerRest(runtime, {
+      method,
+      pathname,
+      rawSearch: url.search,
+      headers,
+      body: request.body,
+    });
+  }
+
+  if (pathname === "/admin/v1/rest" || pathname.startsWith("/admin/v1/rest/")) {
+    return await proxyServiceRest(runtime, {
+      method,
+      pathname,
+      rawSearch: url.search,
+      headers,
+      body: request.body,
+    });
+  }
+
+  const adminSqlMatch = /^\/projects\/v1\/admin\/([^/]+)\/sql$/.exec(pathname);
+  if (method === "POST" && adminSqlMatch) {
+    const auth = await requireProjectService(runtime, adminSqlMatch[1], headers);
+    if ("status" in auth) return auth;
+    const projectSql = runtime.projectSql;
+    if (!projectSql) return unavailable("project_sql_unavailable", "Run402 Core project SQL is not configured.");
+    try {
+      const input = adminSqlInput(request.body);
+      const blocked = checkCoreSqlSafety(input.sql);
+      if (blocked) {
+        return {
+          status: 403,
+          body: {
+            error: "sql_forbidden",
+            message: blocked.hint ? `${blocked.error} - ${blocked.hint}` : blocked.error,
+          },
+        };
+      }
+      const result = await projectSql.execute({
+        project: auth,
+        sql: input.sql,
+        ...(input.params ? { params: input.params } : {}),
+      });
+      return { status: 200, body: result };
+    } catch (error) {
+      if (error instanceof RangeError) {
+        return { status: 400, body: { error: "invalid_request", message: error.message } };
+      }
+      return {
+        status: 400,
+        body: {
+          error: "sql_error",
+          message: `SQL error: ${error instanceof Error ? error.message : String(error)}`,
+        },
+      };
+    }
+  }
+
   const projectMatch = /^\/projects\/v1\/([^/]+)$/.exec(pathname);
   if (method === "GET" && projectMatch) {
     const projects = runtime.projects;
@@ -628,16 +724,20 @@ export async function coreGatewayResponse(
 
   const staticMatch = /^\/projects\/v1\/([^/]+)\/static(\/.*)?$/.exec(pathname);
   if (staticMatch) {
-    const staticResult = await staticResponse(runtime, staticMatch[1], staticMatch[2] || "/", {
-      method,
-      rawQuery: url.search.slice(1),
-      headers: request.headers,
-      body: request.body,
-    });
-    if (method === "HEAD" && staticResult.status === 200) {
-      return { ...staticResult, body: new Uint8Array() };
+    try {
+      const staticResult = await staticResponse(runtime, staticMatch[1], staticMatch[2] || "/", {
+        method,
+        rawQuery: url.search.slice(1),
+        headers: request.headers,
+        body: request.body,
+      });
+      if (method === "HEAD" && staticResult.status === 200) {
+        return { ...staticResult, body: new Uint8Array() };
+      }
+      return staticResult;
+    } catch (error) {
+      return applyErrorResponse(error);
     }
-    return staticResult;
   }
 
   const staticDiagnosticsMatch = /^\/projects\/v1\/([^/]+)\/static-diagnostics$/.exec(pathname);
@@ -704,6 +804,19 @@ export async function coreGatewayResponse(
   if (pathname.startsWith("/functions")) {
     const error = new DynamicRuntimeUnavailableError();
     return { status: error.status, body: runtimeKernelErrorEnvelope(error) };
+  }
+
+  if (runtime.rootProjectId && !isCoreControlPlanePath(pathname)) {
+    try {
+      return await staticResponse(runtime, runtime.rootProjectId, pathname, {
+        method,
+        rawQuery: url.search.slice(1),
+        headers: request.headers,
+        body: request.body,
+      });
+    } catch (error) {
+      return applyErrorResponse(error);
+    }
   }
 
   const unsupportedFeature = unsupportedFeatureForPath(pathname);
@@ -775,6 +888,25 @@ function runtimePorts(runtime: CoreGatewayRuntime): RuntimeKernelPorts | null {
   };
 }
 
+function normalizeOptionalProjectId(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function isCoreControlPlanePath(pathname: string): boolean {
+  if (pathname === "/health") return true;
+  if (pathname === "/capabilities/v1") return true;
+  return [
+    "/projects/v1",
+    "/archives/v1",
+    "/apply/v1",
+    "/auth/v1",
+    "/functions/v1",
+    "/rest/v1",
+    "/admin/v1",
+  ].some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
+}
+
 function unavailable(error: string, message: string): CoreGatewayResult {
   return {
     status: 503,
@@ -812,6 +944,239 @@ function serviceTokenFromHeaders(headers: Record<string, string | undefined>): s
   if (!authorization) return null;
   const match = /^Bearer\s+(.+)$/i.exec(authorization);
   return match?.[1] ?? null;
+}
+
+interface RestProxyInput {
+  method: string;
+  pathname: string;
+  rawSearch: string;
+  headers: Record<string, string | undefined>;
+  body: unknown;
+}
+
+async function proxyCallerRest(
+  runtime: CoreGatewayRuntime,
+  input: RestProxyInput,
+): Promise<CoreGatewayResult> {
+  const resolved = await resolveProjectFromApiKey(runtime, input.headers, "anon");
+  if ("status" in resolved) return resolved;
+  const authorization = callerPostgrestAuthorization(runtime, resolved.project, input.headers.authorization);
+  if ("status" in authorization) return authorization;
+  return await proxyPostgrest(runtime, {
+    ...input,
+    project: resolved.project,
+    routePrefix: "/rest/v1",
+    authorization: authorization.authorization,
+  });
+}
+
+async function proxyServiceRest(
+  runtime: CoreGatewayRuntime,
+  input: RestProxyInput,
+): Promise<CoreGatewayResult> {
+  const resolved = await resolveProjectFromApiKey(runtime, input.headers, "service");
+  if ("status" in resolved) return resolved;
+  const token = signJwt({
+    iss: "run402-core",
+    project_id: resolved.project.project_id,
+    role: "service_role",
+    sub: "service",
+  }, runtime.jwtSecret ?? "run402-core-local-jwt-secret-change-me");
+  return await proxyPostgrest(runtime, {
+    ...input,
+    project: resolved.project,
+    routePrefix: "/admin/v1/rest",
+    authorization: `Bearer ${token}`,
+  });
+}
+
+async function resolveProjectFromApiKey(
+  runtime: CoreGatewayRuntime,
+  headers: Record<string, string | undefined>,
+  expected: "anon" | "service",
+): Promise<{ project: CoreProject } | CoreGatewayResult> {
+  const key = headers.apikey;
+  if (!key) {
+    return { status: 401, body: { error: "authentication_required", message: "A project API key is required." } };
+  }
+  const projectKeys = runtime.projectKeys;
+  if (!projectKeys) return unavailable("project_key_lookup_unavailable", "Run402 Core project key lookup is not configured.");
+  const project = await projectKeys.inspectByKey(key);
+  if (!project) {
+    return { status: 401, body: { error: "authentication_required", message: "A valid project API key is required." } };
+  }
+  if (expected === "anon" && key !== project.anon_key) {
+    return { status: 401, body: { error: "authentication_required", message: "A project anon key is required." } };
+  }
+  if (expected === "service" && key !== project.service_key) {
+    return { status: 401, body: { error: "authentication_required", message: "A project service key is required." } };
+  }
+  return { project };
+}
+
+function callerPostgrestAuthorization(
+  runtime: CoreGatewayRuntime,
+  project: CoreProject,
+  authorization: string | undefined,
+): { authorization: string } | CoreGatewayResult {
+  const secret = runtime.jwtSecret ?? "run402-core-local-jwt-secret-change-me";
+  const token = bearerToken(authorization);
+  if (!token) {
+    return {
+      authorization: `Bearer ${signJwt({
+        iss: "run402-core",
+        project_id: project.project_id,
+        role: "anon",
+      }, secret)}`,
+    };
+  }
+  const claims = verifyJwtClaims(token, secret);
+  if (!claims) {
+    return { status: 401, body: { error: "authentication_required", message: "A valid local user JWT is required." } };
+  }
+  if (claims.project_id !== project.project_id) {
+    return { status: 403, body: { error: "project_token_mismatch", message: "Token project_id does not match the API key project." } };
+  }
+  if (claims.role !== "anon" && claims.role !== "authenticated") {
+    return { status: 403, body: { error: "role_forbidden", message: "Caller DB requests cannot use service-role authorization." } };
+  }
+  return { authorization: authorization ?? "" };
+}
+
+async function proxyPostgrest(
+  runtime: CoreGatewayRuntime,
+  input: RestProxyInput & {
+    project: CoreProject;
+    routePrefix: "/rest/v1" | "/admin/v1/rest";
+    authorization: string;
+  },
+): Promise<CoreGatewayResult> {
+  const postgrestUrl = runtime.postgrestUrl?.replace(/\/+$/, "");
+  if (!postgrestUrl) return unavailable("postgrest_unavailable", "Run402 Core PostgREST URL is not configured.");
+  const restPath = input.pathname.slice(input.routePrefix.length);
+  const upstreamUrl = `${postgrestUrl}${restPath || "/"}${input.rawSearch}`;
+  const requestBody = postgrestRequestBody(input.method, input.body, input.headers);
+  const headers: Record<string, string> = {
+    authorization: input.authorization,
+    "accept-profile": input.project.schema_slot,
+    "content-profile": input.project.schema_slot,
+    accept: input.headers.accept ?? "application/json",
+    prefer: input.headers.prefer ?? "return=representation",
+  };
+  if (requestBody !== undefined) {
+    headers["content-type"] = input.headers["content-type"] ?? "application/json";
+  }
+  const upstreamFetch = runtime.fetch ?? fetch;
+  const upstream = await upstreamFetch(upstreamUrl, {
+    method: input.method,
+    headers,
+    ...(requestBody !== undefined ? { body: requestBody } : {}),
+  });
+  const bytes = new Uint8Array(await upstream.arrayBuffer());
+  return {
+    status: upstream.status,
+    raw: true,
+    body: bytes,
+    headers: responseProxyHeaders(upstream.headers, bytes.byteLength),
+  };
+}
+
+function postgrestRequestBody(
+  method: string,
+  body: unknown,
+  headers: Record<string, string | undefined>,
+): BodyInit | undefined {
+  if (method === "GET" || method === "HEAD") return undefined;
+  if (body === undefined || body === null) return undefined;
+  if (
+    typeof body === "object" &&
+    !Array.isArray(body) &&
+    !(body instanceof Uint8Array) &&
+    Object.keys(body).length === 0 &&
+    !headers["content-type"] &&
+    !headers["content-length"]
+  ) {
+    return undefined;
+  }
+  if (body instanceof Uint8Array) return Buffer.from(body).toString("utf8");
+  if (typeof body === "string") return body;
+  return JSON.stringify(body);
+}
+
+function responseProxyHeaders(headers: Headers, bodyLength: number): Record<string, string> {
+  const out: Record<string, string> = {
+    "Content-Length": String(bodyLength),
+    "Cache-Control": "private, no-store",
+  };
+  for (const [name, value] of headers.entries()) {
+    if (isHopByHopHeader(name)) continue;
+    if (name.toLowerCase() === "content-encoding") continue;
+    out[name] = value;
+  }
+  return out;
+}
+
+function adminSqlInput(body: unknown): { sql: string; params?: unknown[] } {
+  if (typeof body === "string") {
+    const sql = body.trim();
+    if (!sql) throw new RangeError("No SQL provided.");
+    return { sql: body };
+  }
+  if (body instanceof Uint8Array) {
+    const sql = Buffer.from(body).toString("utf8");
+    if (!sql.trim()) throw new RangeError("No SQL provided.");
+    return { sql };
+  }
+  if (typeof body === "object" && body !== null && !Array.isArray(body)) {
+    const record = body as Record<string, unknown>;
+    const sql = record.sql ?? record.query;
+    if (typeof sql !== "string" || !sql.trim()) {
+      throw new RangeError('No SQL provided - send raw SQL as text/plain body, or JSON with a "sql" field.');
+    }
+    const params = record.params;
+    if (params !== undefined && !Array.isArray(params)) {
+      throw new RangeError('"params" must be an array.');
+    }
+    return {
+      sql,
+      ...(Array.isArray(params) && params.length > 0 ? { params } : {}),
+    };
+  }
+  throw new RangeError('No SQL provided - send raw SQL as text/plain body, or JSON with a "sql" field.');
+}
+
+function checkCoreSqlSafety(sql: string): { error: string; hint?: string } | null {
+  const stripped = stripSqlStrings(sql);
+  const blocked: Array<{ pattern: RegExp; hint?: string }> = [
+    { pattern: /\bCREATE\s+EXTENSION\b/i },
+    { pattern: /\bCOPY\b.*\bPROGRAM\b/i },
+    { pattern: /\bALTER\s+SYSTEM\b/i },
+    { pattern: /\bSET\s+search_path\b/i },
+    { pattern: /\bSET\s+ROLE\b/i },
+    { pattern: /\bRESET\s+ROLE\b/i },
+    { pattern: /\bCREATE\s+SCHEMA\b/i },
+    { pattern: /\bDROP\s+SCHEMA\b/i },
+    { pattern: /\bGRANT\b/i, hint: "Permissions are managed automatically by Run402 Core." },
+    { pattern: /\bREVOKE\b/i, hint: "Permissions are managed automatically by Run402 Core." },
+    { pattern: /\bCREATE\s+ROLE\b/i },
+    { pattern: /\bDROP\s+ROLE\b/i },
+    {
+      pattern: /\b(?:internal|postgrest|auth|project_[a-z0-9_]+)\s*\./i,
+      hint: "Admin SQL is scoped to the current project schema; do not qualify internal or project schemas.",
+    },
+  ];
+  for (const entry of blocked) {
+    if (entry.pattern.test(stripped)) {
+      return { error: `Blocked SQL pattern: ${entry.pattern.source}`, ...(entry.hint ? { hint: entry.hint } : {}) };
+    }
+  }
+  return null;
+}
+
+function stripSqlStrings(sql: string): string {
+  return sql
+    .replace(/\$([A-Za-z_]*)\$[\s\S]*?\$\1\$/g, (_match, tag: string) => `$${tag}$$${tag}$`)
+    .replace(/'(?:[^']|'')*'/g, "''");
 }
 
 function normalizeHeaders(headers: CoreGatewayRequest["headers"]): Record<string, string | undefined> {
@@ -995,6 +1360,16 @@ async function readRequestBody(req: IncomingMessage, pathnameWithQuery: string):
   if (req.method === "GET" || req.method === "HEAD") {
     return undefined;
   }
+  const contentType = Array.isArray(req.headers["content-type"])
+    ? req.headers["content-type"][0] ?? ""
+    : req.headers["content-type"] ?? "";
+  if (/^\/projects\/v1\/admin\/[^/]+\/sql(?:\?|$)/.test(pathnameWithQuery)) {
+    const raw = await readRequestText(req);
+    if (contentType.includes("application/json")) {
+      return raw.trim() ? JSON.parse(raw) as unknown : {};
+    }
+    return raw;
+  }
   if (
     (req.method === "PUT" && /^\/projects\/v1\/[^/]+\/storage\/uploads\/[^/]+\/bytes(?:\?|$)/.test(pathnameWithQuery)) ||
     /^\/projects\/v1\/[^/]+\/static(?:\/|\?|$)/.test(pathnameWithQuery)
@@ -1006,10 +1381,7 @@ async function readRequestBody(req: IncomingMessage, pathnameWithQuery: string):
     return Buffer.concat(chunks);
   }
 
-  let raw = "";
-  for await (const chunk of req) {
-    raw += chunk;
-  }
+  const raw = await readRequestText(req);
   if (!raw.trim()) {
     return {};
   }
@@ -1019,6 +1391,14 @@ async function readRequestBody(req: IncomingMessage, pathnameWithQuery: string):
   } catch {
     throw new RangeError("Request body must be valid JSON.");
   }
+}
+
+async function readRequestText(req: IncomingMessage): Promise<string> {
+  let raw = "";
+  for await (const chunk of req) {
+    raw += chunk;
+  }
+  return raw;
 }
 
 function projectInput(body: unknown): { name?: string | null } {
@@ -1099,10 +1479,20 @@ async function stageContent(
 }
 
 function applySpecInput(body: unknown): unknown {
-  if (typeof body === "object" && body !== null && !Array.isArray(body) && "spec" in body) {
-    return (body as { spec: unknown }).spec;
+  function normalizeSdkProjectAlias(spec: unknown): unknown {
+    if (typeof spec !== "object" || spec === null || Array.isArray(spec)) return spec;
+    const record = spec as Record<string, unknown>;
+    if (typeof record.project !== "string" && typeof record.project_id === "string") {
+      const { project_id: projectId, ...rest } = record;
+      return { ...rest, project: projectId };
+    }
+    return spec;
   }
-  return body;
+
+  if (typeof body === "object" && body !== null && !Array.isArray(body) && "spec" in body) {
+    return normalizeSdkProjectAlias((body as { spec: unknown }).spec);
+  }
+  return normalizeSdkProjectAlias(body);
 }
 
 function commitInput(body: unknown): { release_spec_digest?: string } {
@@ -1344,6 +1734,14 @@ async function staticResponse(
     return await serveStaticEntry(runtime, projectId, active.state, publicPath, directEntry, request.method);
   }
 
+  const implicitHtmlEntry = implicitCleanHtmlEntry(active.state, publicPath);
+  if (implicitHtmlEntry) {
+    if (request.method !== "GET" && request.method !== "HEAD") {
+      return staticAssetMethodNotAllowed(publicPath);
+    }
+    return await serveStaticEntry(runtime, projectId, active.state, publicPath, implicitHtmlEntry, request.method);
+  }
+
   if (route?.target.type === "function") {
     if (!routeMethodAllows(route, request.method)) return methodNotAllowed(route);
     const functionRoute = route as RouteEntry & { target: { type: "function"; name: string } };
@@ -1392,6 +1790,18 @@ async function staticResponse(
       message: `Static path not found: ${publicPath}`,
     },
   };
+}
+
+function implicitCleanHtmlEntry(
+  release: PortableReleaseState,
+  publicPath: string,
+): StaticManifestFileEntry | null {
+  const manifest = release.static_manifest;
+  if (!manifest) return null;
+  if (staticManifestPublicPathMode(manifest) !== "implicit") return null;
+  if (publicPath === "/" || publicPath.includes(".")) return null;
+  const entry = manifest.files[`${publicPath}.html`];
+  return entry?.direct ? entry : null;
 }
 
 async function serveStaticEntry(
@@ -1573,6 +1983,8 @@ async function invokeRoutedFunction(
   if ("status" in gate) return withRequestIdHeader(gate, requestId);
   const secrets = await resolveFunctionSecrets(runtime, input.projectId, bundle);
   if (isGatewayResult(secrets)) return withRequestIdHeader(secrets, requestId);
+  const run402Env = await resolveFunctionRuntimeEnv(runtime, input.projectId);
+  if (isGatewayResult(run402Env)) return withRequestIdHeader(run402Env, requestId);
 
   try {
     const result = await invokeFunctionWithDiagnostics(runtime, {
@@ -1583,6 +1995,7 @@ async function invokeRoutedFunction(
       requestId,
       actor: gate.actor,
       secrets,
+      run402Env,
       bundle,
       request: {
         version: "run402.routed_http.v1",
@@ -1677,6 +2090,8 @@ async function invokeDirectFunction(
   if ("status" in gate) return gate;
   const secrets = await resolveFunctionSecrets(runtime, input.projectId, bundle);
   if (isGatewayResult(secrets)) return secrets;
+  const run402Env = await resolveFunctionRuntimeEnv(runtime, input.projectId);
+  if (isGatewayResult(run402Env)) return run402Env;
 
   const requestId = newFunctionRequestId();
   const result = await invokeFunctionWithDiagnostics(runtime, {
@@ -1687,6 +2102,7 @@ async function invokeDirectFunction(
     requestId,
     actor: gate.actor,
     secrets,
+    run402Env,
     bundle,
   }, secrets);
   return {
@@ -1984,6 +2400,24 @@ async function resolveFunctionSecrets(
     }
   }
   return values;
+}
+
+async function resolveFunctionRuntimeEnv(
+  runtime: CoreGatewayRuntime,
+  projectId: string,
+): Promise<NonNullable<LocalFunctionExecutorInput["run402Env"]> | CoreGatewayResult> {
+  const projects = runtime.projects;
+  if (!projects) return unavailable("project_catalog_unavailable", "Run402 Core project catalog is not configured.");
+  const project = await projects.inspect(projectId);
+  if (!project) {
+    return { status: 404, body: { error: "project_not_found", message: `Run402 Core project not found: ${projectId}` } };
+  }
+  return {
+    apiBaseUrl: (runtime.functionApiBaseUrl ?? runtime.publicBaseUrl ?? "http://127.0.0.1:4020").replace(/\/+$/, ""),
+    anonKey: project.anon_key,
+    serviceKey: project.service_key,
+    ...(runtime.jwtSecret ? { jwtSecret: runtime.jwtSecret } : {}),
+  };
 }
 
 function authRequired(): CoreGatewayResult {

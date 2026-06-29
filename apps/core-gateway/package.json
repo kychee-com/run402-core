@@ -16,8 +16,8 @@
     "node": ">=22"
   },
   "dependencies": {
-    "@run402/functions": "3.5.1",
-    "@run402/runtime-kernel": "0.1.5",
+    "@run402/functions": "3.5.2",
+    "@run402/runtime-kernel": "0.1.6",
     "pg": "^8.13.1",
     "pg-copy-streams": "^7.0.0"
   },
