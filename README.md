@@ -119,6 +119,8 @@ See [docs/runtime-kernel/quickstart.md](./docs/runtime-kernel/quickstart.md), [d
 
 For the full Docker-hosted Core Gateway verification path, see [docs/runtime-kernel/docker-compose-howto.md](./docs/runtime-kernel/docker-compose-howto.md).
 
+For app-level portability evidence after a deploy, see [docs/runtime-kernel/core-certification.md](./docs/runtime-kernel/core-certification.md).
+
 For the first generic AWS target, see [docs/deployment/aws-ec2/README.md](./docs/deployment/aws-ec2/README.md).
 
 ## Cloud Vs Core

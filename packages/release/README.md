@@ -11,6 +11,7 @@ This package defines the production-used, deterministic behavior for parsing, va
 - Canonicalization rules in `docs/canonicalization.md`.
 - Field support matrix in `docs/field-support.md`.
 - Compatibility policy in `docs/compatibility.md`.
+- App authoring helpers in `docs/app-kit.md` and `@run402/release/app-kit`.
 - Static manifest construction, canonicalization, digesting, metadata summaries, and public path helpers.
 - Pure materialization from `ReleaseSpec` plus a concrete `PortableReleaseState`.
 - Release diff envelopes, count-only summaries, truncation metadata, logical effect requirements, content-reference discovery, and `RUN402_CORE_*` warnings.
@@ -26,6 +27,9 @@ This package defines the production-used, deterministic behavior for parsing, va
 | Materialize desired release state | Yes |
 | Compute release diff | Yes |
 | Derive fact and content requirements | Yes |
+| Generate CLI-compatible app manifests | Yes |
+| Materialize local function source files | Yes |
+| Diagnose Core Developer Preview omissions | Yes |
 | Deploy resources | No |
 | Execute migrations | No |
 | Store secrets/content | No |

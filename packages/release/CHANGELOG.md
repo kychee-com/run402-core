@@ -1,5 +1,10 @@
 # @run402/release Changelog
 
+## Unreleased
+
+- Add `@run402/release/app-kit` for public app repos that generate CLI-compatible Run402 deploy manifests.
+- Add deterministic function source materialization, local-dir site refs, migration checksum helpers, Core Developer Preview diagnostics, and explicit omitted-feature reporting.
+
 ## 0.1.1
 
 - Accept standard Content-Type parameters such as `text/html; charset=utf-8` in `ReleaseSpec` content references.

@@ -59,11 +59,22 @@ try {
     }
   });
 
+  step("import app-kit subpath", () => {
+    const result = run(
+      `node --input-type=module -e "import { buildPortableAppManifest, inlineSqlMigration, localDirSiteReplace, materializeFunctionManifestMap } from '@run402/release/app-kit'; const migration = inlineSqlMigration({ id: '001_init', sql: 'select 1;\\n' }); if (!/^[0-9a-f]{64}$/.test(migration.checksum)) process.exit(1); const manifest = buildPortableAppManifest({ database: { migrations: [migration] }, site: { replace: localDirSiteReplace('dist/client', { rootDir: process.cwd() }) }, functions: { replace: materializeFunctionManifestMap({ api: { source: 'export default () => new Response(\\'ok\\');\\n' } }, { rootDir: process.cwd(), outDir: process.cwd() + '/dist/run402/functions' }).functions } }); if (!manifest.database || !manifest.functions || !manifest.site) process.exit(1); console.log('app-kit smoke OK');"`,
+      { cwd: installDir },
+    );
+    if (!result.includes("app-kit smoke OK")) {
+      throw new Error(`unexpected app-kit smoke output: ${result}`);
+    }
+  });
+
   step("tarball excludes private implementation details", () => {
     const listing = run(`tar -tzf "${tarball}"`);
     const required = [
       "package/schemas/release-spec.v1.schema.json",
       "package/schemas/portable-release-state.v1.schema.json",
+      "package/docs/app-kit.md",
       "package/docs/canonicalization.md",
       "package/docs/compatibility.md",
       "package/docs/field-support.md",
