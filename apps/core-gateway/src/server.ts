@@ -59,6 +59,7 @@ import type {
   LocalFunctionExecutorInput,
   LocalFunctionExecutorResult,
 } from "./local-function-executor.js";
+import { createEmailInboundProvider, emailInboundProviderConfigFromEnv, EmailInboundError, type EmailInboundProviderConfig, type EmailInboundProviderPort } from "./email-inbound.js";
 import { createEmailProvider, emailProviderConfigFromEnv, EmailProviderError, type EmailProviderPort, type EmailProviderConfig } from "./email-provider.js";
 import { EmailValidationError, mailboxAddress, validateMailboxSlug, validateRawEmail } from "./email-validation.js";
 import { buildMixedMime } from "./mime-build.js";
@@ -71,6 +72,8 @@ import {
   formatMailboxResponse,
   mailboxSettingsBody,
   PostgresCoreMailboxStore,
+  type CoreMessageDirection,
+  type CoreWebhookDeliveryStatus,
   type CoreMailboxStorePort,
 } from "./postgres-mailboxes.js";
 import { createPostgresPool, PostgresProjectCatalog, PostgresProjectSql, type ProjectSqlResult } from "./postgres-projects.js";
@@ -91,6 +94,7 @@ export interface CoreGatewayConfig {
   maxObjectBytes: number;
   functionWorkerUrl?: string;
   emailProvider: EmailProviderConfig;
+  emailInboundProvider: EmailInboundProviderConfig;
 }
 
 export interface CoreGatewayRuntime {
@@ -114,6 +118,7 @@ export interface CoreGatewayRuntime {
   lifecycle?: RuntimeKernelPorts["lifecycle"];
   mailboxes?: CoreMailboxStorePort;
   emailProvider?: EmailProviderPort;
+  emailInboundProvider?: EmailInboundProviderPort;
   rootProjectId?: string;
   publicBaseUrl?: string;
   functionApiBaseUrl?: string;
@@ -185,6 +190,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): CoreGatewayCon
     maxObjectBytes: Number.parseInt(env.CORE_MAX_OBJECT_BYTES || String(100 * 1024 * 1024), 10),
     functionWorkerUrl: env.CORE_FUNCTION_WORKER_URL,
     emailProvider: emailProviderConfigFromEnv(env),
+    emailInboundProvider: emailInboundProviderConfigFromEnv(env),
   };
 }
 
@@ -213,6 +219,7 @@ export async function createGatewayRuntime(config: CoreGatewayConfig): Promise<C
   });
   const mailboxes = new PostgresCoreMailboxStore(pool);
   const emailProvider = createEmailProvider(config.emailProvider);
+  const emailInboundProvider = createEmailInboundProvider(config.emailInboundProvider);
   const archiveImporter = new PostgresArchiveImporter(pool, content, {
     publicBaseUrl: config.publicBaseUrl,
     postgrestPublicUrl: config.postgrestPublicUrl,
@@ -241,6 +248,7 @@ export async function createGatewayRuntime(config: CoreGatewayConfig): Promise<C
     migrations: applyStore,
     mailboxes,
     emailProvider,
+    emailInboundProvider,
     archiveImporter,
     rootProjectId: config.rootProjectId,
     publicBaseUrl: config.publicBaseUrl,
@@ -630,6 +638,7 @@ export async function coreGatewayResponse(
     return await mailboxRoute(runtime, {
       method,
       pathname,
+      query,
       headers,
       body: request.body,
     });
@@ -980,6 +989,7 @@ function serviceTokenFromHeaders(headers: Record<string, string | undefined>): s
 interface MailboxRouteInput {
   method: string;
   pathname: string;
+  query: URLSearchParams;
   headers: Record<string, string | undefined>;
   body: unknown;
 }
@@ -990,10 +1000,16 @@ async function mailboxRoute(
 ): Promise<CoreGatewayResult> {
   const mailboxes = runtime.mailboxes;
   if (!mailboxes) return unavailable("mailbox_store_unavailable", "Run402 Core mailbox store is not configured.");
+  const inboundProvider = emailInboundProviderForRuntime(runtime);
+  if (input.method === "POST" && input.pathname === "/mailboxes/v1/inbound/ingestions") {
+    return await inboundIngestionRoute(mailboxes, inboundProvider, input);
+  }
+
   const auth = await requireServiceProjectFromHeaders(runtime, input.headers);
   if ("status" in auth) return auth;
   const provider = emailProviderForRuntime(runtime);
   const readiness = provider.readiness();
+  const inboundReadiness = inboundProvider.readiness();
 
   try {
     if (input.method === "POST" && input.pathname === "/mailboxes/v1") {
@@ -1005,7 +1021,7 @@ async function mailboxRoute(
       const settings = await mailboxes.getSettings(auth.project_id);
       return {
         status: 201,
-        body: formatMailboxResponse({ mailbox, settings, providerReadiness: readiness }),
+        body: formatMailboxResponse({ mailbox, settings, providerReadiness: readiness, inboundProviderReadiness: inboundReadiness }),
       };
     }
 
@@ -1015,9 +1031,10 @@ async function mailboxRoute(
         mailboxes.getSettings(auth.project_id),
       ]);
       const response = {
-        mailboxes: records.map((mailbox) => formatMailboxResponse({ mailbox, settings, providerReadiness: readiness })),
+        mailboxes: records.map((mailbox) => formatMailboxResponse({ mailbox, settings, providerReadiness: readiness, inboundProviderReadiness: inboundReadiness })),
         mailbox_settings: mailboxSettingsBody(settings),
         provider_readiness: readiness,
+        inbound_provider_readiness: inboundReadiness,
         next_actions: mailboxListNextActions(records.length, settings.default_outbound_mailbox_id, readiness.status),
       };
       return { status: 200, body: response };
@@ -1034,6 +1051,107 @@ async function mailboxRoute(
         defaultOutboundMailboxId: value,
       });
       return { status: 200, body: { mailbox_settings: mailboxSettingsBody(settings) } };
+    }
+
+    const webhookDeliveriesMatch = /^\/mailboxes\/v1\/([^/]+)\/webhooks\/deliveries$/.exec(input.pathname);
+    if (input.method === "GET" && webhookDeliveriesMatch) {
+      const deliveries = await mailboxes.listWebhookDeliveries({
+        projectId: auth.project_id,
+        mailboxId: webhookDeliveriesMatch[1],
+        ...webhookDeliveryStatusQuery(input.query),
+      });
+      return { status: 200, body: { deliveries, has_more: false, next_cursor: null } };
+    }
+
+    const webhookRedriveMatch = /^\/mailboxes\/v1\/([^/]+)\/webhooks\/deliveries\/([^/]+)\/redrive$/.exec(input.pathname);
+    if (input.method === "POST" && webhookRedriveMatch) {
+      const delivery = await mailboxes.redriveWebhookDelivery({
+        projectId: auth.project_id,
+        mailboxId: webhookRedriveMatch[1],
+        deliveryId: webhookRedriveMatch[2],
+      });
+      return { status: 200, body: delivery };
+    }
+
+    const webhooksMatch = /^\/mailboxes\/v1\/([^/]+)\/webhooks$/.exec(input.pathname);
+    if (webhooksMatch) {
+      const mailboxId = webhooksMatch[1];
+      if (input.method === "POST") {
+        const body = mailboxWebhookBody(input.body, { partial: false });
+        const webhook = await mailboxes.createWebhook({
+          projectId: auth.project_id,
+          mailboxId,
+          url: body.url!,
+          events: body.events!,
+        });
+        return { status: 201, body: webhook };
+      }
+      if (input.method === "GET") {
+        const webhooks = await mailboxes.listWebhooks({ projectId: auth.project_id, mailboxId });
+        return { status: 200, body: { webhooks } };
+      }
+    }
+
+    const webhookMatch = /^\/mailboxes\/v1\/([^/]+)\/webhooks\/([^/]+)$/.exec(input.pathname);
+    if (webhookMatch) {
+      const mailboxId = webhookMatch[1];
+      const webhookId = webhookMatch[2];
+      if (input.method === "GET") {
+        const webhook = await mailboxes.getWebhook({ projectId: auth.project_id, mailboxId, webhookId });
+        return webhook
+          ? { status: 200, body: webhook }
+          : { status: 404, body: { error: "webhook_not_found", message: "Mailbox webhook was not found." } };
+      }
+      if (input.method === "PATCH") {
+        const body = mailboxWebhookBody(input.body, { partial: true });
+        const webhook = await mailboxes.updateWebhook({
+          projectId: auth.project_id,
+          mailboxId,
+          webhookId,
+          ...(body.url !== undefined ? { url: body.url } : {}),
+          ...(body.events !== undefined ? { events: body.events } : {}),
+        });
+        return { status: 200, body: webhook };
+      }
+      if (input.method === "DELETE") {
+        const webhook = await mailboxes.deleteWebhook({ projectId: auth.project_id, mailboxId, webhookId });
+        return webhook
+          ? { status: 200, body: { status: "deleted", webhook_id: webhook.webhook_id } }
+          : { status: 404, body: { error: "webhook_not_found", message: "Mailbox webhook was not found." } };
+      }
+    }
+
+    const messageRawMatch = /^\/mailboxes\/v1\/([^/]+)\/messages\/([^/]+)\/raw$/.exec(input.pathname);
+    if (input.method === "GET" && messageRawMatch) {
+      const message = await mailboxes.getMessage({
+        projectId: auth.project_id,
+        mailboxId: messageRawMatch[1],
+        messageId: messageRawMatch[2],
+      });
+      if (!message) {
+        return { status: 404, body: { error: "message_not_found", message: "Email message was not found." } };
+      }
+      if (message.direction !== "inbound") {
+        return { status: 404, body: { error: "raw_message_not_found", message: "Raw readback is only available for accepted inbound messages." } };
+      }
+      const inlineRaw = await mailboxes.getInboundRawMessage({
+        projectId: auth.project_id,
+        mailboxId: messageRawMatch[1],
+        messageId: messageRawMatch[2],
+      });
+      const providerRaw = inlineRaw ?? await inboundProvider.readRawMessage(message);
+      if (!providerRaw) {
+        return { status: 404, body: { error: "raw_message_not_found", message: "Raw inbound message bytes were not found." } };
+      }
+      return {
+        status: 200,
+        body: providerRaw,
+        raw: true,
+        headers: {
+          "Content-Type": "message/rfc822",
+          "Content-Length": String(providerRaw.byteLength),
+        },
+      };
     }
 
     const messageDetailMatch = /^\/mailboxes\/v1\/([^/]+)\/messages\/([^/]+)$/.exec(input.pathname);
@@ -1053,6 +1171,7 @@ async function mailboxRoute(
       const messages = await mailboxes.listMessages({
         projectId: auth.project_id,
         mailboxId: messagesMatch[1],
+        ...messageDirectionQuery(input.query),
       });
       return {
         status: 200,
@@ -1149,7 +1268,7 @@ async function mailboxRoute(
       if (input.method === "GET") {
         const mailbox = await mailboxes.requireOwnedMailbox(auth.project_id, mailboxId);
         const settings = await mailboxes.getSettings(auth.project_id);
-        return { status: 200, body: formatMailboxResponse({ mailbox, settings, providerReadiness: readiness }) };
+        return { status: 200, body: formatMailboxResponse({ mailbox, settings, providerReadiness: readiness, inboundProviderReadiness: inboundReadiness }) };
       }
       if (input.method === "PATCH") {
         const body = objectBody(input.body);
@@ -1163,7 +1282,7 @@ async function mailboxRoute(
           ...(footerPolicy ? { footerPolicy } : {}),
         });
         const settings = await mailboxes.getSettings(auth.project_id);
-        return { status: 200, body: formatMailboxResponse({ mailbox, settings, providerReadiness: readiness }) };
+        return { status: 200, body: formatMailboxResponse({ mailbox, settings, providerReadiness: readiness, inboundProviderReadiness: inboundReadiness }) };
       }
       if (input.method === "DELETE") {
         const mailbox = await mailboxes.deleteMailbox({ projectId: auth.project_id, mailboxId });
@@ -1172,7 +1291,7 @@ async function mailboxRoute(
           body: {
             status: "deleted",
             mailbox_id: mailbox?.mailbox_id ?? mailboxId,
-            address: mailbox ? mailboxAddress(mailbox.slug, readiness.from_domain) : null,
+            address: mailbox ? mailboxAddress(mailbox.slug, readiness.from_domain ?? inboundReadiness.inbound_domains[0]) : null,
           },
         };
       }
@@ -1203,6 +1322,37 @@ async function requireServiceProjectFromHeaders(
 
 function emailProviderForRuntime(runtime: CoreGatewayRuntime): EmailProviderPort {
   return runtime.emailProvider ?? createEmailProvider({ provider: "disabled" });
+}
+
+function emailInboundProviderForRuntime(runtime: CoreGatewayRuntime): EmailInboundProviderPort {
+  return runtime.emailInboundProvider ?? createEmailInboundProvider({
+    provider: "disabled",
+    inboundDomains: [],
+    maxRawBytes: 10 * 1024 * 1024,
+  });
+}
+
+async function inboundIngestionRoute(
+  mailboxes: CoreMailboxStorePort,
+  inboundProvider: EmailInboundProviderPort,
+  input: MailboxRouteInput,
+): Promise<CoreGatewayResult> {
+  const token = input.headers["x-run402-core-inbound-token"] ?? serviceTokenFromHeaders(input.headers);
+  if (!inboundProvider.authenticate(token)) {
+    return { status: 401, body: { error: "authentication_required", message: "A valid Core inbound ingestion token is required." } };
+  }
+  try {
+    const result = await inboundProvider.ingest(input.body, mailboxes);
+    return { status: 202, body: result };
+  } catch (error) {
+    if (error instanceof EmailInboundError) {
+      return {
+        status: error.status,
+        body: { error: error.code, message: error.message, inbound_provider_readiness: inboundProvider.readiness() },
+      };
+    }
+    throw error;
+  }
 }
 
 function mailboxListNextActions(mailboxCount: number, defaultOutboundMailboxId: string | null, readiness: string) {
@@ -1287,35 +1437,103 @@ function objectBody(body: unknown): Record<string, unknown> {
   return body as Record<string, unknown>;
 }
 
+function messageDirectionQuery(query: URLSearchParams): { direction?: CoreMessageDirection } {
+  const raw = query.get("direction");
+  if (raw === null || raw === "") return {};
+  if (raw !== "inbound" && raw !== "outbound") {
+    throw new EmailValidationError("direction must be inbound or outbound", "direction");
+  }
+  return { direction: raw };
+}
+
+function webhookDeliveryStatusQuery(query: URLSearchParams): { status?: CoreWebhookDeliveryStatus } {
+  const raw = query.get("status");
+  if (raw === null || raw === "") return {};
+  if (raw !== "pending" && raw !== "delivered" && raw !== "failed_permanent") {
+    throw new EmailValidationError("status must be pending, delivered, or failed_permanent", "status");
+  }
+  return { status: raw };
+}
+
+function mailboxWebhookBody(body: unknown, options: { partial: boolean }): { url?: string; events?: string[] } {
+  const record = objectBody(body);
+  const out: { url?: string; events?: string[] } = {};
+  if (record.url !== undefined) {
+    if (typeof record.url !== "string") throw new EmailValidationError("url must be a string", "url");
+    out.url = validateWebhookUrl(record.url);
+  }
+  if (record.events !== undefined) {
+    if (!Array.isArray(record.events)) throw new EmailValidationError("events must be an array", "events");
+    const events = record.events.map((event, index) => {
+      if (event !== "reply_received") {
+        throw new EmailValidationError(`events[${index}] must be reply_received`, `events[${index}]`);
+      }
+      return event;
+    });
+    out.events = [...new Set(events)];
+  }
+  if (!options.partial && (!out.url || !out.events || out.events.length === 0)) {
+    throw new EmailValidationError("url and events are required", "url");
+  }
+  if (options.partial && out.url === undefined && out.events === undefined) {
+    throw new EmailValidationError("url or events is required", "url");
+  }
+  return out;
+}
+
+function validateWebhookUrl(value: string): string {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new EmailValidationError("url must be a valid URL", "url");
+  }
+  if (url.protocol !== "https:" && url.hostname !== "localhost" && url.hostname !== "127.0.0.1") {
+    throw new EmailValidationError("url must be https, except localhost development URLs", "url");
+  }
+  if (url.username || url.password) {
+    throw new EmailValidationError("url must not include credentials", "url");
+  }
+  return url.toString();
+}
+
 function messageBody(message: {
   message_id: string;
   mailbox_id: string;
+  direction: string;
   from_address: string;
   to_address: string;
   subject: string;
+  body_text: string;
   status: string;
   delivery_state: string;
   provider: string | null;
   provider_message_id: string | null;
   attachments_meta: Array<{ filename: string; content_type: string; size_bytes: number }> | null;
+  in_reply_to_message_id: string | null;
   created_at: string;
   updated_at: string;
   sent_at: string | null;
+  received_at: string | null;
 }) {
   return {
     message_id: message.message_id,
     mailbox_id: message.mailbox_id,
+    direction: message.direction,
     from_address: message.from_address,
     to: message.to_address,
     subject: message.subject,
+    body_text: message.body_text,
     status: message.status,
     delivery_state: message.delivery_state,
     provider: message.provider,
     provider_message_id: message.provider_message_id,
     attachments_meta: message.attachments_meta,
+    in_reply_to_message_id: message.in_reply_to_message_id,
     created_at: message.created_at,
     updated_at: message.updated_at,
     sent_at: message.sent_at,
+    received_at: message.received_at,
   };
 }
 
@@ -1327,6 +1545,9 @@ function mailboxRouteError(error: unknown): CoreGatewayResult {
     return { status: error.status, body: { error: error.code, message: error.message } };
   }
   if (error instanceof EmailProviderError) {
+    return { status: error.status, body: { error: error.code, message: error.message } };
+  }
+  if (error instanceof EmailInboundError) {
     return { status: error.status, body: { error: error.code, message: error.message } };
   }
   throw error;

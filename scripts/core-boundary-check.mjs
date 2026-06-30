@@ -273,9 +273,17 @@ function isArchiveBoundaryFile(file) {
 function isAllowedCoreEmailAwsSdkImport(file, line, forbidden) {
   const rel = relative(file);
   if (
-    rel !== "apps/core-gateway/src/email-provider.ts" &&
-    rel !== "apps/core-gateway/dist/email-provider.js"
-  ) return false;
-  if (forbidden !== "@aws-sdk/" && forbidden !== "aws-sdk") return false;
-  return line.includes("@aws-sdk/client-sesv2");
+    rel === "apps/core-gateway/src/email-provider.ts" ||
+    rel === "apps/core-gateway/dist/email-provider.js"
+  ) {
+    return (forbidden === "@aws-sdk/" || forbidden === "aws-sdk") && line.includes("@aws-sdk/client-sesv2");
+  }
+  if (
+    rel === "apps/core-gateway/src/email-inbound.ts" ||
+    rel === "apps/core-gateway/dist/email-inbound.js"
+  ) {
+    return (forbidden === "@aws-sdk/" || forbidden === "aws-sdk" || forbidden === "s3" || forbidden === "S3") &&
+      line.includes("@aws-sdk/client-s3");
+  }
+  return false;
 }

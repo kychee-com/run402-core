@@ -28,6 +28,7 @@ import {
   type StoragePort,
 } from "@run402/runtime-kernel";
 import { STATIC_MANIFEST_VERSION, type PortableReleaseState } from "@run402/release";
+import { MockEmailInboundProvider } from "./email-inbound.js";
 import { DisabledEmailProvider, EmailProviderError, MockEmailProvider, type EmailProviderPort } from "./email-provider.js";
 import type {
   LocalFunctionExecutorInput,
@@ -38,8 +39,12 @@ import type {
   CoreEmailMessageRecord,
   CoreMailboxRecord,
   CoreMailboxSettings,
+  CoreMailboxWebhookRecord,
+  CoreWebhookDeliveryRecord,
   CoreMailboxStorePort,
+  EnqueueWebhookDeliveryInput,
   StageMessageInput,
+  StoreInboundMessageInput,
 } from "./postgres-mailboxes.js";
 import { coreGatewayResponse, loadConfig } from "./server.js";
 
@@ -59,6 +64,16 @@ test("loadConfig does not require Cloud environment variables", () => {
     maxObjectBytes: 104857600,
     functionWorkerUrl: undefined,
     emailProvider: { provider: "disabled", fromDomain: undefined, sesRegion: undefined, sesEndpoint: undefined },
+    emailInboundProvider: {
+      provider: "disabled",
+      inboundDomains: [],
+      ingestToken: undefined,
+      sesRegion: undefined,
+      sesEndpoint: undefined,
+      rawBucket: undefined,
+      rawPrefix: undefined,
+      maxRawBytes: 10 * 1024 * 1024,
+    },
   });
 });
 
@@ -280,6 +295,369 @@ test("mailbox routes return 403 before revealing another project's mailbox", asy
 
   assert.equal(read.status, 403);
   assert.equal(JSON.stringify(read.body).includes("alpha@example.com"), false);
+});
+
+test("mailbox responses diagnose receive readiness separately from send readiness", async () => {
+  const catalog = new MemoryProjectCatalog();
+  const project = await catalog.create({ name: "inbound app" });
+  const mailboxes = new MemoryMailboxStore();
+  const runtime = {
+    projects: catalog,
+    projectKeys: catalog,
+    mailboxes,
+    emailProvider: new DisabledEmailProvider("outbound disabled for test"),
+    emailInboundProvider: new MockEmailInboundProvider({
+      provider: "mock",
+      inboundDomains: ["example.com"],
+      ingestToken: "inbound-secret",
+      maxRawBytes: 1024 * 1024,
+    }),
+  };
+
+  const created = await coreGatewayResponse({
+    method: "POST",
+    pathname: "/mailboxes/v1",
+    headers: { authorization: `Bearer ${project.service_key}` },
+    body: { slug: "signing" },
+  }, runtime);
+
+  assert.equal(created.status, 201);
+  assert.equal((created.body as { address?: string }).address, "signing@example.com");
+  assert.equal((created.body as { can_send?: boolean }).can_send, false);
+  assert.equal((created.body as { send_blocked_reason?: string }).send_blocked_reason, "provider_not_configured");
+  assert.equal((created.body as { can_receive?: boolean }).can_receive, true);
+  assert.equal((created.body as { receive_blocked_reason?: string | null }).receive_blocked_reason, null);
+});
+
+test("Core inbound ingestion stores reply messages, raw MIME, and reply_received webhook deliveries", async () => {
+  const catalog = new MemoryProjectCatalog();
+  const project = await catalog.create({ name: "reply app" });
+  const projectB = makeProject("prj_0000000000000002", "anon_b", "service_b");
+  catalog.projects.set(projectB.project_id, projectB);
+  const mailboxes = new MemoryMailboxStore();
+  const runtime = {
+    projects: catalog,
+    projectKeys: catalog,
+    mailboxes,
+    emailProvider: new MockEmailProvider("example.com"),
+    emailInboundProvider: new MockEmailInboundProvider({
+      provider: "mock",
+      inboundDomains: ["example.com"],
+      ingestToken: "inbound-secret",
+      maxRawBytes: 1024 * 1024,
+    }),
+  };
+
+  const created = await coreGatewayResponse({
+    method: "POST",
+    pathname: "/mailboxes/v1",
+    headers: { authorization: `Bearer ${project.service_key}` },
+    body: { slug: "signing" },
+  }, runtime);
+  const mailboxId = (created.body as { mailbox_id: string }).mailbox_id;
+
+  const outbound = await coreGatewayResponse({
+    method: "POST",
+    pathname: `/mailboxes/v1/${mailboxId}/messages`,
+    headers: { authorization: `Bearer ${project.service_key}` },
+    body: {
+      to: "signer@example.net",
+      subject: "Signature requested",
+      html: "<p>Please sign.</p>",
+    },
+  }, runtime);
+  assert.equal(outbound.status, 201);
+  assert.equal((outbound.body as { provider_message_id?: string }).provider_message_id, "mock_1");
+
+  const webhook = await coreGatewayResponse({
+    method: "POST",
+    pathname: `/mailboxes/v1/${mailboxId}/webhooks`,
+    headers: { authorization: `Bearer ${project.service_key}` },
+    body: { url: "https://example.net/run402-email-webhook", events: ["reply_received"] },
+  }, runtime);
+  assert.equal(webhook.status, 201);
+
+  const rejected = await coreGatewayResponse({
+    method: "POST",
+    pathname: "/mailboxes/v1/inbound/ingestions",
+    body: { provider: "mock", ses_message_id: "ses_in_1", recipients: ["signing@example.com"], raw_mime: "Subject: no auth\r\n\r\nnope" },
+  }, runtime);
+  assert.equal(rejected.status, 401);
+
+  const rawMime = [
+    "From: Signer <signer@example.net>",
+    "To: signing@example.com",
+    "Subject: Re: Signature requested",
+    "In-Reply-To: <mock_1>",
+    "References: <mock_1>",
+    "Content-Type: text/plain; charset=utf-8",
+    "",
+    "I approve this signature.",
+    "> quoted text",
+  ].join("\r\n");
+
+  const ingested = await coreGatewayResponse({
+    method: "POST",
+    pathname: "/mailboxes/v1/inbound/ingestions",
+    headers: { authorization: "Bearer inbound-secret" },
+    body: {
+      provider: "mock",
+      ses_message_id: "ses_in_1",
+      recipients: ["signing@example.com", "missing@example.com"],
+      source: "signer@example.net",
+      common_headers: { from: ["Signer <signer@example.net>"] },
+      raw_mime: rawMime,
+    },
+  }, runtime);
+  assert.equal(ingested.status, 202);
+  assert.equal((ingested.body as { accepted_count?: number }).accepted_count, 1);
+  assert.equal((ingested.body as { dropped_count?: number }).dropped_count, 1);
+
+  const duplicate = await coreGatewayResponse({
+    method: "POST",
+    pathname: "/mailboxes/v1/inbound/ingestions",
+    headers: { authorization: "Bearer inbound-secret" },
+    body: {
+      provider: "mock",
+      ses_message_id: "ses_in_1",
+      recipients: ["signing@example.com"],
+      source: "signer@example.net",
+      common_headers: { from: ["Signer <signer@example.net>"] },
+      raw_mime: rawMime,
+    },
+  }, runtime);
+  assert.equal(duplicate.status, 202);
+  assert.equal((duplicate.body as { accepted_count?: number }).accepted_count, 0);
+
+  const listed = await coreGatewayResponse({
+    method: "GET",
+    pathname: `/mailboxes/v1/${mailboxId}/messages`,
+    headers: { authorization: `Bearer ${project.service_key}` },
+  }, runtime);
+  assert.equal(listed.status, 200);
+  assert.equal((listed.body as { messages: unknown[] }).messages.length, 2);
+
+  const inboundList = await coreGatewayResponse({
+    method: "GET",
+    pathname: `/mailboxes/v1/${mailboxId}/messages?direction=inbound`,
+    headers: { authorization: `Bearer ${project.service_key}` },
+  }, runtime);
+  assert.equal(inboundList.status, 200);
+  const inboundMessages = (inboundList.body as { messages: Array<{ message_id: string; direction: string; body_text: string; in_reply_to_message_id: string | null }> }).messages;
+  assert.equal(inboundMessages.length, 1);
+  assert.equal(inboundMessages[0].direction, "inbound");
+  assert.equal(inboundMessages[0].body_text, "I approve this signature.");
+  assert.equal(inboundMessages[0].in_reply_to_message_id, (outbound.body as { message_id: string }).message_id);
+
+  const invalidDirection = await coreGatewayResponse({
+    method: "GET",
+    pathname: `/mailboxes/v1/${mailboxId}/messages?direction=sideways`,
+    headers: { authorization: `Bearer ${project.service_key}` },
+  }, runtime);
+  assert.equal(invalidDirection.status, 400);
+
+  const raw = await coreGatewayResponse({
+    method: "GET",
+    pathname: `/mailboxes/v1/${mailboxId}/messages/${inboundMessages[0].message_id}/raw`,
+    headers: { authorization: `Bearer ${project.service_key}` },
+  }, runtime);
+  assert.equal(raw.status, 200);
+  assert.equal(Buffer.from(raw.body as Uint8Array).toString("utf8"), rawMime);
+  assert.equal(raw.headers?.["Content-Type"], "message/rfc822");
+
+  const outboundRaw = await coreGatewayResponse({
+    method: "GET",
+    pathname: `/mailboxes/v1/${mailboxId}/messages/${(outbound.body as { message_id: string }).message_id}/raw`,
+    headers: { authorization: `Bearer ${project.service_key}` },
+  }, runtime);
+  assert.equal(outboundRaw.status, 404);
+  assert.equal((outboundRaw.body as { error?: string }).error, "raw_message_not_found");
+
+  const forbiddenRaw = await coreGatewayResponse({
+    method: "GET",
+    pathname: `/mailboxes/v1/${mailboxId}/messages/${inboundMessages[0].message_id}/raw`,
+    headers: { authorization: `Bearer ${projectB.service_key}` },
+  }, runtime);
+  assert.equal(forbiddenRaw.status, 403);
+
+  const deliveries = await coreGatewayResponse({
+    method: "GET",
+    pathname: `/mailboxes/v1/${mailboxId}/webhooks/deliveries?status=pending`,
+    headers: { authorization: `Bearer ${project.service_key}` },
+  }, runtime);
+  assert.equal(deliveries.status, 200);
+  const rows = (deliveries.body as { deliveries: Array<{ event_type: string; status: string; payload: { idempotency_key: string; payload: { message_id: string } } }> }).deliveries;
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].event_type, "reply_received");
+  assert.equal(rows[0].status, "pending");
+  assert.equal(rows[0].payload.payload.message_id, inboundMessages[0].message_id);
+  assert.match(rows[0].payload.idempotency_key, /^wh_/);
+});
+
+test("Core inbound ingestion validates provider payloads and drops unsolicited senders", async () => {
+  const catalog = new MemoryProjectCatalog();
+  const project = await catalog.create({ name: "unsolicited app" });
+  const mailboxes = new MemoryMailboxStore();
+  const runtime = {
+    projects: catalog,
+    projectKeys: catalog,
+    mailboxes,
+    emailProvider: new MockEmailProvider("example.com"),
+    emailInboundProvider: new MockEmailInboundProvider({
+      provider: "mock",
+      inboundDomains: ["example.com"],
+      ingestToken: "inbound-secret",
+      maxRawBytes: 1024 * 1024,
+    }),
+  };
+
+  const created = await coreGatewayResponse({
+    method: "POST",
+    pathname: "/mailboxes/v1",
+    headers: { authorization: `Bearer ${project.service_key}` },
+    body: { slug: "signing" },
+  }, runtime);
+  const mailboxId = (created.body as { mailbox_id: string }).mailbox_id;
+
+  const wrongProvider = await coreGatewayResponse({
+    method: "POST",
+    pathname: "/mailboxes/v1/inbound/ingestions",
+    headers: { authorization: "Bearer inbound-secret" },
+    body: { provider: "ses", ses_message_id: "ses_wrong_provider", recipients: ["signing@example.com"], raw_mime: "Subject: nope\r\n\r\nnope" },
+  }, runtime);
+  assert.equal(wrongProvider.status, 400);
+  assert.equal((wrongProvider.body as { error?: string }).error, "provider_mismatch");
+
+  const missingMessageId = await coreGatewayResponse({
+    method: "POST",
+    pathname: "/mailboxes/v1/inbound/ingestions",
+    headers: { authorization: "Bearer inbound-secret" },
+    body: { provider: "mock", recipients: ["signing@example.com"], raw_mime: "Subject: nope\r\n\r\nnope" },
+  }, runtime);
+  assert.equal(missingMessageId.status, 400);
+  assert.equal((missingMessageId.body as { error?: string }).error, "provider_message_id_required");
+
+  const missingRaw = await coreGatewayResponse({
+    method: "POST",
+    pathname: "/mailboxes/v1/inbound/ingestions",
+    headers: { authorization: "Bearer inbound-secret" },
+    body: { provider: "mock", ses_message_id: "ses_missing_raw", recipients: ["signing@example.com"] },
+  }, runtime);
+  assert.equal(missingRaw.status, 400);
+  assert.equal((missingRaw.body as { error?: string }).error, "raw_mime_required");
+
+  const unsolicited = await coreGatewayResponse({
+    method: "POST",
+    pathname: "/mailboxes/v1/inbound/ingestions",
+    headers: { authorization: "Bearer inbound-secret" },
+    body: {
+      provider: "mock",
+      ses_message_id: "ses_unsolicited",
+      recipients: ["signing@example.com"],
+      source: "stranger@example.net",
+      common_headers: { from: ["Stranger <stranger@example.net>"] },
+      raw_mime: "From: Stranger <stranger@example.net>\r\nTo: signing@example.com\r\nSubject: hello\r\n\r\nfirst contact",
+    },
+  }, runtime);
+  assert.equal(unsolicited.status, 202);
+  assert.equal((unsolicited.body as { accepted_count?: number }).accepted_count, 0);
+  assert.equal((unsolicited.body as { dropped_count?: number }).dropped_count, 1);
+
+  const inboundList = await coreGatewayResponse({
+    method: "GET",
+    pathname: `/mailboxes/v1/${mailboxId}/messages?direction=inbound`,
+    headers: { authorization: `Bearer ${project.service_key}` },
+  }, runtime);
+  assert.equal(inboundList.status, 200);
+  assert.equal((inboundList.body as { messages: unknown[] }).messages.length, 0);
+});
+
+test("Core inbound ingestion handles multiple valid recipients with recency fallback and malformed MIME", async () => {
+  const catalog = new MemoryProjectCatalog();
+  const project = await catalog.create({ name: "multi recipient app" });
+  const mailboxes = new MemoryMailboxStore();
+  const runtime = {
+    projects: catalog,
+    projectKeys: catalog,
+    mailboxes,
+    emailProvider: new MockEmailProvider("example.com"),
+    emailInboundProvider: new MockEmailInboundProvider({
+      provider: "mock",
+      inboundDomains: ["example.com"],
+      ingestToken: "inbound-secret",
+      maxRawBytes: 1024 * 1024,
+    }),
+  };
+
+  const signing = await coreGatewayResponse({
+    method: "POST",
+    pathname: "/mailboxes/v1",
+    headers: { authorization: `Bearer ${project.service_key}` },
+    body: { slug: "signing" },
+  }, runtime);
+  const approvals = await coreGatewayResponse({
+    method: "POST",
+    pathname: "/mailboxes/v1",
+    headers: { authorization: `Bearer ${project.service_key}` },
+    body: { slug: "approvals" },
+  }, runtime);
+  const signingMailboxId = (signing.body as { mailbox_id: string }).mailbox_id;
+  const approvalsMailboxId = (approvals.body as { mailbox_id: string }).mailbox_id;
+
+  for (const mailboxId of [signingMailboxId, approvalsMailboxId]) {
+    const outbound = await coreGatewayResponse({
+      method: "POST",
+      pathname: `/mailboxes/v1/${mailboxId}/messages`,
+      headers: { authorization: `Bearer ${project.service_key}` },
+      body: {
+        to: "signer@example.net",
+        subject: "Signature requested",
+        html: "<p>Please sign.</p>",
+      },
+    }, runtime);
+    assert.equal(outbound.status, 201);
+  }
+
+  const rawMime = [
+    "From: Signer <signer@example.net>",
+    "To: signing@example.com, approvals@example.com",
+    "Subject: =?UTF-8?B?UmU6IFNpZ25hdHVyZSByZXF1ZXN0ZWQ=?=",
+    "Content-Type: multipart/mixed",
+    "",
+    "Accepted through the recency fallback.",
+  ].join("\r\n");
+
+  const ingested = await coreGatewayResponse({
+    method: "POST",
+    pathname: "/mailboxes/v1/inbound/ingestions",
+    headers: { authorization: "Bearer inbound-secret" },
+    body: {
+      provider: "mock",
+      ses_message_id: "ses_multi_recipient",
+      recipients: ["bad-address", "signing@example.com", "approvals@example.com", "outside@elsewhere.test"],
+      source: "signer@example.net",
+      common_headers: { from: ["Signer <signer@example.net>"] },
+      raw_mime: rawMime,
+    },
+  }, runtime);
+  assert.equal(ingested.status, 202);
+  assert.equal((ingested.body as { accepted_count?: number }).accepted_count, 2);
+  assert.equal((ingested.body as { dropped_count?: number }).dropped_count, 2);
+
+  for (const mailboxId of [signingMailboxId, approvalsMailboxId]) {
+    const inboundList = await coreGatewayResponse({
+      method: "GET",
+      pathname: `/mailboxes/v1/${mailboxId}/messages?direction=inbound`,
+      headers: { authorization: `Bearer ${project.service_key}` },
+    }, runtime);
+    assert.equal(inboundList.status, 200);
+    const messages = (inboundList.body as { messages: Array<{ subject: string; body_text: string; direction: string; in_reply_to_message_id: string | null }> }).messages;
+    assert.equal(messages.length, 1);
+    assert.equal(messages[0].direction, "inbound");
+    assert.equal(messages[0].subject, "Re: Signature requested");
+    assert.equal(messages[0].body_text, "Accepted through the recency fallback.");
+    assert.ok(messages[0].in_reply_to_message_id);
+  }
 });
 
 test("apply plan route accepts SDK project_id alias inside request spec", async () => {
@@ -2070,6 +2448,9 @@ class MemoryMailboxStore implements CoreMailboxStorePort {
   readonly mailboxes = new Map<string, CoreMailboxRecord>();
   readonly settings = new Map<string, CoreMailboxSettings>();
   readonly messages = new Map<string, CoreEmailMessageRecord>();
+  readonly rawMessages = new Map<string, Buffer>();
+  readonly webhooks = new Map<string, CoreMailboxWebhookRecord>();
+  readonly deliveries = new Map<string, CoreWebhookDeliveryRecord>();
 
   async createMailbox(input: { projectId: string; slug: string }): Promise<CoreMailboxRecord> {
     if ([...this.mailboxes.values()].some((mailbox) => mailbox.slug === input.slug && mailbox.status !== "tombstoned")) {
@@ -2144,6 +2525,7 @@ class MemoryMailboxStore implements CoreMailboxStorePort {
       message_id: `msg_${String(this.messages.size + 1).padStart(4, "0")}`,
       project_id: input.projectId,
       mailbox_id: input.mailboxId,
+      direction: "outbound",
       from_address: input.fromAddress,
       to_address: input.to,
       subject: input.subject,
@@ -2153,9 +2535,13 @@ class MemoryMailboxStore implements CoreMailboxStorePort {
       provider: null,
       provider_message_id: null,
       attachments_meta: input.attachmentsMeta,
+      raw_storage_provider: null,
+      raw_ref: null,
+      in_reply_to_message_id: null,
       created_at: new Date(0).toISOString(),
       updated_at: new Date(0).toISOString(),
       sent_at: null,
+      received_at: null,
     };
     this.messages.set(message.message_id, message);
     return message;
@@ -2191,12 +2577,180 @@ class MemoryMailboxStore implements CoreMailboxStorePort {
 
   async listMessages(input: { projectId: string; mailboxId: string }): Promise<CoreEmailMessageRecord[]> {
     await this.requireOwnedMailbox(input.projectId, input.mailboxId);
-    return [...this.messages.values()].filter((message) => message.project_id === input.projectId && message.mailbox_id === input.mailboxId);
+    return [...this.messages.values()].filter((message) =>
+      message.project_id === input.projectId &&
+      message.mailbox_id === input.mailboxId &&
+      (!("direction" in input) || input.direction === undefined || message.direction === input.direction)
+    );
   }
 
   async getMessage(input: { projectId: string; mailboxId: string; messageId: string }): Promise<CoreEmailMessageRecord | null> {
     await this.requireOwnedMailbox(input.projectId, input.mailboxId);
     return this.messages.get(input.messageId) ?? null;
+  }
+
+  async resolveMailboxByInboundAddress(input: { address: string; inboundDomains: string[] }): Promise<CoreMailboxRecord | null> {
+    const normalized = input.address.trim().toLowerCase();
+    const [slug, domain, extra] = normalized.split("@");
+    if (!slug || !domain || extra || !input.inboundDomains.includes(domain)) return null;
+    return [...this.mailboxes.values()].find((mailbox) => mailbox.slug === slug && mailbox.status !== "tombstoned") ?? null;
+  }
+
+  async findOutboundReplyCandidate(input: { mailboxId: string; senderCandidates: string[]; threadingCandidates: string[] }): Promise<CoreEmailMessageRecord | null> {
+    const outbound = [...this.messages.values()].filter((message) => message.mailbox_id === input.mailboxId && message.direction === "outbound");
+    const threaded = outbound.find((message) =>
+      input.threadingCandidates.includes(message.provider_message_id ?? "") ||
+      input.threadingCandidates.includes(message.message_id)
+    );
+    if (threaded) return threaded;
+    const senders = new Set(input.senderCandidates.map((value) => value.toLowerCase()));
+    return outbound.find((message) => senders.has(message.to_address.toLowerCase())) ?? null;
+  }
+
+  async storeInboundMessage(input: StoreInboundMessageInput): Promise<{ message: CoreEmailMessageRecord; created: boolean }> {
+    const existing = [...this.messages.values()].find((message) =>
+      message.direction === "inbound" &&
+      message.mailbox_id === input.mailboxId &&
+      message.provider === input.provider &&
+      message.provider_message_id === input.providerMessageId &&
+      message.to_address === input.toAddress
+    );
+    if (existing) return { message: existing, created: false };
+    if (input.rawMime) this.rawMessages.set(input.rawRef, Buffer.from(input.rawMime));
+    const message: CoreEmailMessageRecord = {
+      message_id: `msg_${String(this.messages.size + 1).padStart(4, "0")}`,
+      project_id: input.projectId,
+      mailbox_id: input.mailboxId,
+      direction: "inbound",
+      from_address: input.fromAddress,
+      to_address: input.toAddress,
+      subject: input.subject,
+      body_text: input.bodyText,
+      status: "received",
+      delivery_state: "received",
+      provider: input.provider,
+      provider_message_id: input.providerMessageId,
+      attachments_meta: null,
+      raw_storage_provider: input.rawStorageProvider,
+      raw_ref: input.rawRef,
+      in_reply_to_message_id: input.inReplyToMessageId,
+      created_at: input.receivedAt,
+      updated_at: input.receivedAt,
+      sent_at: null,
+      received_at: input.receivedAt,
+    };
+    this.messages.set(message.message_id, message);
+    return { message, created: true };
+  }
+
+  async getInboundRawMessage(input: { projectId: string; mailboxId: string; messageId: string }): Promise<Buffer | null> {
+    const message = await this.getMessage(input);
+    if (!message?.raw_ref) return null;
+    return this.rawMessages.get(message.raw_ref) ?? null;
+  }
+
+  async createWebhook(input: { projectId: string; mailboxId: string; url: string; events: string[] }): Promise<CoreMailboxWebhookRecord> {
+    await this.requireOwnedMailbox(input.projectId, input.mailboxId);
+    const webhook: CoreMailboxWebhookRecord = {
+      webhook_id: `wh_${String(this.webhooks.size + 1).padStart(4, "0")}`,
+      project_id: input.projectId,
+      mailbox_id: input.mailboxId,
+      url: input.url,
+      events: input.events,
+      status: "active",
+      created_at: new Date(0).toISOString(),
+      updated_at: new Date(0).toISOString(),
+    };
+    this.webhooks.set(webhook.webhook_id, webhook);
+    return webhook;
+  }
+
+  async listWebhooks(input: { projectId: string; mailboxId: string }): Promise<CoreMailboxWebhookRecord[]> {
+    await this.requireOwnedMailbox(input.projectId, input.mailboxId);
+    return [...this.webhooks.values()].filter((webhook) => webhook.project_id === input.projectId && webhook.mailbox_id === input.mailboxId && webhook.status === "active");
+  }
+
+  async getWebhook(input: { projectId: string; mailboxId: string; webhookId: string }): Promise<CoreMailboxWebhookRecord | null> {
+    await this.requireOwnedMailbox(input.projectId, input.mailboxId);
+    const webhook = this.webhooks.get(input.webhookId);
+    return webhook?.project_id === input.projectId && webhook.mailbox_id === input.mailboxId && webhook.status === "active" ? webhook : null;
+  }
+
+  async updateWebhook(input: { projectId: string; mailboxId: string; webhookId: string; url?: string; events?: string[] }): Promise<CoreMailboxWebhookRecord> {
+    const current = await this.getWebhook(input);
+    if (!current) throw new CoreMailboxError("Webhook not found", 404, "webhook_not_found");
+    const updated = { ...current, ...(input.url ? { url: input.url } : {}), ...(input.events ? { events: input.events } : {}) };
+    this.webhooks.set(input.webhookId, updated);
+    return updated;
+  }
+
+  async deleteWebhook(input: { projectId: string; mailboxId: string; webhookId: string }): Promise<CoreMailboxWebhookRecord | null> {
+    const current = await this.getWebhook(input);
+    if (!current) return null;
+    const updated: CoreMailboxWebhookRecord = { ...current, status: "deleted" };
+    this.webhooks.set(input.webhookId, updated);
+    return updated;
+  }
+
+  async enqueueWebhookDelivery(input: EnqueueWebhookDeliveryInput): Promise<CoreWebhookDeliveryRecord[]> {
+    const deliveries: CoreWebhookDeliveryRecord[] = [];
+    const webhooks = await this.listWebhooks({ projectId: input.projectId, mailboxId: input.mailboxId });
+    for (const webhook of webhooks.filter((entry) => entry.events.includes(input.eventType))) {
+      const sourceEventId = `${webhook.webhook_id}:${input.eventType}:${input.discriminator}`;
+      if ([...this.deliveries.values()].some((delivery) => delivery.source === "core-email-inbound" && delivery.source_event_id === sourceEventId)) continue;
+      const delivery: CoreWebhookDeliveryRecord = {
+        delivery_id: `whd_${String(this.deliveries.size + 1).padStart(4, "0")}`,
+        source: "core-email-inbound",
+        source_event_id: sourceEventId,
+        project_id: input.projectId,
+        mailbox_id: input.mailboxId,
+        webhook_id: webhook.webhook_id,
+        event_type: input.eventType,
+        target_url: webhook.url,
+        payload: {
+          id: `whd_${String(this.deliveries.size + 1).padStart(4, "0")}`,
+          type: input.eventType,
+          created_at: new Date(0).toISOString(),
+          schema_version: "1",
+          idempotency_key: sourceEventId,
+          payload: input.payload,
+        },
+        status: "pending",
+        attempts: 0,
+        next_attempt_at: new Date(0).toISOString(),
+        last_status: null,
+        last_error: null,
+        created_at: new Date(0).toISOString(),
+        updated_at: new Date(0).toISOString(),
+        delivered_at: null,
+      };
+      this.deliveries.set(delivery.delivery_id, delivery);
+      deliveries.push(delivery);
+    }
+    return deliveries;
+  }
+
+  async listWebhookDeliveries(input: { projectId: string; mailboxId: string; status?: "pending" | "delivered" | "failed_permanent" }): Promise<CoreWebhookDeliveryRecord[]> {
+    await this.requireOwnedMailbox(input.projectId, input.mailboxId);
+    return [...this.deliveries.values()].filter((delivery) =>
+      delivery.project_id === input.projectId &&
+      delivery.mailbox_id === input.mailboxId &&
+      (!input.status || delivery.status === input.status)
+    );
+  }
+
+  async redriveWebhookDelivery(input: { projectId: string; mailboxId: string; deliveryId: string }): Promise<CoreWebhookDeliveryRecord> {
+    await this.requireOwnedMailbox(input.projectId, input.mailboxId);
+    const current = this.deliveries.get(input.deliveryId);
+    if (!current || current.project_id !== input.projectId || current.mailbox_id !== input.mailboxId) {
+      throw new CoreMailboxError("Webhook delivery not found", 404, "webhook_delivery_not_found");
+    }
+    if (current.status !== "failed_permanent") {
+      throw new CoreMailboxError("Only failed_permanent deliveries can be redriven", 409, "webhook_delivery_not_failed");
+    }
+    const updated: CoreWebhookDeliveryRecord = { ...current, status: "pending", attempts: 0, next_attempt_at: new Date(0).toISOString() };
+    this.deliveries.set(input.deliveryId, updated);
+    return updated;
   }
 }
 

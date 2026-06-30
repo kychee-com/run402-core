@@ -6,7 +6,7 @@ This guide adds outbound email to a Dockerized Run402 Core gateway running on AW
 - app code still calls the same `/mailboxes/v1` contract and `@run402/functions.email.send`
 - the Core operator owns the email provider account, sender domain, DNS, reputation, sandbox status, and delivery operations
 
-This guide covers outbound transactional email only. Inbound reply-to-sign, bounce/complaint reconciliation, delivery webhooks, managed sender-domain automation, suppression automation, and abuse operations are separate follow-up features.
+This guide covers outbound transactional email. For inbound reply reception on the same Core gateway, follow `docs/deployment/aws-email-inbound/README.md` after outbound send is working. Bounce/complaint reconciliation, managed sender-domain automation, suppression automation, and abuse operations are separate follow-up features.
 
 ## What You Need
 
@@ -157,7 +157,9 @@ Expected shape:
       "mailbox_id": "mbx_...",
       "address": "signing@example.com",
       "can_send": true,
-      "send_blocked_reason": null
+      "send_blocked_reason": null,
+      "can_receive": false,
+      "receive_blocked_reason": "provider_not_configured"
     }
   ],
   "mailbox_settings": {
@@ -167,6 +169,10 @@ Expected shape:
     "status": "configured",
     "provider": "ses",
     "from_domain": "example.com"
+  },
+  "inbound_provider_readiness": {
+    "status": "not_configured",
+    "provider": "disabled"
   }
 }
 ```
@@ -313,7 +319,7 @@ curl -sS -X POST "$CORE_API_BASE/mailboxes/v1/$RUN402_MAILBOX_ID/messages" \
   | jq .
 ```
 
-This proves outbound signing-request-style email and attachment metadata on Core. It does not prove reply-to-sign until the inbound email adapter exists.
+This proves outbound signing-request-style email and attachment metadata on Core. To prove reply-to-sign, continue with `docs/deployment/aws-email-inbound/README.md` and reply to the Core mailbox.
 
 ## Troubleshooting
 
