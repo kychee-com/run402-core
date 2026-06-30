@@ -209,6 +209,8 @@ For a gated function reached through the gateway, `getUserId(req)` and `getUser(
 
 Auto-discovers the project's mailbox on first call (the project must already have one — create it once with `run402 email create <slug>` or the `create_mailbox` MCP tool). After that the mailbox id is cached for the function's lifetime.
 
+On Run402 Core, this uses the same `/mailboxes/v1` contract as Cloud. Deploy still happens through `run402 deploy apply --manifest`; outbound email is enabled separately by configuring the Core gateway's provider (for example SES) and creating a project mailbox/default. If Core has mailboxes but no outbound provider configured, `email.send()` throws `EmailConfigurationError` with code `PROVIDER_NOT_CONFIGURED` and setup `next_actions`.
+
 ```ts
 // Template mode
 await email.send({

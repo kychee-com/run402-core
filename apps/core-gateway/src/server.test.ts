@@ -28,10 +28,19 @@ import {
   type StoragePort,
 } from "@run402/runtime-kernel";
 import { STATIC_MANIFEST_VERSION, type PortableReleaseState } from "@run402/release";
+import { DisabledEmailProvider, MockEmailProvider } from "./email-provider.js";
 import type {
   LocalFunctionExecutorInput,
   LocalFunctionExecutorResult,
 } from "./local-function-executor.js";
+import { CoreMailboxError } from "./postgres-mailboxes.js";
+import type {
+  CoreEmailMessageRecord,
+  CoreMailboxRecord,
+  CoreMailboxSettings,
+  CoreMailboxStorePort,
+  StageMessageInput,
+} from "./postgres-mailboxes.js";
 import { coreGatewayResponse, loadConfig } from "./server.js";
 
 test("loadConfig does not require Cloud environment variables", () => {
@@ -49,6 +58,7 @@ test("loadConfig does not require Cloud environment variables", () => {
     signedReadSecret: "run402-core-local-signed-read-secret-change-me",
     maxObjectBytes: 104857600,
     functionWorkerUrl: undefined,
+    emailProvider: { provider: "disabled", fromDomain: undefined, sesRegion: undefined, sesEndpoint: undefined },
   });
 });
 
@@ -115,6 +125,126 @@ test("project inspect maps invalid and missing ids", async () => {
   }, { projects: catalog });
   assert.equal(missing.status, 404);
   assert.equal((missing.body as { error?: string }).error, "project_not_found");
+});
+
+test("mailbox routes create a default mailbox and send raw email through the configured provider", async () => {
+  const catalog = new MemoryProjectCatalog();
+  const project = await catalog.create({ name: "email app" });
+  const mailboxes = new MemoryMailboxStore();
+  const emailProvider = new MockEmailProvider("example.com");
+  const runtime = { projects: catalog, projectKeys: catalog, mailboxes, emailProvider };
+
+  const created = await coreGatewayResponse({
+    method: "POST",
+    pathname: "/mailboxes/v1",
+    headers: { authorization: `Bearer ${project.service_key}` },
+    body: { slug: "signing" },
+  }, runtime);
+
+  assert.equal(created.status, 201);
+  assert.equal((created.body as { address?: string }).address, "signing@example.com");
+  assert.equal((created.body as { can_send?: boolean }).can_send, true);
+  assert.equal((created.body as { is_default_outbound?: boolean }).is_default_outbound, true);
+
+  const sent = await coreGatewayResponse({
+    method: "POST",
+    pathname: `/mailboxes/v1/${(created.body as { mailbox_id: string }).mailbox_id}/messages`,
+    headers: { authorization: `Bearer ${project.service_key}` },
+    body: {
+      to: "signer@example.net",
+      subject: "Signature requested",
+      html: "<p>Please sign.</p>",
+      attachments: [{
+        filename: "../contract.pdf",
+        content_type: "application/pdf",
+        content_base64: Buffer.from("%PDF-1.7\n").toString("base64"),
+      }],
+    },
+  }, runtime);
+
+  assert.equal(sent.status, 201);
+  assert.equal((sent.body as { delivery_state?: string }).delivery_state, "accepted");
+  assert.equal((sent.body as { provider?: string }).provider, "mock");
+  assert.deepEqual((sent.body as { attachments_meta?: unknown }).attachments_meta, [{
+    filename: "contract.pdf",
+    content_type: "application/pdf",
+    size_bytes: 9,
+  }]);
+  assert.equal(emailProvider.sent.length, 1);
+  assert.ok(emailProvider.sent[0]?.rawMime);
+
+  const listed = await coreGatewayResponse({
+    method: "GET",
+    pathname: `/mailboxes/v1/${(created.body as { mailbox_id: string }).mailbox_id}/messages`,
+    headers: { authorization: `Bearer ${project.service_key}` },
+  }, runtime);
+  assert.equal(listed.status, 200);
+  assert.equal((listed.body as { messages: unknown[] }).messages.length, 1);
+  assert.equal(JSON.stringify(listed.body).includes("%PDF-1.7"), false);
+});
+
+test("mailbox routes report provider-not-configured without staging sends", async () => {
+  const catalog = new MemoryProjectCatalog();
+  const project = await catalog.create({ name: "email app" });
+  const mailboxes = new MemoryMailboxStore();
+  const runtime = {
+    projects: catalog,
+    projectKeys: catalog,
+    mailboxes,
+    emailProvider: new DisabledEmailProvider("not configured for test"),
+  };
+
+  const created = await coreGatewayResponse({
+    method: "POST",
+    pathname: "/mailboxes/v1",
+    headers: { authorization: `Bearer ${project.service_key}` },
+    body: { slug: "notify" },
+  }, runtime);
+
+  assert.equal(created.status, 201);
+  assert.equal((created.body as { can_send?: boolean }).can_send, false);
+  assert.equal((created.body as { send_blocked_reason?: string }).send_blocked_reason, "provider_not_configured");
+
+  const sent = await coreGatewayResponse({
+    method: "POST",
+    pathname: `/mailboxes/v1/${(created.body as { mailbox_id: string }).mailbox_id}/messages`,
+    headers: { authorization: `Bearer ${project.service_key}` },
+    body: { to: "a@example.com", subject: "Hi", html: "<p>Hi</p>" },
+  }, runtime);
+
+  assert.equal(sent.status, 503);
+  assert.equal((sent.body as { error?: string }).error, "provider_not_configured");
+  assert.equal(mailboxes.messages.size, 0);
+});
+
+test("mailbox routes return 403 before revealing another project's mailbox", async () => {
+  const catalog = new MemoryProjectCatalog();
+  const projectA = await catalog.create({ name: "project a" });
+  const projectB = makeProject("prj_0000000000000002", "anon_b", "service_b");
+  catalog.projects.set(projectB.project_id, projectB);
+  const mailboxes = new MemoryMailboxStore();
+  const runtime = {
+    projects: catalog,
+    projectKeys: catalog,
+    mailboxes,
+    emailProvider: new MockEmailProvider("example.com"),
+  };
+
+  const created = await coreGatewayResponse({
+    method: "POST",
+    pathname: "/mailboxes/v1",
+    headers: { authorization: `Bearer ${projectA.service_key}` },
+    body: { slug: "alpha" },
+  }, runtime);
+
+  const read = await coreGatewayResponse({
+    method: "GET",
+    pathname: `/mailboxes/v1/${(created.body as { mailbox_id: string }).mailbox_id}`,
+    headers: { authorization: `Bearer ${projectB.service_key}` },
+  }, runtime);
+
+  assert.equal(read.status, 403);
+  assert.equal(JSON.stringify(read.body).includes("alpha@example.com"), false);
 });
 
 test("apply plan route accepts SDK project_id alias inside request spec", async () => {
@@ -1881,6 +2011,157 @@ class MemoryProjectCatalog implements ProjectCatalogPort {
       if (project.anon_key === key || project.service_key === key) return project;
     }
     return null;
+  }
+}
+
+function makeProject(projectId: string, anonKey: string, serviceKey: string): CoreProject {
+  return {
+    project_id: projectId,
+    schema_slot: projectId.replace(/^prj_/, "project_"),
+    public_id: `local_${projectId.slice(-16)}`,
+    anon_key: anonKey,
+    service_key: serviceKey,
+    endpoints: {
+      rest_url: "http://127.0.0.1:4300",
+      static_base_url: `http://127.0.0.1:4020/projects/v1/${projectId}/static`,
+      storage_base_url: `http://127.0.0.1:4020/projects/v1/${projectId}/storage`,
+    },
+    active_release_id: null,
+    capabilities: runtimeCapabilities("test"),
+  };
+}
+
+class MemoryMailboxStore implements CoreMailboxStorePort {
+  readonly mailboxes = new Map<string, CoreMailboxRecord>();
+  readonly settings = new Map<string, CoreMailboxSettings>();
+  readonly messages = new Map<string, CoreEmailMessageRecord>();
+
+  async createMailbox(input: { projectId: string; slug: string }): Promise<CoreMailboxRecord> {
+    if ([...this.mailboxes.values()].some((mailbox) => mailbox.slug === input.slug && mailbox.status !== "tombstoned")) {
+      throw new Error("duplicate slug");
+    }
+    const mailbox: CoreMailboxRecord = {
+      mailbox_id: `mbx_${String(this.mailboxes.size + 1).padStart(4, "0")}`,
+      slug: input.slug,
+      project_id: input.projectId,
+      status: "active",
+      footer_policy: "none",
+      tombstoned_at: null,
+      created_at: new Date(0).toISOString(),
+      updated_at: new Date(0).toISOString(),
+    };
+    this.mailboxes.set(mailbox.mailbox_id, mailbox);
+    const activeForProject = [...this.mailboxes.values()].filter((entry) => entry.project_id === input.projectId && entry.status === "active");
+    if (activeForProject.length === 1) {
+      await this.updateSettings({ projectId: input.projectId, defaultOutboundMailboxId: mailbox.mailbox_id });
+    }
+    return mailbox;
+  }
+
+  async listMailboxes(projectId: string): Promise<CoreMailboxRecord[]> {
+    return [...this.mailboxes.values()].filter((mailbox) => mailbox.project_id === projectId && mailbox.status !== "tombstoned");
+  }
+
+  async getMailbox(mailboxId: string): Promise<CoreMailboxRecord | null> {
+    return this.mailboxes.get(mailboxId) ?? null;
+  }
+
+  async requireOwnedMailbox(projectId: string, mailboxId: string): Promise<CoreMailboxRecord> {
+    const mailbox = this.mailboxes.get(mailboxId);
+    if (!mailbox) throw new CoreMailboxError("Mailbox not found", 404, "mailbox_not_found");
+    if (mailbox.project_id !== projectId) throw new CoreMailboxError("Mailbox owned by different project", 403, "mailbox_forbidden");
+    return mailbox;
+  }
+
+  async updateMailbox(input: { projectId: string; mailboxId: string; footerPolicy?: "none" | "run402_transparency" }): Promise<CoreMailboxRecord> {
+    const mailbox = await this.requireOwnedMailbox(input.projectId, input.mailboxId);
+    const updated = { ...mailbox, ...(input.footerPolicy ? { footer_policy: input.footerPolicy } : {}) };
+    this.mailboxes.set(input.mailboxId, updated);
+    return updated;
+  }
+
+  async deleteMailbox(input: { projectId: string; mailboxId: string }): Promise<CoreMailboxRecord | null> {
+    const mailbox = await this.requireOwnedMailbox(input.projectId, input.mailboxId);
+    const updated: CoreMailboxRecord = { ...mailbox, status: "tombstoned", tombstoned_at: new Date().toISOString() };
+    this.mailboxes.set(input.mailboxId, updated);
+    return updated;
+  }
+
+  async getSettings(projectId: string): Promise<CoreMailboxSettings> {
+    return this.settings.get(projectId) ?? { project_id: projectId, default_outbound_mailbox_id: null, updated_at: null };
+  }
+
+  async updateSettings(input: { projectId: string; defaultOutboundMailboxId: string | null }): Promise<CoreMailboxSettings> {
+    if (input.defaultOutboundMailboxId !== null) {
+      await this.requireOwnedMailbox(input.projectId, input.defaultOutboundMailboxId);
+    }
+    const settings: CoreMailboxSettings = {
+      project_id: input.projectId,
+      default_outbound_mailbox_id: input.defaultOutboundMailboxId,
+      updated_at: new Date(0).toISOString(),
+    };
+    this.settings.set(input.projectId, settings);
+    return settings;
+  }
+
+  async stageMessage(input: StageMessageInput): Promise<CoreEmailMessageRecord> {
+    const message: CoreEmailMessageRecord = {
+      message_id: `msg_${String(this.messages.size + 1).padStart(4, "0")}`,
+      project_id: input.projectId,
+      mailbox_id: input.mailboxId,
+      from_address: input.fromAddress,
+      to_address: input.to,
+      subject: input.subject,
+      body_text: input.bodyText,
+      status: "pending",
+      delivery_state: "pending_provider",
+      provider: null,
+      provider_message_id: null,
+      attachments_meta: input.attachmentsMeta,
+      created_at: new Date(0).toISOString(),
+      updated_at: new Date(0).toISOString(),
+      sent_at: null,
+    };
+    this.messages.set(message.message_id, message);
+    return message;
+  }
+
+  async markMessageSent(input: { messageId: string; provider: string; providerMessageId?: string | null }): Promise<CoreEmailMessageRecord> {
+    const current = this.messages.get(input.messageId);
+    assert.ok(current);
+    const updated: CoreEmailMessageRecord = {
+      ...current,
+      status: "sent",
+      delivery_state: "accepted",
+      provider: input.provider,
+      provider_message_id: input.providerMessageId ?? null,
+      sent_at: new Date(0).toISOString(),
+    };
+    this.messages.set(input.messageId, updated);
+    return updated;
+  }
+
+  async markMessageFailed(input: { messageId: string; provider?: string | null }): Promise<CoreEmailMessageRecord> {
+    const current = this.messages.get(input.messageId);
+    assert.ok(current);
+    const updated: CoreEmailMessageRecord = {
+      ...current,
+      status: "failed",
+      delivery_state: "failed",
+      provider: input.provider ?? null,
+    };
+    this.messages.set(input.messageId, updated);
+    return updated;
+  }
+
+  async listMessages(input: { projectId: string; mailboxId: string }): Promise<CoreEmailMessageRecord[]> {
+    await this.requireOwnedMailbox(input.projectId, input.mailboxId);
+    return [...this.messages.values()].filter((message) => message.project_id === input.projectId && message.mailbox_id === input.mailboxId);
+  }
+
+  async getMessage(input: { projectId: string; mailboxId: string; messageId: string }): Promise<CoreEmailMessageRecord | null> {
+    await this.requireOwnedMailbox(input.projectId, input.mailboxId);
+    return this.messages.get(input.messageId) ?? null;
   }
 }
 

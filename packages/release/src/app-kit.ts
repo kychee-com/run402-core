@@ -172,8 +172,16 @@ const TOP_LEVEL_UNSUPPORTED: Record<string, Omit<AppKitDiagnostic, "resource">> 
   domains: unsupported("run402.core.unsupported.custom_domains", "managed.custom_domains", "Custom domain automation is not part of Core Developer Preview."),
   i18n: unsupported("run402.core.unsupported.i18n_routing", "i18n.routing", "i18n routing is not part of Core Developer Preview."),
   hosted_oauth: unsupported("run402.core.unsupported.hosted_oauth", "auth.hosted_oauth", "Hosted OAuth is not part of Core Developer Preview."),
-  mailboxes: unsupported("run402.core.unsupported.email", "email.managed", "Managed email is not part of Core Developer Preview."),
-  email: unsupported("run402.core.unsupported.email", "email.managed", "Managed email is not part of Core Developer Preview."),
+  mailboxes: unsupported(
+    "run402.core.unsupported.email_manifest",
+    "email.outbound_configuration",
+    "Core outbound email is configured through the gateway provider and /mailboxes/v1, not as a deploy manifest resource.",
+  ),
+  email: unsupported(
+    "run402.core.unsupported.email_manifest",
+    "email.outbound_configuration",
+    "Core outbound email is configured through the gateway provider and /mailboxes/v1; managed inbound, bounce, and sender-domain operations remain Cloud-only.",
+  ),
   billing: unsupported("run402.core.unsupported.billing", "billing.managed", "Managed billing is not part of Core Developer Preview."),
   monitoring: unsupported("run402.core.unsupported.monitoring", "monitoring.managed", "Managed monitoring is not part of Core Developer Preview."),
   backups: unsupported("run402.core.unsupported.backups", "backups.managed", "Managed backups are not part of Core Developer Preview."),

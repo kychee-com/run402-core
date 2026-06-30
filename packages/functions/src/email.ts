@@ -47,13 +47,18 @@ interface MailboxListResponse {
     default_outbound_mailbox_id?: string | null;
     auth_sender_mailbox_id?: string | null;
   };
+  provider_readiness?: {
+    status?: string;
+    provider?: string;
+    reason?: string;
+  };
   next_actions?: unknown[];
 }
 
 export class EmailConfigurationError extends Error {
   constructor(
     message: string,
-    public code: "AMBIGUOUS_MAILBOX" | "DEFAULT_MAILBOX_REQUIRED" | "DEFAULT_MAILBOX_INVALID",
+    public code: "AMBIGUOUS_MAILBOX" | "DEFAULT_MAILBOX_REQUIRED" | "DEFAULT_MAILBOX_INVALID" | "PROVIDER_NOT_CONFIGURED",
     public details: Record<string, unknown> = {},
     public next_actions: unknown[] = [],
   ) {
@@ -77,6 +82,9 @@ export const email = (() => {
     if (defaultOutboundId) {
       const selected = mailboxes.find((mailbox) => mailbox.mailbox_id === defaultOutboundId);
       if (!selected || selected.can_send === false || selected.status === "suspended" || selected.status === "tombstoned") {
+        if (selected && isProviderBlocked(selected, data)) {
+          throw providerConfigurationError(data, mailboxes);
+        }
         throw new EmailConfigurationError(
           "Configured default outbound mailbox is not send-ready",
           "DEFAULT_MAILBOX_INVALID",
@@ -95,6 +103,9 @@ export const email = (() => {
 
     const sendReady = mailboxes.filter((mailbox) => mailbox.can_send !== false && mailbox.status !== "suspended" && mailbox.status !== "tombstoned");
     if (sendReady.length === 0) {
+      if (mailboxes.length > 0 && isProviderBlocked(mailboxes[0]!, data)) {
+        throw providerConfigurationError(data, mailboxes);
+      }
       throw new EmailConfigurationError(
         "No active mailbox configured for this project",
         "DEFAULT_MAILBOX_REQUIRED",
@@ -171,6 +182,29 @@ function safeMailboxCandidate(mailbox: MailboxSummary): Record<string, unknown> 
   };
 }
 
+function isProviderBlocked(mailbox: MailboxSummary, data: MailboxListResponse): boolean {
+  return mailbox.send_blocked_reason === "provider_not_configured" ||
+    mailbox.send_blocked_reason === "provider_misconfigured" ||
+    data.provider_readiness?.status === "not_configured" ||
+    data.provider_readiness?.status === "misconfigured";
+}
+
+function providerConfigurationError(data: MailboxListResponse, mailboxes: MailboxSummary[]): EmailConfigurationError {
+  const status = data.provider_readiness?.status ?? "not_configured";
+  return new EmailConfigurationError(
+    status === "misconfigured"
+      ? "Core outbound email provider is misconfigured"
+      : "Core outbound email provider is not configured",
+    "PROVIDER_NOT_CONFIGURED",
+    {
+      resource_kind: "email_provider",
+      provider_readiness: data.provider_readiness ?? { status },
+      candidates: mailboxes.map(safeMailboxCandidate),
+    },
+    data.next_actions || providerNextActions(),
+  );
+}
+
 function defaultMailboxNextActions(): unknown[] {
   return [
     {
@@ -195,5 +229,17 @@ function createMailboxNextActions(): unknown[] {
       fields: { slug: "notifications" },
     },
     ...defaultMailboxNextActions(),
+  ];
+}
+
+function providerNextActions(): unknown[] {
+  return [
+    {
+      type: "edit_request",
+      path: "host environment",
+      auth: "operator",
+      why: "Configure the Core gateway outbound email provider before retrying email.send().",
+      fields: { CORE_EMAIL_PROVIDER: "ses", CORE_EMAIL_FROM_DOMAIN: "example.com" },
+    },
   ];
 }

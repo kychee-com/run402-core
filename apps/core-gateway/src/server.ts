@@ -59,8 +59,20 @@ import type {
   LocalFunctionExecutorInput,
   LocalFunctionExecutorResult,
 } from "./local-function-executor.js";
+import { createEmailProvider, emailProviderConfigFromEnv, EmailProviderError, type EmailProviderPort, type EmailProviderConfig } from "./email-provider.js";
+import { EmailValidationError, mailboxAddress, validateMailboxSlug, validateRawEmail } from "./email-validation.js";
+import { buildMixedMime } from "./mime-build.js";
 import { PostgresApplyStore } from "./postgres-apply.js";
 import { PostgresArchiveImporter } from "./postgres-archive-importer.js";
+import {
+  CoreMailboxError,
+  createMailboxNextActions,
+  defaultMailboxNextActions,
+  formatMailboxResponse,
+  mailboxSettingsBody,
+  PostgresCoreMailboxStore,
+  type CoreMailboxStorePort,
+} from "./postgres-mailboxes.js";
 import { createPostgresPool, PostgresProjectCatalog, PostgresProjectSql, type ProjectSqlResult } from "./postgres-projects.js";
 import { PostgresStorageStore } from "./postgres-storage.js";
 
@@ -78,6 +90,7 @@ export interface CoreGatewayConfig {
   signedReadSecret: string;
   maxObjectBytes: number;
   functionWorkerUrl?: string;
+  emailProvider: EmailProviderConfig;
 }
 
 export interface CoreGatewayRuntime {
@@ -99,6 +112,8 @@ export interface CoreGatewayRuntime {
   migrations?: RuntimeKernelPorts["migrations"];
   archiveImporter?: RuntimeKernelPorts["archiveImporter"];
   lifecycle?: RuntimeKernelPorts["lifecycle"];
+  mailboxes?: CoreMailboxStorePort;
+  emailProvider?: EmailProviderPort;
   rootProjectId?: string;
   publicBaseUrl?: string;
   functionApiBaseUrl?: string;
@@ -169,6 +184,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): CoreGatewayCon
     signedReadSecret: env.CORE_SIGNED_READ_SECRET || env.CORE_JWT_SECRET || "run402-core-local-signed-read-secret-change-me",
     maxObjectBytes: Number.parseInt(env.CORE_MAX_OBJECT_BYTES || String(100 * 1024 * 1024), 10),
     functionWorkerUrl: env.CORE_FUNCTION_WORKER_URL,
+    emailProvider: emailProviderConfigFromEnv(env),
   };
 }
 
@@ -195,6 +211,8 @@ export async function createGatewayRuntime(config: CoreGatewayConfig): Promise<C
     signedReadSecret: config.signedReadSecret,
     maxObjectBytes: config.maxObjectBytes,
   });
+  const mailboxes = new PostgresCoreMailboxStore(pool);
+  const emailProvider = createEmailProvider(config.emailProvider);
   const archiveImporter = new PostgresArchiveImporter(pool, content, {
     publicBaseUrl: config.publicBaseUrl,
     postgrestPublicUrl: config.postgrestPublicUrl,
@@ -202,6 +220,7 @@ export async function createGatewayRuntime(config: CoreGatewayConfig): Promise<C
   await projects.bootstrap();
   await applyStore.bootstrap();
   await storage.bootstrap();
+  await mailboxes.bootstrap();
   await archiveImporter.bootstrap();
 
   return {
@@ -220,6 +239,8 @@ export async function createGatewayRuntime(config: CoreGatewayConfig): Promise<C
     roleGates: new PostgresFunctionRoleGateStore(pool),
     secrets: storage,
     migrations: applyStore,
+    mailboxes,
+    emailProvider,
     archiveImporter,
     rootProjectId: config.rootProjectId,
     publicBaseUrl: config.publicBaseUrl,
@@ -605,6 +626,15 @@ export async function coreGatewayResponse(
     return { status: 201, body: token };
   }
 
+  if (pathname === "/mailboxes/v1" || pathname.startsWith("/mailboxes/v1/")) {
+    return await mailboxRoute(runtime, {
+      method,
+      pathname,
+      headers,
+      body: request.body,
+    });
+  }
+
   if (pathname === "/rest/v1" || pathname.startsWith("/rest/v1/")) {
     return await proxyCallerRest(runtime, {
       method,
@@ -902,6 +932,7 @@ function isCoreControlPlanePath(pathname: string): boolean {
     "/apply/v1",
     "/auth/v1",
     "/functions/v1",
+    "/mailboxes/v1",
     "/rest/v1",
     "/admin/v1",
   ].some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
@@ -944,6 +975,323 @@ function serviceTokenFromHeaders(headers: Record<string, string | undefined>): s
   if (!authorization) return null;
   const match = /^Bearer\s+(.+)$/i.exec(authorization);
   return match?.[1] ?? null;
+}
+
+interface MailboxRouteInput {
+  method: string;
+  pathname: string;
+  headers: Record<string, string | undefined>;
+  body: unknown;
+}
+
+async function mailboxRoute(
+  runtime: CoreGatewayRuntime,
+  input: MailboxRouteInput,
+): Promise<CoreGatewayResult> {
+  const mailboxes = runtime.mailboxes;
+  if (!mailboxes) return unavailable("mailbox_store_unavailable", "Run402 Core mailbox store is not configured.");
+  const auth = await requireServiceProjectFromHeaders(runtime, input.headers);
+  if ("status" in auth) return auth;
+  const provider = emailProviderForRuntime(runtime);
+  const readiness = provider.readiness();
+
+  try {
+    if (input.method === "POST" && input.pathname === "/mailboxes/v1") {
+      const body = objectBody(input.body);
+      const mailbox = await mailboxes.createMailbox({
+        projectId: auth.project_id,
+        slug: validateMailboxSlug(body.slug),
+      });
+      const settings = await mailboxes.getSettings(auth.project_id);
+      return {
+        status: 201,
+        body: formatMailboxResponse({ mailbox, settings, providerReadiness: readiness }),
+      };
+    }
+
+    if (input.method === "GET" && input.pathname === "/mailboxes/v1") {
+      const [records, settings] = await Promise.all([
+        mailboxes.listMailboxes(auth.project_id),
+        mailboxes.getSettings(auth.project_id),
+      ]);
+      const response = {
+        mailboxes: records.map((mailbox) => formatMailboxResponse({ mailbox, settings, providerReadiness: readiness })),
+        mailbox_settings: mailboxSettingsBody(settings),
+        provider_readiness: readiness,
+        next_actions: mailboxListNextActions(records.length, settings.default_outbound_mailbox_id, readiness.status),
+      };
+      return { status: 200, body: response };
+    }
+
+    if (input.method === "PATCH" && input.pathname === "/mailboxes/v1/settings") {
+      const body = objectBody(input.body);
+      const value = body.default_outbound_mailbox_id;
+      if (value !== null && typeof value !== "string") {
+        return { status: 400, body: { error: "invalid_request", message: "default_outbound_mailbox_id must be a string or null." } };
+      }
+      const settings = await mailboxes.updateSettings({
+        projectId: auth.project_id,
+        defaultOutboundMailboxId: value,
+      });
+      return { status: 200, body: { mailbox_settings: mailboxSettingsBody(settings) } };
+    }
+
+    const messageDetailMatch = /^\/mailboxes\/v1\/([^/]+)\/messages\/([^/]+)$/.exec(input.pathname);
+    if (input.method === "GET" && messageDetailMatch) {
+      const message = await mailboxes.getMessage({
+        projectId: auth.project_id,
+        mailboxId: messageDetailMatch[1],
+        messageId: messageDetailMatch[2],
+      });
+      return message
+        ? { status: 200, body: messageBody(message) }
+        : { status: 404, body: { error: "message_not_found", message: "Email message was not found." } };
+    }
+
+    const messagesMatch = /^\/mailboxes\/v1\/([^/]+)\/messages$/.exec(input.pathname);
+    if (input.method === "GET" && messagesMatch) {
+      const messages = await mailboxes.listMessages({
+        projectId: auth.project_id,
+        mailboxId: messagesMatch[1],
+      });
+      return {
+        status: 200,
+        body: { messages: messages.map(messageBody), has_more: false, next_cursor: null },
+      };
+    }
+
+    if (input.method === "POST" && messagesMatch) {
+      if (readiness.status !== "configured") {
+        return providerUnavailableResponse(readiness);
+      }
+      const mailbox = await mailboxes.requireOwnedMailbox(auth.project_id, messagesMatch[1]);
+      if (mailbox.status !== "active") {
+        return {
+          status: 403,
+          body: { error: "mailbox_not_send_ready", message: "Mailbox is not active.", send_blocked_reason: mailbox.status === "suspended" ? "mailbox_suspended" : "mailbox_deleted" },
+        };
+      }
+      const raw = validateRawEmail(input.body);
+      const bareFromAddress = mailboxAddress(mailbox.slug, readiness.from_domain);
+      const providerFromAddress = formatFromAddress(bareFromAddress, raw.fromName);
+      const attachmentsMeta = raw.attachments.length > 0
+        ? raw.attachments.map((attachment) => ({
+            filename: attachment.filename,
+            content_type: attachment.contentType,
+            size_bytes: attachment.content.length,
+          }))
+        : null;
+      const staged = await mailboxes.stageMessage({
+        projectId: auth.project_id,
+        mailboxId: mailbox.mailbox_id,
+        fromAddress: bareFromAddress,
+        to: raw.to,
+        subject: raw.subject,
+        bodyText: raw.text,
+        attachmentsMeta,
+      });
+      const rawMime = raw.attachments.length > 0
+        ? buildMixedMime({
+            fromAddress: bareFromAddress,
+            ...(raw.fromName ? { fromName: raw.fromName } : {}),
+            to: raw.to,
+            subject: raw.subject,
+            text: raw.text,
+            html: raw.html,
+            attachments: raw.attachments.map((attachment) => ({
+              filename: attachment.filename,
+              content: attachment.content,
+              contentType: attachment.contentType,
+            })),
+            date: new Date(),
+          })
+        : undefined;
+      try {
+        const result = await provider.sendRaw({
+          fromAddress: providerFromAddress,
+          to: raw.to,
+          subject: raw.subject,
+          html: raw.html,
+          text: raw.text,
+          ...(rawMime ? { rawMime } : {}),
+        });
+        const sent = await mailboxes.markMessageSent({
+          messageId: staged.message_id,
+          provider: result.provider,
+          providerMessageId: result.providerMessageId ?? null,
+        });
+        return { status: 201, body: messageBody(sent) };
+      } catch (error) {
+        const failed = await mailboxes.markMessageFailed({
+          messageId: staged.message_id,
+          provider: readiness.provider,
+          reason: error instanceof Error ? error.message : String(error),
+        });
+        if (error instanceof EmailProviderError) {
+          return {
+            status: error.status,
+            body: {
+              error: error.code,
+              message: error.message,
+              message_id: failed.message_id,
+              delivery_state: failed.delivery_state,
+              next_actions: providerNextActions(readiness.status),
+            },
+          };
+        }
+        throw error;
+      }
+    }
+
+    const mailboxMatch = /^\/mailboxes\/v1\/([^/]+)$/.exec(input.pathname);
+    if (mailboxMatch) {
+      const mailboxId = mailboxMatch[1];
+      if (input.method === "GET") {
+        const mailbox = await mailboxes.requireOwnedMailbox(auth.project_id, mailboxId);
+        const settings = await mailboxes.getSettings(auth.project_id);
+        return { status: 200, body: formatMailboxResponse({ mailbox, settings, providerReadiness: readiness }) };
+      }
+      if (input.method === "PATCH") {
+        const body = objectBody(input.body);
+        const footerPolicy = body.footer_policy;
+        if (footerPolicy !== undefined && footerPolicy !== "none" && footerPolicy !== "run402_transparency") {
+          return { status: 400, body: { error: "invalid_request", message: "footer_policy must be 'none' or 'run402_transparency'." } };
+        }
+        const mailbox = await mailboxes.updateMailbox({
+          projectId: auth.project_id,
+          mailboxId,
+          ...(footerPolicy ? { footerPolicy } : {}),
+        });
+        const settings = await mailboxes.getSettings(auth.project_id);
+        return { status: 200, body: formatMailboxResponse({ mailbox, settings, providerReadiness: readiness }) };
+      }
+      if (input.method === "DELETE") {
+        const mailbox = await mailboxes.deleteMailbox({ projectId: auth.project_id, mailboxId });
+        return {
+          status: 200,
+          body: {
+            status: "deleted",
+            mailbox_id: mailbox?.mailbox_id ?? mailboxId,
+            address: mailbox ? mailboxAddress(mailbox.slug, readiness.from_domain) : null,
+          },
+        };
+      }
+    }
+
+    return { status: 404, body: { error: "not_found", message: "Mailbox route was not found." } };
+  } catch (error) {
+    return mailboxRouteError(error);
+  }
+}
+
+async function requireServiceProjectFromHeaders(
+  runtime: CoreGatewayRuntime,
+  headers: Record<string, string | undefined>,
+): Promise<CoreProject | CoreGatewayResult> {
+  const token = serviceTokenFromHeaders(headers);
+  if (!token) {
+    return { status: 401, body: { error: "authentication_required", message: "A project service key is required." } };
+  }
+  const projectKeys = runtime.projectKeys;
+  if (!projectKeys) return unavailable("project_key_lookup_unavailable", "Run402 Core project key lookup is not configured.");
+  const project = await projectKeys.inspectByKey(token);
+  if (!project || token !== project.service_key) {
+    return { status: 401, body: { error: "authentication_required", message: "A valid project service key is required." } };
+  }
+  return project;
+}
+
+function emailProviderForRuntime(runtime: CoreGatewayRuntime): EmailProviderPort {
+  return runtime.emailProvider ?? createEmailProvider({ provider: "disabled" });
+}
+
+function mailboxListNextActions(mailboxCount: number, defaultOutboundMailboxId: string | null, readiness: string) {
+  if (mailboxCount === 0) return createMailboxNextActions();
+  if (!defaultOutboundMailboxId) return defaultMailboxNextActions();
+  return providerNextActions(readiness);
+}
+
+function providerUnavailableResponse(readiness: ReturnType<EmailProviderPort["readiness"]>): CoreGatewayResult {
+  const error = readiness.status === "misconfigured" ? "provider_misconfigured" : "provider_not_configured";
+  return {
+    status: 503,
+    body: {
+      error,
+      message: readiness.reason ?? "Outbound email provider is not configured.",
+      provider_readiness: readiness,
+      next_actions: providerNextActions(readiness.status),
+    },
+  };
+}
+
+function providerNextActions(readiness: string) {
+  if (readiness === "configured") return [];
+  return [
+    {
+      type: "edit_request",
+      method: "PATCH",
+      path: "host environment",
+      auth: "operator",
+      why: "Configure CORE_EMAIL_PROVIDER and CORE_EMAIL_FROM_DOMAIN on the Core gateway, then restart it.",
+      fields: { CORE_EMAIL_PROVIDER: "ses", CORE_EMAIL_FROM_DOMAIN: "example.com" },
+    },
+  ];
+}
+
+function formatFromAddress(address: string, fromName?: string): string {
+  return fromName ? `"${fromName}" <${address}>` : address;
+}
+
+function objectBody(body: unknown): Record<string, unknown> {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    throw new EmailValidationError("request body must be a JSON object");
+  }
+  return body as Record<string, unknown>;
+}
+
+function messageBody(message: {
+  message_id: string;
+  mailbox_id: string;
+  from_address: string;
+  to_address: string;
+  subject: string;
+  status: string;
+  delivery_state: string;
+  provider: string | null;
+  provider_message_id: string | null;
+  attachments_meta: Array<{ filename: string; content_type: string; size_bytes: number }> | null;
+  created_at: string;
+  updated_at: string;
+  sent_at: string | null;
+}) {
+  return {
+    message_id: message.message_id,
+    mailbox_id: message.mailbox_id,
+    from_address: message.from_address,
+    to: message.to_address,
+    subject: message.subject,
+    status: message.status,
+    delivery_state: message.delivery_state,
+    provider: message.provider,
+    provider_message_id: message.provider_message_id,
+    attachments_meta: message.attachments_meta,
+    created_at: message.created_at,
+    updated_at: message.updated_at,
+    sent_at: message.sent_at,
+  };
+}
+
+function mailboxRouteError(error: unknown): CoreGatewayResult {
+  if (error instanceof EmailValidationError) {
+    return { status: 400, body: { error: "invalid_request", message: error.message, field: error.field } };
+  }
+  if (error instanceof CoreMailboxError) {
+    return { status: error.status, body: { error: error.code, message: error.message } };
+  }
+  if (error instanceof EmailProviderError) {
+    return { status: error.status, body: { error: error.code, message: error.message } };
+  }
+  throw error;
 }
 
 interface RestProxyInput {

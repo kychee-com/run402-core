@@ -41,6 +41,13 @@ const forbiddenText = [
   "tenantId",
   "billing_ledger",
   "operator_only",
+  "mail.run402.com",
+  "RUN402_SES_CONFIGURATION_SET_NAME",
+  "email_pack",
+  "billing_email_overage",
+  "billing-email-overage",
+  "support_workflow",
+  "supportWorkflow",
 ];
 const archiveForbiddenText = [
   "tenant_id",
@@ -127,6 +134,7 @@ for (const relativeRoot of checkedRoots) {
     for (const line of text.split("\n")) {
       if (!/^\s*import\b/.test(line)) continue;
       for (const forbidden of forbiddenImports) {
+        if (isAllowedCoreEmailAwsSdkImport(file, line, forbidden)) continue;
         if (line.includes(forbidden)) {
           failures.push(`${relative(file)} imports forbidden dependency pattern: ${forbidden}`);
         }
@@ -260,4 +268,11 @@ function isArchiveBoundaryFile(file) {
   const rel = relative(file);
   return rel.startsWith("fixtures/portable-project-archive-core/") ||
     rel.startsWith("packages/runtime-kernel/schemas/");
+}
+
+function isAllowedCoreEmailAwsSdkImport(file, line, forbidden) {
+  const rel = relative(file);
+  if (rel !== "apps/core-gateway/src/email-provider.ts") return false;
+  if (forbidden !== "@aws-sdk/" && forbidden !== "aws-sdk") return false;
+  return line.includes("@aws-sdk/client-sesv2");
 }

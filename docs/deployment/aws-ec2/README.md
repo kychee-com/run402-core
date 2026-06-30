@@ -24,6 +24,8 @@ This walkthrough does not yet prove:
 
 Run402 Cloud should be the easiest place to start. This guide is the AWS-side proof that the supported Core runtime slice can run elsewhere.
 
+For outbound transactional email on the same Dockerized Core gateway, see `docs/deployment/aws-email/README.md`.
+
 ## Current Shape
 
 This is an EC2 + Docker Compose Developer Preview path.

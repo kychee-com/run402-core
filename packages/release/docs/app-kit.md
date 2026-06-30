@@ -75,7 +75,7 @@ Use `targetPolicy: "core-developer-preview"` when building a manifest intended f
 - managed subdomains and custom domains
 - i18n routing
 - hosted OAuth
-- managed email
+- deploy-time email resources (Core outbound email is configured through the gateway provider and `/mailboxes/v1`; managed inbound/delivery operations remain Cloud-only)
 - billing
 - monitoring
 - backups

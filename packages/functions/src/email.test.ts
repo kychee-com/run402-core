@@ -68,6 +68,41 @@ describe("email.send — default mailbox discovery rejects unsafe implicit selec
     );
     assert.equal(calls.length, 1, "should fail before POST /messages");
   });
+
+  it("throws a provider configuration error when Core has mailboxes but no outbound provider", async () => {
+    const calls: Array<{ url: string; opts: RequestInit }> = [];
+    mock.method(globalThis, "fetch", async (url: string, opts: RequestInit) => {
+      calls.push({ url, opts });
+      return new Response(
+        JSON.stringify({
+          mailboxes: [{
+            mailbox_id: "mbx_core",
+            slug: "notify",
+            address: "notify@run402-core.local",
+            status: "active",
+            can_send: false,
+            send_blocked_reason: "provider_not_configured",
+          }],
+          mailbox_settings: { default_outbound_mailbox_id: "mbx_core", auth_sender_mailbox_id: null },
+          provider_readiness: { status: "not_configured", provider: "disabled" },
+          next_actions: [{ type: "edit_request", path: "host environment" }],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+
+    await assert.rejects(
+      () => email.send({ to: "user@example.com", subject: "Hi", html: "<p>Hello</p>" }),
+      (err: unknown) => {
+        assert.ok(err instanceof EmailConfigurationError);
+        assert.equal(err.code, "PROVIDER_NOT_CONFIGURED");
+        assert.deepEqual(err.details.provider_readiness, { status: "not_configured", provider: "disabled" });
+        assert.ok(Array.isArray(err.next_actions));
+        return true;
+      },
+    );
+    assert.equal(calls.length, 1, "should fail before POST /messages");
+  });
 });
 
 describe("email.send — first call discovers default mailbox via GET /mailboxes/v1", () => {

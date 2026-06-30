@@ -208,7 +208,7 @@ describe("@run402/release/app-kit Core capability diagnostics", () => {
         "backups.managed",
         "billing.managed",
         "compliance.managed",
-        "email.managed",
+        "email.outbound_configuration",
         "fleet.operations",
         "functions.scheduled",
         "i18n.routing",
