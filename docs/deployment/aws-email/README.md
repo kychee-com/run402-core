@@ -13,7 +13,7 @@ This guide covers outbound transactional email only. Inbound reply-to-sign, boun
 - A running Run402 Core Docker Compose gateway on AWS, such as `docs/deployment/aws-ec2/README.md`
 - An AWS account with Amazon SES access in one region
 - A verified SES sender identity or domain
-- An EC2 instance role, ECS task role, or other AWS SDK credential source that can call `ses:SendEmail`
+- An EC2 instance role, ECS task role, or other AWS SDK credential source that can call `ses:SendEmail` and `ses:SendRawEmail`
 - `curl` and `jq`
 
 Recommended first target:
@@ -74,7 +74,7 @@ Minimal policy shape:
   "Statement": [
     {
       "Effect": "Allow",
-      "Action": ["ses:SendEmail"],
+      "Action": ["ses:SendEmail", "ses:SendRawEmail"],
       "Resource": "*"
     }
   ]
@@ -358,7 +358,7 @@ Verify the recipient too if the account is in sandbox.
 
 ### `provider_access_denied`
 
-The gateway's AWS credential source lacks `ses:SendEmail`.
+The gateway's AWS credential source lacks `ses:SendEmail` or `ses:SendRawEmail`.
 
 Check the instance role:
 
@@ -366,7 +366,7 @@ Check the instance role:
 aws sts get-caller-identity
 ```
 
-Then attach a policy that allows `ses:SendEmail` for the SES identity.
+Then attach a policy that allows `ses:SendEmail` and `ses:SendRawEmail` for the SES identity. Core uses SES raw MIME when a message has attachments.
 
 ### Attachment Rejected Before Provider Call
 

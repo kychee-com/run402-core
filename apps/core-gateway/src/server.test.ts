@@ -28,7 +28,7 @@ import {
   type StoragePort,
 } from "@run402/runtime-kernel";
 import { STATIC_MANIFEST_VERSION, type PortableReleaseState } from "@run402/release";
-import { DisabledEmailProvider, MockEmailProvider } from "./email-provider.js";
+import { DisabledEmailProvider, EmailProviderError, MockEmailProvider, type EmailProviderPort } from "./email-provider.js";
 import type {
   LocalFunctionExecutorInput,
   LocalFunctionExecutorResult,
@@ -215,6 +215,41 @@ test("mailbox routes report provider-not-configured without staging sends", asyn
   assert.equal(sent.status, 503);
   assert.equal((sent.body as { error?: string }).error, "provider_not_configured");
   assert.equal(mailboxes.messages.size, 0);
+});
+
+test("mailbox routes surface actionable SES IAM next actions on provider access denial", async () => {
+  const catalog = new MemoryProjectCatalog();
+  const project = await catalog.create({ name: "email app" });
+  const mailboxes = new MemoryMailboxStore();
+  const emailProvider: EmailProviderPort = {
+    readiness: () => ({ status: "configured", provider: "ses", from_domain: "kysigned.com" }),
+    sendRaw: async () => {
+      throw new EmailProviderError("not authorized to perform ses:SendRawEmail", "provider_access_denied", 502);
+    },
+  };
+  const runtime = { projects: catalog, projectKeys: catalog, mailboxes, emailProvider };
+
+  const created = await coreGatewayResponse({
+    method: "POST",
+    pathname: "/mailboxes/v1",
+    headers: { authorization: `Bearer ${project.service_key}` },
+    body: { slug: "notify" },
+  }, runtime);
+
+  assert.equal(created.status, 201);
+
+  const sent = await coreGatewayResponse({
+    method: "POST",
+    pathname: `/mailboxes/v1/${(created.body as { mailbox_id: string }).mailbox_id}/messages`,
+    headers: { authorization: `Bearer ${project.service_key}` },
+    body: { to: "a@example.com", subject: "Hi", html: "<p>Hi</p>" },
+  }, runtime);
+
+  assert.equal(sent.status, 502);
+  assert.equal((sent.body as { error?: string }).error, "provider_access_denied");
+  const nextActions = (sent.body as { next_actions?: Array<{ fields?: { iam_actions?: string[] } }> }).next_actions ?? [];
+  assert.ok(nextActions.some((action) => action.fields?.iam_actions?.includes("ses:SendEmail")));
+  assert.ok(nextActions.some((action) => action.fields?.iam_actions?.includes("ses:SendRawEmail")));
 });
 
 test("mailbox routes return 403 before revealing another project's mailbox", async () => {

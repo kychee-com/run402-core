@@ -1135,7 +1135,7 @@ async function mailboxRoute(
               message: error.message,
               message_id: failed.message_id,
               delivery_state: failed.delivery_state,
-              next_actions: providerNextActions(readiness.status),
+              next_actions: providerFailureNextActions(error, readiness),
             },
           };
         }
@@ -1236,6 +1236,44 @@ function providerNextActions(readiness: string) {
       fields: { CORE_EMAIL_PROVIDER: "ses", CORE_EMAIL_FROM_DOMAIN: "example.com" },
     },
   ];
+}
+
+function providerFailureNextActions(error: EmailProviderError, readiness: ReturnType<EmailProviderPort["readiness"]>) {
+  if (error.code === "provider_access_denied") {
+    return [
+      {
+        type: "edit_request",
+        method: "PATCH",
+        path: "AWS IAM role/profile",
+        auth: "operator",
+        why: "Grant the Core gateway AWS credential source SES send permissions for the verified outbound identity, then retry the send.",
+        fields: {
+          iam_actions: ["ses:SendEmail", "ses:SendRawEmail"],
+          ses_identity: readiness.from_domain ?? "<verified SES identity>",
+        },
+      },
+    ];
+  }
+  if (error.code === "provider_sender_or_recipient_not_verified") {
+    return [
+      {
+        type: "read_docs",
+        path: "docs/deployment/aws-email/README.md",
+        auth: "operator",
+        why: "Verify CORE_EMAIL_FROM_DOMAIN and the recipient identity in SES, or request SES production access before retrying.",
+      },
+    ];
+  }
+  return providerNextActions(readiness.status).length > 0
+    ? providerNextActions(readiness.status)
+    : [
+        {
+          type: "read_docs",
+          path: "docs/deployment/aws-email/README.md",
+          auth: "operator",
+          why: "Inspect the SES provider error and gateway email configuration before retrying.",
+        },
+      ];
 }
 
 function formatFromAddress(address: string, fromName?: string): string {
