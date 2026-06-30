@@ -272,7 +272,10 @@ function isArchiveBoundaryFile(file) {
 
 function isAllowedCoreEmailAwsSdkImport(file, line, forbidden) {
   const rel = relative(file);
-  if (rel !== "apps/core-gateway/src/email-provider.ts") return false;
+  if (
+    rel !== "apps/core-gateway/src/email-provider.ts" &&
+    rel !== "apps/core-gateway/dist/email-provider.js"
+  ) return false;
   if (forbidden !== "@aws-sdk/" && forbidden !== "aws-sdk") return false;
   return line.includes("@aws-sdk/client-sesv2");
 }
