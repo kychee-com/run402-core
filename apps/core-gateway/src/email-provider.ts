@@ -45,6 +45,7 @@ export interface EmailProviderConfig {
   fromDomain?: string;
   sesRegion?: string;
   sesEndpoint?: string;
+  sesConfigurationSet?: string;
 }
 
 export function emailProviderConfigFromEnv(env: NodeJS.ProcessEnv): EmailProviderConfig {
@@ -53,6 +54,7 @@ export function emailProviderConfigFromEnv(env: NodeJS.ProcessEnv): EmailProvide
     fromDomain: cleanOptional(env.CORE_EMAIL_FROM_DOMAIN),
     sesRegion: cleanOptional(env.CORE_EMAIL_SES_REGION ?? env.AWS_REGION),
     sesEndpoint: cleanOptional(env.CORE_EMAIL_SES_ENDPOINT),
+    sesConfigurationSet: cleanOptional(env.CORE_EMAIL_SES_CONFIGURATION_SET),
   };
 }
 
@@ -112,12 +114,14 @@ class SesEmailProvider implements EmailProviderPort {
   readonly #fromDomain?: string;
   readonly #region?: string;
   readonly #endpoint?: string;
+  readonly #configurationSet?: string;
   #client?: SESv2Client;
 
   constructor(config: EmailProviderConfig) {
     this.#fromDomain = config.fromDomain;
     this.#region = config.sesRegion;
     this.#endpoint = config.sesEndpoint;
+    this.#configurationSet = config.sesConfigurationSet;
   }
 
   readiness(): EmailProviderReadiness {
@@ -151,6 +155,7 @@ class SesEmailProvider implements EmailProviderPort {
       const result = await this.#ses().send(new SendEmailCommand({
         FromEmailAddress: input.fromAddress,
         Destination: { ToAddresses: [input.to] },
+        ...(this.#configurationSet ? { ConfigurationSetName: this.#configurationSet } : {}),
         Content: input.rawMime
           ? { Raw: { Data: input.rawMime } }
           : {

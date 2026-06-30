@@ -42,7 +42,10 @@ import type {
   CoreMailboxWebhookRecord,
   CoreWebhookDeliveryRecord,
   CoreMailboxStorePort,
+  CoreEmailSuppressionRecord,
   EnqueueWebhookDeliveryInput,
+  ApplyDeliveryEventInput,
+  ApplyDeliveryEventResult,
   StageMessageInput,
   StoreInboundMessageInput,
 } from "./postgres-mailboxes.js";
@@ -64,7 +67,7 @@ test("loadConfig does not require Cloud environment variables", () => {
     signedReadSecret: "run402-core-local-signed-read-secret-change-me",
     maxObjectBytes: 104857600,
     functionWorkerUrl: undefined,
-    emailProvider: { provider: "disabled", fromDomain: undefined, sesRegion: undefined, sesEndpoint: undefined },
+    emailProvider: { provider: "disabled", fromDomain: undefined, sesRegion: undefined, sesEndpoint: undefined, sesConfigurationSet: undefined },
     emailInboundProvider: {
       provider: "disabled",
       inboundDomains: [],
@@ -75,6 +78,8 @@ test("loadConfig does not require Cloud environment variables", () => {
       rawPrefix: undefined,
       maxRawBytes: 10 * 1024 * 1024,
     },
+    emailDeliveryEvents: { provider: "disabled", ingestToken: undefined },
+    emailSendRateLimit: { enabled: true, maxPerWindow: 60, windowMs: 60_000 },
     webhookDelivery: DEFAULT_WEBHOOK_DELIVERY_CONFIG,
   });
 });
@@ -232,6 +237,204 @@ test("mailbox routes report provider-not-configured without staging sends", asyn
   assert.equal(sent.status, 503);
   assert.equal((sent.body as { error?: string }).error, "provider_not_configured");
   assert.equal(mailboxes.messages.size, 0);
+});
+
+test("Core delivery event ingestion marks bounces, suppresses recipients, and enqueues durable webhooks", async () => {
+  const catalog = new MemoryProjectCatalog();
+  const project = await catalog.create({ name: "delivery ops app" });
+  const mailboxes = new MemoryMailboxStore();
+  const sentByProvider: unknown[] = [];
+  const emailProvider: EmailProviderPort = {
+    readiness: () => ({ status: "configured", provider: "ses", from_domain: "example.com" }),
+    sendRaw: async (input) => {
+      sentByProvider.push(input);
+      return { provider: "ses", providerMessageId: "ses_msg_1", deliveryState: "accepted" };
+    },
+  };
+  const runtime = {
+    projects: catalog,
+    projectKeys: catalog,
+    mailboxes,
+    emailProvider,
+    emailDeliveryEvents: { provider: "ses", ingestToken: "events-secret" },
+  };
+
+  const created = await coreGatewayResponse({
+    method: "POST",
+    pathname: "/mailboxes/v1",
+    headers: { authorization: `Bearer ${project.service_key}` },
+    body: { slug: "signing" },
+  }, runtime);
+  assert.equal(created.status, 201);
+  const mailboxId = (created.body as { mailbox_id: string }).mailbox_id;
+
+  const webhook = await coreGatewayResponse({
+    method: "POST",
+    pathname: `/mailboxes/v1/${mailboxId}/webhooks`,
+    headers: { authorization: `Bearer ${project.service_key}` },
+    body: { url: "https://example.net/run402-email-webhook", events: ["bounced", "delivery", "complained"] },
+  }, runtime);
+  assert.equal(webhook.status, 201);
+  assert.deepEqual((webhook.body as { events: string[] }).events, ["bounced", "delivery", "complained"]);
+
+  const sent = await coreGatewayResponse({
+    method: "POST",
+    pathname: `/mailboxes/v1/${mailboxId}/messages`,
+    headers: { authorization: `Bearer ${project.service_key}` },
+    body: { to: "bad@example.net", subject: "Signature requested", html: "<p>Please sign.</p>" },
+  }, runtime);
+  assert.equal(sent.status, 201);
+  assert.equal((sent.body as { provider_message_id?: string }).provider_message_id, "ses_msg_1");
+
+  const unauthenticated = await coreGatewayResponse({
+    method: "POST",
+    pathname: "/mailboxes/v1/events/ingestions",
+    body: { eventType: "Bounce", mail: { messageId: "ses_msg_1" } },
+  }, runtime);
+  assert.equal(unauthenticated.status, 401);
+
+  const bounced = await coreGatewayResponse({
+    method: "POST",
+    pathname: "/mailboxes/v1/events/ingestions",
+    headers: { authorization: "Bearer events-secret" },
+    body: {
+      eventType: "Bounce",
+      mail: { messageId: "ses_msg_1", destination: ["bad@example.net"] },
+      bounce: {
+        bounceType: "Permanent",
+        timestamp: "2026-06-30T10:00:00.000Z",
+        bouncedRecipients: [{ emailAddress: "bad@example.net" }],
+      },
+    },
+  }, runtime);
+  assert.equal(bounced.status, 202);
+  const body = bounced.body as { accepted_count: number; results: Array<{ matched: boolean; suppression?: { scope: string; reason: string }; webhook_deliveries?: unknown[] }> };
+  assert.equal(body.accepted_count, 1);
+  assert.equal(body.results[0]?.matched, true);
+  assert.equal(body.results[0]?.suppression?.scope, "project");
+  assert.equal(body.results[0]?.suppression?.reason, "bounce");
+  assert.equal(body.results[0]?.webhook_deliveries?.length, 1);
+
+  const listed = await coreGatewayResponse({
+    method: "GET",
+    pathname: `/mailboxes/v1/${mailboxId}/messages/${(sent.body as { message_id: string }).message_id}`,
+    headers: { authorization: `Bearer ${project.service_key}` },
+  }, runtime);
+  assert.equal(listed.status, 200);
+  assert.equal((listed.body as { status?: string; delivery_state?: string }).status, "bounced");
+  assert.equal((listed.body as { status?: string; delivery_state?: string }).delivery_state, "bounced");
+
+  const deliveries = await coreGatewayResponse({
+    method: "GET",
+    pathname: `/mailboxes/v1/${mailboxId}/webhooks/deliveries`,
+    headers: { authorization: `Bearer ${project.service_key}` },
+  }, runtime);
+  assert.equal(deliveries.status, 200);
+  const rows = (deliveries.body as { deliveries: Array<{ event_type: string; source: string; payload: { type: string; idempotency_key: string; payload: { message_id: string; bounce_type: string } } }> }).deliveries;
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].event_type, "bounced");
+  assert.equal(rows[0].source, "core-email-events");
+  assert.equal(rows[0].payload.type, "bounced");
+  assert.equal(rows[0].payload.payload.message_id, (sent.body as { message_id: string }).message_id);
+  assert.equal(rows[0].payload.payload.bounce_type, "Permanent");
+  const idempotencyKey = rows[0].payload.idempotency_key;
+
+  const duplicate = await coreGatewayResponse({
+    method: "POST",
+    pathname: "/mailboxes/v1/events/ingestions",
+    headers: { authorization: "Bearer events-secret" },
+    body: {
+      eventType: "Bounce",
+      mail: { messageId: "ses_msg_1", destination: ["bad@example.net"] },
+      bounce: { bounceType: "Permanent", bouncedRecipients: [{ emailAddress: "bad@example.net" }] },
+    },
+  }, runtime);
+  assert.equal(duplicate.status, 202);
+  assert.equal(mailboxes.suppressions.size, 1);
+  assert.equal(mailboxes.deliveries.size, 1);
+  assert.equal(([...mailboxes.deliveries.values()][0]?.payload as { idempotency_key: string }).idempotency_key, idempotencyKey);
+
+  const suppressed = await coreGatewayResponse({
+    method: "POST",
+    pathname: `/mailboxes/v1/${mailboxId}/messages`,
+    headers: { authorization: `Bearer ${project.service_key}` },
+    body: { to: "bad@example.net", subject: "retry", html: "<p>Nope</p>" },
+  }, runtime);
+  assert.equal(suppressed.status, 403);
+  assert.equal((suppressed.body as { error?: string; suppression_scope?: string }).error, "recipient_suppressed");
+  assert.equal((suppressed.body as { error?: string; suppression_scope?: string }).suppression_scope, "project");
+  assert.equal(sentByProvider.length, 1);
+});
+
+test("Core delivery event ingestion safely reports ignored and unmatched SES events", async () => {
+  const mailboxes = new MemoryMailboxStore();
+  const runtime = {
+    mailboxes,
+    emailDeliveryEvents: { provider: "ses", ingestToken: "events-secret" },
+  };
+
+  const response = await coreGatewayResponse({
+    method: "POST",
+    pathname: "/mailboxes/v1/events/ingestions",
+    headers: { "x-run402-core-email-events-token": "events-secret" },
+    body: {
+      Records: [
+        { Sns: { Message: JSON.stringify({ eventType: "Delivery", mail: { messageId: "missing" }, delivery: { recipients: ["a@example.com"] } }) } },
+        { Sns: { Message: JSON.stringify({ eventType: "Open", mail: { messageId: "ignored" } }) } },
+        { Sns: { Message: "{not-json" } },
+      ],
+    },
+  }, runtime);
+
+  assert.equal(response.status, 202);
+  const body = response.body as { accepted_count: number; ignored_count: number; results: Array<{ matched: boolean; provider_message_id: string }>; ignored: Array<{ reason: string }> };
+  assert.equal(body.accepted_count, 1);
+  assert.equal(body.ignored_count, 2);
+  assert.equal(body.results[0]?.matched, false);
+  assert.equal(body.results[0]?.provider_message_id, "missing");
+  assert.equal(body.ignored[0]?.reason, "event_type_unsupported");
+});
+
+test("Core send rate limit rejects before provider calls or staging", async () => {
+  const catalog = new MemoryProjectCatalog();
+  const project = await catalog.create({ name: "rate limited app" });
+  const mailboxes = new MemoryMailboxStore();
+  const emailProvider = new MockEmailProvider("example.com");
+  const runtime = {
+    projects: catalog,
+    projectKeys: catalog,
+    mailboxes,
+    emailProvider,
+    emailSendRateLimit: { enabled: true, maxPerWindow: 1, windowMs: 60_000 },
+  };
+
+  const created = await coreGatewayResponse({
+    method: "POST",
+    pathname: "/mailboxes/v1",
+    headers: { authorization: `Bearer ${project.service_key}` },
+    body: { slug: "notify" },
+  }, runtime);
+  const mailboxId = (created.body as { mailbox_id: string }).mailbox_id;
+
+  const first = await coreGatewayResponse({
+    method: "POST",
+    pathname: `/mailboxes/v1/${mailboxId}/messages`,
+    headers: { authorization: `Bearer ${project.service_key}` },
+    body: { to: "a@example.com", subject: "one", html: "<p>one</p>" },
+  }, runtime);
+  assert.equal(first.status, 201);
+
+  const second = await coreGatewayResponse({
+    method: "POST",
+    pathname: `/mailboxes/v1/${mailboxId}/messages`,
+    headers: { authorization: `Bearer ${project.service_key}` },
+    body: { to: "b@example.com", subject: "two", html: "<p>two</p>" },
+  }, runtime);
+  assert.equal(second.status, 429);
+  assert.equal(second.headers?.["Retry-After"], "60");
+  assert.equal((second.body as { error?: string }).error, "mailbox_send_rate_limited");
+  assert.equal(emailProvider.sent.length, 1);
+  assert.equal(mailboxes.messages.size, 1);
 });
 
 test("mailbox routes surface actionable SES IAM next actions on provider access denial", async () => {
@@ -2654,6 +2857,7 @@ class MemoryMailboxStore implements CoreMailboxStorePort {
   readonly rawMessages = new Map<string, Buffer>();
   readonly webhooks = new Map<string, CoreMailboxWebhookRecord>();
   readonly deliveries = new Map<string, CoreWebhookDeliveryRecord>();
+  readonly suppressions = new Map<string, CoreEmailSuppressionRecord>();
 
   async createMailbox(input: { projectId: string; slug: string }): Promise<CoreMailboxRecord> {
     if ([...this.mailboxes.values()].some((mailbox) => mailbox.slug === input.slug && mailbox.status !== "tombstoned")) {
@@ -2723,6 +2927,32 @@ class MemoryMailboxStore implements CoreMailboxStorePort {
     return settings;
   }
 
+  async checkSuppression(input: { projectId: string; email: string }) {
+    const email = input.email.trim().toLowerCase();
+    const global = this.suppressions.get(`global::${email}`);
+    if (global) return { suppressed: true, suppression: global };
+    const project = this.suppressions.get(`project:${input.projectId}:${email}`);
+    return project ? { suppressed: true, suppression: project } : { suppressed: false };
+  }
+
+  async addSuppression(input: { scope: "project" | "global"; projectId?: string | null; email: string; reason: "bounce" | "complaint" }): Promise<CoreEmailSuppressionRecord> {
+    const email = input.email.trim().toLowerCase();
+    const key = `${input.scope}:${input.scope === "project" ? input.projectId : ""}:${email}`;
+    const current = this.suppressions.get(key);
+    if (current) return current;
+    const suppression: CoreEmailSuppressionRecord = {
+      suppression_id: `sup_${String(this.suppressions.size + 1).padStart(4, "0")}`,
+      email_address: email,
+      scope: input.scope,
+      project_id: input.scope === "project" ? input.projectId ?? null : null,
+      reason: input.reason,
+      created_at: new Date(0).toISOString(),
+      updated_at: new Date(0).toISOString(),
+    };
+    this.suppressions.set(key, suppression);
+    return suppression;
+  }
+
   async stageMessage(input: StageMessageInput): Promise<CoreEmailMessageRecord> {
     const message: CoreEmailMessageRecord = {
       message_id: `msg_${String(this.messages.size + 1).padStart(4, "0")}`,
@@ -2776,6 +3006,69 @@ class MemoryMailboxStore implements CoreMailboxStorePort {
     };
     this.messages.set(input.messageId, updated);
     return updated;
+  }
+
+  async applyDeliveryEvent(input: ApplyDeliveryEventInput): Promise<ApplyDeliveryEventResult> {
+    const current = [...this.messages.values()].find((message) =>
+      message.direction === "outbound" &&
+      message.provider === input.provider &&
+      message.provider_message_id === input.providerMessageId
+    );
+    if (!current) {
+      return {
+        matched: false,
+        event_type: input.eventType,
+        provider: input.provider,
+        provider_message_id: input.providerMessageId,
+      };
+    }
+    const status = input.eventType === "delivery" ? "delivered" : input.eventType;
+    const message: CoreEmailMessageRecord = {
+      ...current,
+      status,
+      delivery_state: status,
+      updated_at: input.occurredAt ?? new Date(0).toISOString(),
+    };
+    this.messages.set(message.message_id, message);
+    const recipient = (input.recipient ?? message.to_address).trim().toLowerCase();
+    let suppression: CoreEmailSuppressionRecord | undefined;
+    let mailbox_suspended = false;
+    if (input.eventType === "bounced" && input.bounceType === "Permanent") {
+      suppression = await this.addSuppression({ scope: "project", projectId: message.project_id, email: recipient, reason: "bounce" });
+    }
+    if (input.eventType === "complained") {
+      suppression = await this.addSuppression({ scope: "global", email: recipient, reason: "complaint" });
+      const mailbox = this.mailboxes.get(message.mailbox_id);
+      if (mailbox?.status === "active") {
+        this.mailboxes.set(message.mailbox_id, { ...mailbox, status: "suspended" });
+        mailbox_suspended = true;
+      }
+    }
+    const webhook_deliveries = await this.enqueueWebhookDelivery({
+      projectId: message.project_id,
+      mailboxId: message.mailbox_id,
+      eventType: input.eventType,
+      discriminator: input.providerMessageId,
+      source: "core-email-events",
+      payload: {
+        mailbox_id: message.mailbox_id,
+        message_id: message.message_id,
+        to_address: recipient,
+        provider: input.provider,
+        provider_message_id: input.providerMessageId,
+        ...(input.eventType === "bounced" ? { bounce_type: input.bounceType ?? null } : {}),
+      },
+    });
+    return {
+      matched: true,
+      event_type: input.eventType,
+      provider: input.provider,
+      provider_message_id: input.providerMessageId,
+      message,
+      webhook_deliveries,
+      ...(suppression ? { suppression } : {}),
+      ...(mailbox_suspended ? { mailbox_suspended } : {}),
+    };
   }
 
   async listMessages(input: { projectId: string; mailboxId: string }): Promise<CoreEmailMessageRecord[]> {
@@ -2898,12 +3191,13 @@ class MemoryMailboxStore implements CoreMailboxStorePort {
   async enqueueWebhookDelivery(input: EnqueueWebhookDeliveryInput): Promise<CoreWebhookDeliveryRecord[]> {
     const deliveries: CoreWebhookDeliveryRecord[] = [];
     const webhooks = await this.listWebhooks({ projectId: input.projectId, mailboxId: input.mailboxId });
+    const source = input.source ?? "core-email-inbound";
     for (const webhook of webhooks.filter((entry) => entry.events.includes(input.eventType))) {
       const sourceEventId = `${webhook.webhook_id}:${input.eventType}:${input.discriminator}`;
-      if ([...this.deliveries.values()].some((delivery) => delivery.source === "core-email-inbound" && delivery.source_event_id === sourceEventId)) continue;
+      if ([...this.deliveries.values()].some((delivery) => delivery.source === source && delivery.source_event_id === sourceEventId)) continue;
       const delivery: CoreWebhookDeliveryRecord = {
         delivery_id: `whd_${String(this.deliveries.size + 1).padStart(4, "0")}`,
-        source: "core-email-inbound",
+        source,
         source_event_id: sourceEventId,
         project_id: input.projectId,
         mailbox_id: input.mailboxId,

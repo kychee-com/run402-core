@@ -6,9 +6,12 @@ import { mailboxAddress } from "./email-validation.js";
 
 export type CoreMailboxStatus = "active" | "suspended" | "tombstoned";
 export type CoreMessageDirection = "outbound" | "inbound";
-export type CoreMessageStatus = "pending" | "sent" | "failed" | "received";
-export type CoreDeliveryState = "pending_provider" | "accepted" | "failed" | "received";
+export type CoreMessageStatus = "pending" | "sent" | "failed" | "received" | "delivered" | "bounced" | "complained";
+export type CoreDeliveryState = "pending_provider" | "accepted" | "failed" | "received" | "delivered" | "bounced" | "complained";
+export type CoreMailboxWebhookEventType = "reply_received" | "delivery" | "bounced" | "complained";
 export type CoreWebhookDeliveryStatus = "pending" | "delivered" | "failed_permanent";
+export type CoreSuppressionScope = "project" | "global";
+export type CoreSuppressionReason = "bounce" | "complaint";
 
 export interface CoreMailboxRecord {
   mailbox_id: string;
@@ -81,6 +84,41 @@ export interface CoreWebhookDeliveryRecord {
   delivered_at: string | null;
 }
 
+export interface CoreEmailSuppressionRecord {
+  suppression_id: string;
+  email_address: string;
+  scope: CoreSuppressionScope;
+  project_id: string | null;
+  reason: CoreSuppressionReason;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CoreSuppressionDecision {
+  suppressed: boolean;
+  suppression?: CoreEmailSuppressionRecord;
+}
+
+export interface ApplyDeliveryEventInput {
+  provider: string;
+  eventType: "delivery" | "bounced" | "complained";
+  providerMessageId: string;
+  recipient?: string | null;
+  bounceType?: string | null;
+  occurredAt?: string | null;
+}
+
+export interface ApplyDeliveryEventResult {
+  matched: boolean;
+  event_type: "delivery" | "bounced" | "complained";
+  provider: string;
+  provider_message_id: string;
+  message?: CoreEmailMessageRecord;
+  webhook_deliveries?: CoreWebhookDeliveryRecord[];
+  suppression?: CoreEmailSuppressionRecord;
+  mailbox_suspended?: boolean;
+}
+
 export interface CoreMailboxResponse extends CoreMailboxRecord {
   address: string;
   is_default_outbound: boolean;
@@ -101,9 +139,12 @@ export interface CoreMailboxStorePort {
   updateMailbox(input: { projectId: string; mailboxId: string; footerPolicy?: "none" | "run402_transparency" }): Promise<CoreMailboxRecord>;
   getSettings(projectId: string): Promise<CoreMailboxSettings>;
   updateSettings(input: { projectId: string; defaultOutboundMailboxId: string | null }): Promise<CoreMailboxSettings>;
+  checkSuppression(input: { projectId: string; email: string }): Promise<CoreSuppressionDecision>;
+  addSuppression(input: { scope: CoreSuppressionScope; projectId?: string | null; email: string; reason: CoreSuppressionReason }): Promise<CoreEmailSuppressionRecord>;
   stageMessage(input: StageMessageInput): Promise<CoreEmailMessageRecord>;
   markMessageSent(input: { messageId: string; provider: string; providerMessageId?: string | null }): Promise<CoreEmailMessageRecord>;
   markMessageFailed(input: { messageId: string; provider?: string | null; reason: string }): Promise<CoreEmailMessageRecord>;
+  applyDeliveryEvent(input: ApplyDeliveryEventInput): Promise<ApplyDeliveryEventResult>;
   listMessages(input: { projectId: string; mailboxId: string; direction?: CoreMessageDirection }): Promise<CoreEmailMessageRecord[]>;
   getMessage(input: { projectId: string; mailboxId: string; messageId: string }): Promise<CoreEmailMessageRecord | null>;
   resolveMailboxByInboundAddress(input: { address: string; inboundDomains: string[] }): Promise<CoreMailboxRecord | null>;
@@ -152,9 +193,10 @@ export interface StoreInboundMessageInput {
 export interface EnqueueWebhookDeliveryInput {
   projectId: string;
   mailboxId: string;
-  eventType: "reply_received";
+  eventType: CoreMailboxWebhookEventType;
   discriminator: string;
   payload: Record<string, unknown>;
+  source?: string;
 }
 
 export class CoreMailboxError extends Error {
@@ -218,8 +260,8 @@ export class PostgresCoreMailboxStore implements CoreMailboxStorePort {
         sent_at timestamptz,
         received_at timestamptz,
         CONSTRAINT core_email_messages_direction_check CHECK (direction IN ('outbound', 'inbound')),
-        CONSTRAINT core_email_messages_status_check CHECK (status IN ('pending', 'sent', 'failed', 'received')),
-        CONSTRAINT core_email_messages_delivery_state_check CHECK (delivery_state IN ('pending_provider', 'accepted', 'failed', 'received')),
+        CONSTRAINT core_email_messages_status_check CHECK (status IN ('pending', 'sent', 'failed', 'received', 'delivered', 'bounced', 'complained')),
+        CONSTRAINT core_email_messages_delivery_state_check CHECK (delivery_state IN ('pending_provider', 'accepted', 'failed', 'received', 'delivered', 'bounced', 'complained')),
         CONSTRAINT core_email_messages_raw_storage_check CHECK (raw_storage_provider IS NULL OR raw_storage_provider IN ('inline', 's3'))
       );
 
@@ -238,8 +280,8 @@ export class PostgresCoreMailboxStore implements CoreMailboxStorePort {
 
       ALTER TABLE internal.core_email_messages
         ADD CONSTRAINT core_email_messages_direction_check CHECK (direction IN ('outbound', 'inbound')),
-        ADD CONSTRAINT core_email_messages_status_check CHECK (status IN ('pending', 'sent', 'failed', 'received')),
-        ADD CONSTRAINT core_email_messages_delivery_state_check CHECK (delivery_state IN ('pending_provider', 'accepted', 'failed', 'received')),
+        ADD CONSTRAINT core_email_messages_status_check CHECK (status IN ('pending', 'sent', 'failed', 'received', 'delivered', 'bounced', 'complained')),
+        ADD CONSTRAINT core_email_messages_delivery_state_check CHECK (delivery_state IN ('pending_provider', 'accepted', 'failed', 'received', 'delivered', 'bounced', 'complained')),
         ADD CONSTRAINT core_email_messages_raw_storage_check CHECK (raw_storage_provider IS NULL OR raw_storage_provider IN ('inline', 's3'));
 
       CREATE INDEX IF NOT EXISTS core_email_messages_mailbox_idx
@@ -257,6 +299,28 @@ export class PostgresCoreMailboxStore implements CoreMailboxStorePort {
         raw_mime bytea NOT NULL,
         created_at timestamptz NOT NULL DEFAULT now()
       );
+
+      CREATE TABLE IF NOT EXISTS internal.core_email_suppressions (
+        suppression_id text PRIMARY KEY,
+        email_address text NOT NULL,
+        scope text NOT NULL,
+        project_id text,
+        reason text NOT NULL,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now(),
+        CONSTRAINT core_email_suppressions_scope_check CHECK (scope IN ('project', 'global')),
+        CONSTRAINT core_email_suppressions_reason_check CHECK (reason IN ('bounce', 'complaint')),
+        CONSTRAINT core_email_suppressions_project_scope_check CHECK (
+          (scope = 'global' AND project_id IS NULL) OR
+          (scope = 'project' AND project_id IS NOT NULL)
+        )
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS core_email_suppressions_unique
+        ON internal.core_email_suppressions(scope, COALESCE(project_id, ''), email_address);
+
+      CREATE INDEX IF NOT EXISTS core_email_suppressions_lookup_idx
+        ON internal.core_email_suppressions(email_address, scope, project_id);
 
       CREATE TABLE IF NOT EXISTS internal.core_mailbox_webhooks (
         webhook_id text PRIMARY KEY,
@@ -435,6 +499,54 @@ export class PostgresCoreMailboxStore implements CoreMailboxStorePort {
     return settingsFromRow(result.rows[0]);
   }
 
+  async checkSuppression(input: { projectId: string; email: string }): Promise<CoreSuppressionDecision> {
+    const result = await this.#pool.query<SuppressionRow>(
+      `
+        SELECT *
+        FROM internal.core_email_suppressions
+        WHERE email_address = $2
+          AND (
+            scope = 'global' OR
+            (scope = 'project' AND project_id = $1)
+          )
+        ORDER BY CASE WHEN scope = 'global' THEN 0 ELSE 1 END, created_at DESC
+        LIMIT 1
+      `,
+      [input.projectId, normalizeEmailAddress(input.email)],
+    );
+    const suppression = result.rows[0] ? suppressionFromRow(result.rows[0]) : undefined;
+    return suppression ? { suppressed: true, suppression } : { suppressed: false };
+  }
+
+  async addSuppression(input: { scope: CoreSuppressionScope; projectId?: string | null; email: string; reason: CoreSuppressionReason }): Promise<CoreEmailSuppressionRecord> {
+    const email = normalizeEmailAddress(input.email);
+    const projectId = input.scope === "global" ? null : input.projectId;
+    if (input.scope === "project" && !projectId) {
+      throw new CoreMailboxError("Project suppression requires a project id", 400, "invalid_suppression_scope");
+    }
+    const suppressionId = `sup_${randomToken(12)}`;
+    const inserted = await this.#pool.query<SuppressionRow>(
+      `
+        INSERT INTO internal.core_email_suppressions (suppression_id, email_address, scope, project_id, reason)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT DO NOTHING
+        RETURNING *
+      `,
+      [suppressionId, email, input.scope, projectId, input.reason],
+    );
+    if (inserted.rows[0]) return suppressionFromRow(inserted.rows[0]);
+    const existing = await this.#pool.query<SuppressionRow>(
+      `
+        SELECT *
+        FROM internal.core_email_suppressions
+        WHERE email_address = $1 AND scope = $2 AND COALESCE(project_id, '') = COALESCE($3, '')
+        LIMIT 1
+      `,
+      [email, input.scope, projectId],
+    );
+    return suppressionFromRow(existing.rows[0]);
+  }
+
   async stageMessage(input: StageMessageInput): Promise<CoreEmailMessageRecord> {
     const messageId = `msg_${Date.now()}_${randomToken(8)}`;
     const result = await this.#pool.query<MessageRow>(
@@ -493,6 +605,93 @@ export class PostgresCoreMailboxStore implements CoreMailboxStorePort {
       [input.messageId, input.provider ?? null, input.reason],
     );
     return messageFromRow(result.rows[0]);
+  }
+
+  async applyDeliveryEvent(input: ApplyDeliveryEventInput): Promise<ApplyDeliveryEventResult> {
+    const current = await this.#pool.query<MessageRow>(
+      `
+        SELECT *
+        FROM internal.core_email_messages
+        WHERE direction = 'outbound'
+          AND provider = $1
+          AND provider_message_id = $2
+        LIMIT 1
+      `,
+      [input.provider, input.providerMessageId],
+    );
+    if (!current.rows[0]) {
+      return {
+        matched: false,
+        event_type: input.eventType,
+        provider: input.provider,
+        provider_message_id: input.providerMessageId,
+      };
+    }
+
+    const status = deliveryStatusForEvent(input.eventType);
+    const updated = await this.#pool.query<MessageRow>(
+      `
+        UPDATE internal.core_email_messages
+           SET status = $2,
+               delivery_state = $2,
+               updated_at = now()
+         WHERE message_id = $1
+         RETURNING *
+      `,
+      [current.rows[0].message_id, status],
+    );
+    const message = messageFromRow(updated.rows[0]);
+    const recipient = input.recipient ? normalizeEmailAddress(input.recipient) : normalizeEmailAddress(message.to_address);
+    let suppression: CoreEmailSuppressionRecord | undefined;
+    let mailboxSuspended = false;
+
+    if (input.eventType === "bounced" && input.bounceType === "Permanent") {
+      suppression = await this.addSuppression({
+        scope: "project",
+        projectId: message.project_id,
+        email: recipient,
+        reason: "bounce",
+      });
+      mailboxSuspended = await this.suspendMailboxIfHardBounceThresholdExceeded(message.mailbox_id);
+    }
+
+    if (input.eventType === "complained") {
+      suppression = await this.addSuppression({
+        scope: "global",
+        email: recipient,
+        reason: "complaint",
+      });
+      mailboxSuspended = await this.suspendMailbox(message.mailbox_id);
+    }
+
+    const deliveries = await this.enqueueWebhookDelivery({
+      projectId: message.project_id,
+      mailboxId: message.mailbox_id,
+      eventType: input.eventType,
+      discriminator: input.providerMessageId,
+      source: "core-email-events",
+      payload: {
+        mailbox_id: message.mailbox_id,
+        message_id: message.message_id,
+        to_address: recipient,
+        provider: input.provider,
+        provider_message_id: input.providerMessageId,
+        ...(input.eventType === "delivery" ? { delivered_at: input.occurredAt ?? new Date().toISOString() } : {}),
+        ...(input.eventType === "bounced" ? { bounce_type: input.bounceType ?? null, bounced_at: input.occurredAt ?? new Date().toISOString() } : {}),
+        ...(input.eventType === "complained" ? { complained_at: input.occurredAt ?? new Date().toISOString() } : {}),
+      },
+    });
+
+    return {
+      matched: true,
+      event_type: input.eventType,
+      provider: input.provider,
+      provider_message_id: input.providerMessageId,
+      message,
+      webhook_deliveries: deliveries,
+      ...(suppression ? { suppression } : {}),
+      ...(mailboxSuspended ? { mailbox_suspended: true } : {}),
+    };
   }
 
   async listMessages(input: { projectId: string; mailboxId: string; direction?: CoreMessageDirection }): Promise<CoreEmailMessageRecord[]> {
@@ -728,6 +927,7 @@ export class PostgresCoreMailboxStore implements CoreMailboxStorePort {
   async enqueueWebhookDelivery(input: EnqueueWebhookDeliveryInput): Promise<CoreWebhookDeliveryRecord[]> {
     const webhooks = await this.listWebhooks({ projectId: input.projectId, mailboxId: input.mailboxId });
     const deliveries: CoreWebhookDeliveryRecord[] = [];
+    const source = input.source ?? "core-email-inbound";
     for (const webhook of webhooks.filter((entry) => entry.events.includes(input.eventType))) {
       const sourceEventId = `${webhook.webhook_id}:${input.eventType}:${input.discriminator}`;
       const deliveryId = `whd_${randomToken(12)}`;
@@ -745,12 +945,13 @@ export class PostgresCoreMailboxStore implements CoreMailboxStorePort {
             delivery_id, source, source_event_id, project_id, mailbox_id,
             webhook_id, event_type, target_url, payload
           )
-          VALUES ($1, 'core-email-inbound', $2, $3, $4, $5, $6, $7, $8::jsonb)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
           ON CONFLICT (source, source_event_id) DO NOTHING
           RETURNING *
         `,
         [
           deliveryId,
+          source,
           sourceEventId,
           input.projectId,
           input.mailboxId,
@@ -886,6 +1087,35 @@ export class PostgresCoreMailboxStore implements CoreMailboxStorePort {
       [input.deliveryId, input.status, truncateWebhookError(input.error), input.maxAttempts, now.toISOString(), input.retryDelayMs],
     );
     return result.rows[0] ? deliveryFromRow(result.rows[0]) : null;
+  }
+
+  async suspendMailbox(mailboxId: string): Promise<boolean> {
+    const result = await this.#pool.query<MailboxRow>(
+      `
+        UPDATE internal.core_mailboxes
+           SET status = 'suspended', updated_at = now()
+         WHERE mailbox_id = $1 AND status = 'active'
+         RETURNING mailbox_id, slug, project_id, status, footer_policy, created_at, updated_at, tombstoned_at
+      `,
+      [mailboxId],
+    );
+    return result.rows.length > 0;
+  }
+
+  async suspendMailboxIfHardBounceThresholdExceeded(mailboxId: string): Promise<boolean> {
+    const count = await this.#pool.query<{ count: string }>(
+      `
+        SELECT COUNT(*)::text AS count
+        FROM internal.core_email_messages
+        WHERE mailbox_id = $1
+          AND direction = 'outbound'
+          AND status = 'bounced'
+          AND updated_at > now() - INTERVAL '24 hours'
+      `,
+      [mailboxId],
+    );
+    if (Number(count.rows[0]?.count ?? "0") < 3) return false;
+    return await this.suspendMailbox(mailboxId);
   }
 
   async requireOwnedMailbox(projectId: string, mailboxId: string): Promise<CoreMailboxRecord> {
@@ -1046,6 +1276,16 @@ interface DeliveryRow {
   delivered_at: Date | string | null;
 }
 
+interface SuppressionRow {
+  suppression_id: string;
+  email_address: string;
+  scope: CoreSuppressionScope;
+  project_id: string | null;
+  reason: CoreSuppressionReason;
+  created_at: Date | string;
+  updated_at: Date | string;
+}
+
 function mailboxFromRow(row: MailboxRow): CoreMailboxRecord {
   return {
     mailbox_id: row.mailbox_id,
@@ -1127,6 +1367,23 @@ function deliveryFromRow(row: DeliveryRow): CoreWebhookDeliveryRecord {
   };
 }
 
+function suppressionFromRow(row: SuppressionRow): CoreEmailSuppressionRecord {
+  return {
+    suppression_id: row.suppression_id,
+    email_address: row.email_address,
+    scope: row.scope,
+    project_id: row.project_id,
+    reason: row.reason,
+    created_at: toIso(row.created_at),
+    updated_at: toIso(row.updated_at),
+  };
+}
+
+function deliveryStatusForEvent(eventType: ApplyDeliveryEventInput["eventType"]): Extract<CoreMessageStatus, "delivered" | "bounced" | "complained"> {
+  if (eventType === "delivery") return "delivered";
+  return eventType;
+}
+
 function truncateWebhookError(value: string): string {
   return value.length > 500 ? `${value.slice(0, 497)}...` : value;
 }
@@ -1160,6 +1417,10 @@ function parseAddressForDomain(address: string, inboundDomains: string[]): { slu
   const domain = normalized.slice(at + 1);
   if (!slug || !domain || !inboundDomains.includes(domain)) return null;
   return { slug, domain };
+}
+
+function normalizeEmailAddress(value: string): string {
+  return value.trim().toLowerCase();
 }
 
 function toIso(value: Date | string): string {

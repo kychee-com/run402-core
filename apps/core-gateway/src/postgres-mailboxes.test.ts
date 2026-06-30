@@ -15,9 +15,12 @@ test("postgres mailbox bootstrap includes inbound message and webhook schema", a
   const sql = queries.join("\n");
 
   assert.match(sql, /direction text NOT NULL DEFAULT 'outbound'/);
+  assert.match(sql, /'delivered', 'bounced', 'complained'/);
   assert.match(sql, /received_at timestamptz/);
   assert.match(sql, /core_email_messages_inbound_provider_unique/);
   assert.match(sql, /core_email_inbound_raw_messages/);
+  assert.match(sql, /core_email_suppressions/);
+  assert.match(sql, /core_email_suppressions_unique/);
   assert.match(sql, /core_mailbox_webhooks/);
   assert.match(sql, /core_webhook_deliveries/);
 });

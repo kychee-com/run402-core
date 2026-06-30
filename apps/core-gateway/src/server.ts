@@ -59,6 +59,14 @@ import type {
   LocalFunctionExecutorInput,
   LocalFunctionExecutorResult,
 } from "./local-function-executor.js";
+import {
+  authenticateEmailDeliveryEventToken,
+  emailDeliveryEventConfigFromEnv,
+  emailDeliveryEventReadiness,
+  EmailDeliveryEventError,
+  normalizeSesDeliveryEvents,
+  type EmailDeliveryEventConfig,
+} from "./email-events.js";
 import { createEmailInboundProvider, emailInboundProviderConfigFromEnv, EmailInboundError, type EmailInboundProviderConfig, type EmailInboundProviderPort } from "./email-inbound.js";
 import { createEmailProvider, emailProviderConfigFromEnv, EmailProviderError, type EmailProviderPort, type EmailProviderConfig } from "./email-provider.js";
 import { EmailValidationError, mailboxAddress, validateMailboxSlug, validateRawEmail } from "./email-validation.js";
@@ -96,6 +104,8 @@ export interface CoreGatewayConfig {
   functionWorkerUrl?: string;
   emailProvider: EmailProviderConfig;
   emailInboundProvider: EmailInboundProviderConfig;
+  emailDeliveryEvents: EmailDeliveryEventConfig;
+  emailSendRateLimit: EmailSendRateLimitConfig;
   webhookDelivery: WebhookDeliveryConfig;
 }
 
@@ -121,6 +131,8 @@ export interface CoreGatewayRuntime {
   mailboxes?: CoreMailboxStorePort;
   emailProvider?: EmailProviderPort;
   emailInboundProvider?: EmailInboundProviderPort;
+  emailDeliveryEvents?: EmailDeliveryEventConfig;
+  emailSendRateLimit?: EmailSendRateLimitConfig;
   rootProjectId?: string;
   publicBaseUrl?: string;
   functionApiBaseUrl?: string;
@@ -155,6 +167,12 @@ export interface FunctionExecutorPort {
   invoke(input: LocalFunctionExecutorInput): Promise<LocalFunctionExecutorResult>;
 }
 
+export interface EmailSendRateLimitConfig {
+  enabled: boolean;
+  maxPerWindow: number;
+  windowMs: number;
+}
+
 interface VerifiedContentStore extends ContentStorePort {
   putVerified(projectId: string, ref: ContentRefHex, bytes: Uint8Array): Promise<void>;
 }
@@ -172,6 +190,12 @@ export interface CoreGatewayResult {
   headers?: Record<string, string | string[]>;
   raw?: boolean;
 }
+
+export const DEFAULT_EMAIL_SEND_RATE_LIMIT_CONFIG: EmailSendRateLimitConfig = {
+  enabled: true,
+  maxPerWindow: 60,
+  windowMs: 60_000,
+};
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): CoreGatewayConfig {
   const host = env.CORE_GATEWAY_HOST || "127.0.0.1";
@@ -193,7 +217,26 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): CoreGatewayCon
     functionWorkerUrl: env.CORE_FUNCTION_WORKER_URL,
     emailProvider: emailProviderConfigFromEnv(env),
     emailInboundProvider: emailInboundProviderConfigFromEnv(env),
+    emailDeliveryEvents: emailDeliveryEventConfigFromEnv(env),
+    emailSendRateLimit: emailSendRateLimitConfigFromEnv(env),
     webhookDelivery: webhookDeliveryConfigFromEnv(env),
+  };
+}
+
+function emailSendRateLimitConfigFromEnv(env: NodeJS.ProcessEnv): EmailSendRateLimitConfig {
+  const maxPerWindow = parseNonNegativeInteger(
+    env.CORE_EMAIL_SEND_RATE_LIMIT_MAX ??
+    env.CORE_EMAIL_SEND_RATE_LIMIT_PER_MINUTE,
+    DEFAULT_EMAIL_SEND_RATE_LIMIT_CONFIG.maxPerWindow,
+  );
+  const windowMs = parsePositiveInteger(
+    env.CORE_EMAIL_SEND_RATE_LIMIT_WINDOW_MS,
+    env.CORE_EMAIL_SEND_RATE_LIMIT_PER_MINUTE ? 60_000 : DEFAULT_EMAIL_SEND_RATE_LIMIT_CONFIG.windowMs,
+  );
+  return {
+    enabled: maxPerWindow > 0,
+    maxPerWindow: maxPerWindow > 0 ? maxPerWindow : DEFAULT_EMAIL_SEND_RATE_LIMIT_CONFIG.maxPerWindow,
+    windowMs,
   };
 }
 
@@ -205,6 +248,8 @@ export async function createGatewayRuntime(config: CoreGatewayConfig): Promise<C
       functionApiBaseUrl: config.functionApiBaseUrl,
       postgrestUrl: config.postgrestUrl,
       jwtSecret: config.jwtSecret,
+      emailDeliveryEvents: config.emailDeliveryEvents,
+      emailSendRateLimit: config.emailSendRateLimit,
     };
   }
 
@@ -252,6 +297,8 @@ export async function createGatewayRuntime(config: CoreGatewayConfig): Promise<C
     mailboxes,
     emailProvider,
     emailInboundProvider,
+    emailDeliveryEvents: config.emailDeliveryEvents,
+    emailSendRateLimit: config.emailSendRateLimit,
     archiveImporter,
     rootProjectId: config.rootProjectId,
     publicBaseUrl: config.publicBaseUrl,
@@ -998,6 +1045,43 @@ function serviceTokenFromHeaders(headers: Record<string, string | undefined>): s
   return match?.[1] ?? null;
 }
 
+const emailSendRateBuckets = new Map<string, { windowStartMs: number; count: number }>();
+
+function reserveEmailSendSlot(
+  key: string,
+  config: EmailSendRateLimitConfig,
+  nowMs = Date.now(),
+): { allowed: true } | { allowed: false; retryAfterSeconds: number; limit: number; windowMs: number } {
+  if (!config.enabled) return { allowed: true };
+  const current = emailSendRateBuckets.get(key);
+  if (!current || nowMs - current.windowStartMs >= config.windowMs) {
+    emailSendRateBuckets.set(key, { windowStartMs: nowMs, count: 1 });
+    return { allowed: true };
+  }
+  if (current.count < config.maxPerWindow) {
+    current.count += 1;
+    return { allowed: true };
+  }
+  return {
+    allowed: false,
+    retryAfterSeconds: Math.max(1, Math.ceil((config.windowMs - (nowMs - current.windowStartMs)) / 1000)),
+    limit: config.maxPerWindow,
+    windowMs: config.windowMs,
+  };
+}
+
+function parsePositiveInteger(value: string | undefined, fallback: number): number {
+  if (!value) return fallback;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function parseNonNegativeInteger(value: string | undefined, fallback: number): number {
+  if (!value) return fallback;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
 interface MailboxRouteInput {
   method: string;
   pathname: string;
@@ -1015,6 +1099,9 @@ async function mailboxRoute(
   const inboundProvider = emailInboundProviderForRuntime(runtime);
   if (input.method === "POST" && input.pathname === "/mailboxes/v1/inbound/ingestions") {
     return await inboundIngestionRoute(mailboxes, inboundProvider, input);
+  }
+  if (input.method === "POST" && input.pathname === "/mailboxes/v1/events/ingestions") {
+    return await deliveryEventIngestionRoute(mailboxes, emailDeliveryEventConfigForRuntime(runtime), input);
   }
 
   const auth = await requireServiceProjectFromHeaders(runtime, input.headers);
@@ -1203,6 +1290,34 @@ async function mailboxRoute(
         };
       }
       const raw = validateRawEmail(input.body);
+      const suppression = await mailboxes.checkSuppression({ projectId: auth.project_id, email: raw.to });
+      if (suppression.suppressed) {
+        return {
+          status: 403,
+          body: {
+            error: "recipient_suppressed",
+            message: "Recipient is suppressed for outbound email on this Core gateway.",
+            retryable: false,
+            suppression_scope: suppression.suppression?.scope,
+            suppression_reason: suppression.suppression?.reason,
+          },
+        };
+      }
+      const rateConfig = emailSendRateLimitForRuntime(runtime);
+      const rateLimit = reserveEmailSendSlot(`${auth.project_id}:${mailbox.mailbox_id}:${rateConfig.maxPerWindow}:${rateConfig.windowMs}`, rateConfig);
+      if (!rateLimit.allowed) {
+        return {
+          status: 429,
+          headers: { "Retry-After": String(rateLimit.retryAfterSeconds) },
+          body: {
+            error: "mailbox_send_rate_limited",
+            message: "Mailbox send rate limit exceeded.",
+            retry_after_seconds: rateLimit.retryAfterSeconds,
+            limit: rateLimit.limit,
+            window_ms: rateLimit.windowMs,
+          },
+        };
+      }
       const bareFromAddress = mailboxAddress(mailbox.slug, readiness.from_domain);
       const providerFromAddress = formatFromAddress(bareFromAddress, raw.fromName);
       const attachmentsMeta = raw.attachments.length > 0
@@ -1344,6 +1459,14 @@ function emailInboundProviderForRuntime(runtime: CoreGatewayRuntime): EmailInbou
   });
 }
 
+function emailDeliveryEventConfigForRuntime(runtime: CoreGatewayRuntime): EmailDeliveryEventConfig {
+  return runtime.emailDeliveryEvents ?? { provider: "disabled" };
+}
+
+function emailSendRateLimitForRuntime(runtime: CoreGatewayRuntime): EmailSendRateLimitConfig {
+  return runtime.emailSendRateLimit ?? DEFAULT_EMAIL_SEND_RATE_LIMIT_CONFIG;
+}
+
 async function inboundIngestionRoute(
   mailboxes: CoreMailboxStorePort,
   inboundProvider: EmailInboundProviderPort,
@@ -1365,6 +1488,47 @@ async function inboundIngestionRoute(
     }
     throw error;
   }
+}
+
+async function deliveryEventIngestionRoute(
+  mailboxes: CoreMailboxStorePort,
+  config: EmailDeliveryEventConfig,
+  input: MailboxRouteInput,
+): Promise<CoreGatewayResult> {
+  const token = input.headers["x-run402-core-email-events-token"] ?? serviceTokenFromHeaders(input.headers);
+  if (!authenticateEmailDeliveryEventToken(token, config)) {
+    return { status: 401, body: { error: "authentication_required", message: "A valid Core email events ingestion token is required." } };
+  }
+  const readiness = emailDeliveryEventReadiness(config);
+  if (readiness.status !== "configured") {
+    return {
+      status: 503,
+      body: { error: readiness.status === "misconfigured" ? "provider_misconfigured" : "provider_not_configured", message: readiness.reason, email_events_readiness: readiness },
+    };
+  }
+
+  const normalized = normalizeSesDeliveryEvents(input.body);
+  const results = [];
+  for (const event of normalized.events) {
+    results.push(await mailboxes.applyDeliveryEvent({
+      provider: event.provider,
+      eventType: event.event_type,
+      providerMessageId: event.provider_message_id,
+      recipient: event.recipient,
+      bounceType: event.bounce_type,
+      occurredAt: event.occurred_at,
+    }));
+  }
+  return {
+    status: 202,
+    body: {
+      provider: normalized.provider,
+      accepted_count: normalized.events.length,
+      ignored_count: normalized.ignored.length,
+      results,
+      ignored: normalized.ignored,
+    },
+  };
 }
 
 function mailboxListNextActions(mailboxCount: number, defaultOutboundMailboxId: string | null, readiness: string) {
@@ -1477,8 +1641,8 @@ function mailboxWebhookBody(body: unknown, options: { partial: boolean }): { url
   if (record.events !== undefined) {
     if (!Array.isArray(record.events)) throw new EmailValidationError("events must be an array", "events");
     const events = record.events.map((event, index) => {
-      if (event !== "reply_received") {
-        throw new EmailValidationError(`events[${index}] must be reply_received`, `events[${index}]`);
+      if (!isMailboxWebhookEvent(event)) {
+        throw new EmailValidationError(`events[${index}] must be one of reply_received, delivery, bounced, complained`, `events[${index}]`);
       }
       return event;
     });
@@ -1491,6 +1655,10 @@ function mailboxWebhookBody(body: unknown, options: { partial: boolean }): { url
     throw new EmailValidationError("url or events is required", "url");
   }
   return out;
+}
+
+function isMailboxWebhookEvent(value: unknown): value is "reply_received" | "delivery" | "bounced" | "complained" {
+  return value === "reply_received" || value === "delivery" || value === "bounced" || value === "complained";
 }
 
 function validateWebhookUrl(value: string): string {
@@ -1560,6 +1728,9 @@ function mailboxRouteError(error: unknown): CoreGatewayResult {
     return { status: error.status, body: { error: error.code, message: error.message } };
   }
   if (error instanceof EmailInboundError) {
+    return { status: error.status, body: { error: error.code, message: error.message } };
+  }
+  if (error instanceof EmailDeliveryEventError) {
     return { status: error.status, body: { error: error.code, message: error.message } };
   }
   throw error;
