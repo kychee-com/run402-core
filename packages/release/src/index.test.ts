@@ -9,9 +9,12 @@ import {
   FACT_PROTOCOL_VERSION,
   PLANNER_SEMANTICS_VERSION,
   PORTABLE_RELEASE_STATE_VERSION,
+  REVIEWED_PLAN_FINGERPRINT_IDENTITY,
+  REVIEWED_PLAN_FINGERPRINT_VERSION,
   RELEASE_PACKAGE_NAME,
   RELEASE_SPEC_VERSION,
   STATIC_MANIFEST_VERSION,
+  TYPED_CONFIG_DESCRIPTOR_VERSION,
   cacheControlForStaticCacheClass,
   releasePackageInfo,
   canonicalizeJson,
@@ -22,6 +25,7 @@ import {
   computeApplyRequestDigestHex,
   computeMaterializedReleaseDigestHex,
   computePortableManifestDigestHex,
+  computeReviewedPlanFingerprintHex,
   computeStaticManifestSha256,
   detectPreviousImmutableViolations,
   deriveFactRequirements,
@@ -31,13 +35,20 @@ import {
   digestEvaluatedPlan,
   digestMaterializedRelease,
   digestPortableManifest,
+  digestReviewedPlanFingerprint,
+  dir,
   emptyPortableReleaseState,
+  file,
   materializeRelease,
   materializeRoutes,
+  nodeFunction,
   normalizePortableManifest,
   normalizeManifestResponseHeaders,
+  normalizeReviewedPlanFingerprint,
+  normalizeTypedConfigReleaseSpec,
   evaluateReleaseFacts,
   parseReleaseSpec,
+  sqlFile,
   summarizeStaticManifest,
   validateReleaseSpec,
   ReleaseCoreError,
@@ -64,6 +75,8 @@ describe("@run402/release package identity", () => {
     assert.equal(FACT_PROTOCOL_VERSION, "run402.release_facts.v1");
     assert.equal(CANONICALIZATION_VERSION, "run402.canonical_json.v1");
     assert.equal(PLANNER_SEMANTICS_VERSION, "run402.release_planner.v1");
+    assert.equal(TYPED_CONFIG_DESCRIPTOR_VERSION, "run402.typed_config.v1");
+    assert.equal(REVIEWED_PLAN_FINGERPRINT_VERSION, "run402.reviewed_plan_fingerprint.v1");
   });
 
   it("returns package info without mutable process state", () => {
@@ -75,6 +88,8 @@ describe("@run402/release package identity", () => {
       factProtocolVersion: "run402.release_facts.v1",
       canonicalizationVersion: "run402.canonical_json.v1",
       plannerSemanticsVersion: "run402.release_planner.v1",
+      typedConfigDescriptorVersion: "run402.typed_config.v1",
+      reviewedPlanFingerprintVersion: "run402.reviewed_plan_fingerprint.v1",
     });
   });
 
@@ -998,6 +1013,125 @@ describe("ReleaseSpec validation and digest identities", () => {
       digestEvaluatedPlan({ planner: "run402.release_planner.v1", ok: true }),
       /^run402-evaluated-plan-v1:[0-9a-f]{64}$/,
     );
+  });
+
+  it("normalizes resolved typed config descriptors into an ordinary ReleaseSpec", () => {
+    const config = {
+      project: "p_typed_0001",
+      site: {
+        replace: dir("./dist", {
+          files: {
+            "index.html": { sha256: SHA_A, size: 12, contentType: "text/html" },
+            "assets\\app.js": { sha256: SHA_B, size: 20, contentType: "text/javascript" },
+          },
+        }),
+        public_paths: { mode: "implicit" as const },
+      },
+      database: {
+        migrations: [
+          sqlFile("./db/001_init.sql", {
+            checksum: SHA_A,
+            sql_ref: { sha256: SHA_A, size: 16, contentType: "text/sql" },
+          }),
+        ],
+      },
+      functions: {
+        replace: {
+          api: nodeFunction("./src/api.ts", {
+            source: { sha256: SHA_B, size: 42, contentType: "application/javascript" },
+            deps: ["zod", "hono"],
+            capabilities: ["storage.write", "storage.read"],
+          }),
+        },
+      },
+    };
+
+    assert.deepEqual(normalizeTypedConfigReleaseSpec(config), {
+      project: "p_typed_0001",
+      database: {
+        migrations: [
+          {
+            id: "001_init",
+            checksum: SHA_A,
+            sql_ref: { sha256: SHA_A, size: 16, contentType: "text/sql" },
+          },
+        ],
+      },
+      functions: {
+        replace: {
+          api: {
+            runtime: "node22",
+            source: { sha256: SHA_B, size: 42, contentType: "application/javascript" },
+            deps: ["hono", "zod"],
+            capabilities: ["storage.read", "storage.write"],
+          },
+        },
+      },
+      site: {
+        replace: {
+          "assets/app.js": { sha256: SHA_B, size: 20, contentType: "text/javascript" },
+          "index.html": { sha256: SHA_A, size: 12, contentType: "text/html" },
+        },
+        public_paths: { mode: "implicit" },
+      },
+    });
+  });
+
+  it("requires typed config descriptors to be resolved before canonical normalization", () => {
+    assert.throws(
+      () => normalizeTypedConfigReleaseSpec({ project: "p", site: { replace: dir("./dist") } }),
+      (err) => err instanceof ReleaseSpecValidationError &&
+        /must be resolved with files/.test(err.message),
+    );
+    assert.throws(
+      () => normalizeTypedConfigReleaseSpec({ project: "p", site: { replace: file("../index.html") } }),
+      (err) => err instanceof ReleaseSpecValidationError &&
+        /content ref/.test(err.message),
+    );
+    assert.throws(
+      () => normalizeTypedConfigReleaseSpec({ project: "p", site: { replace: { "../escape.html": { sha256: SHA_A, size: 1 } } } }),
+      (err) => err instanceof ReleaseSpecValidationError &&
+        /stay inside/.test(err.message),
+    );
+  });
+
+  it("reviewed plan fingerprints ignore display-only fields but bind semantic approvals", () => {
+    const base = {
+      release_spec_digest: digestApplyRequest({ project: "p", site: { replace: { "index.html": { sha256: SHA_A, size: 1 } } } }),
+      concrete_base_identity: "release:rel_123",
+      materialized_diff_digest: "run402-diff-v1:abc",
+      warnings: [
+        { code: "run402.warning.sync_prune", resource: "site", details: { delete_count: 2 } },
+        { code: "run402.warning.secret_missing", resource: "secrets.API_KEY" },
+      ],
+      destructive_actions: [
+        { kind: "delete_static_assets", resource: "site", count: 2, digest: SHA_A },
+      ],
+    } as const;
+
+    const reordered = {
+      ...base,
+      display_summary: "not part of the fingerprint",
+      warnings: [...base.warnings].reverse(),
+      destructive_actions: [...base.destructive_actions].reverse(),
+    };
+    assert.equal(
+      digestReviewedPlanFingerprint(base),
+      digestReviewedPlanFingerprint(reordered),
+    );
+    assert.match(
+      digestReviewedPlanFingerprint(base),
+      new RegExp(`^${REVIEWED_PLAN_FINGERPRINT_IDENTITY}:[0-9a-f]{64}$`),
+    );
+    assert.match(computeReviewedPlanFingerprintHex(base), /^[0-9a-f]{64}$/);
+    assert.notEqual(
+      digestReviewedPlanFingerprint(base),
+      digestReviewedPlanFingerprint({
+        ...base,
+        warnings: [{ code: "run402.warning.other", resource: "site" }],
+      }),
+    );
+    assert.deepEqual(normalizeReviewedPlanFingerprint(base).planner_semantics_version, "run402.release_planner.v1");
   });
 
   it("materialized release digests are invariant to unordered state sets", () => {

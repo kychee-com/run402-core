@@ -9,6 +9,8 @@ This package defines the production-used, deterministic behavior for parsing, va
 - Version identifiers for release specs, portable release state, canonicalization, and planner semantics.
 - JSON Schemas in `schemas/`.
 - Canonicalization rules in `docs/canonicalization.md`.
+- Typed-config descriptor helpers and normalization for SDK/CLI executable configs.
+- Reviewed-plan fingerprint helpers for gateway-approved deployment plans.
 - Field support matrix in `docs/field-support.md`.
 - Compatibility policy in `docs/compatibility.md`.
 - App authoring helpers in `docs/app-kit.md` and `@run402/release/app-kit`.
@@ -28,6 +30,8 @@ This package defines the production-used, deterministic behavior for parsing, va
 | Compute release diff | Yes |
 | Derive fact and content requirements | Yes |
 | Generate CLI-compatible app manifests | Yes |
+| Normalize typed config descriptors | Yes |
+| Fingerprint gateway-reviewed plans | Yes |
 | Materialize local function source files | Yes |
 | Diagnose Core Developer Preview omissions | Yes |
 | Deploy resources | No |
@@ -44,6 +48,14 @@ This package defines the production-used, deterministic behavior for parsing, va
 - Storing content or secrets.
 - Providing auth, billing, quota, abuse controls, backups, monitoring, fleet scheduling, or a managed HTTP gateway.
 - Running a local Run402 control plane.
+
+## Typed Config And Reviewed Plans
+
+Executable SDK/CLI config stays outside this package. `@run402/release` only defines the pure descriptor contract: `defineConfig`, `dir`, `file`, `sqlFile`, and `nodeFunction` create JSON-compatible descriptors, and `normalizeTypedConfigReleaseSpec` turns already-resolved descriptors into an ordinary `ReleaseSpec`.
+
+That means Core does not execute TypeScript, walk directories, read files, inspect environment variables, or talk to the network. The SDK/CLI may do those jobs, then pass resolved content refs, SQL checksums, and bundled function refs back through Core for canonical validation.
+
+Reviewed plans use the same split. `digestReviewedPlanFingerprint` binds the semantic approval set -- release spec digest, concrete base identity, planner version, warnings, destructive actions, and policy/cost/quota facts -- while ignoring display-only fields such as wording, timestamps, and command examples.
 
 Run402 Cloud should be the easiest place to start, not the only place the application can run. This package is one of the portability ratchets that makes that promise inspectable.
 

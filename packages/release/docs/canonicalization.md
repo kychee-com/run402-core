@@ -9,6 +9,7 @@
 - Portable manifest digest identity: `run402-portable-manifest-v1:<sha256-hex>`
 - Materialized release digest identity: `run402-materialized-release-v1:<sha256-hex>`
 - Evaluated plan digest identity: `run402-evaluated-plan-v1:<sha256-hex>`
+- Reviewed plan fingerprint identity: `run402-reviewed-plan-v1:<sha256-hex>`
 
 ## Rules
 
@@ -28,3 +29,5 @@
 `run402-portable-manifest-v1` excludes Cloud context such as project IDs, tenant IDs, operation IDs, provider identifiers, timestamps, and base selectors.
 
 `run402-materialized-release-v1` hashes `PortableReleaseState` only. It must not depend on wall clock time, randomness, process environment, database reads, provider availability, or mutable Cloud facts.
+
+`run402-reviewed-plan-v1` hashes the semantic approval set for a gateway-reviewed plan: the normalized release spec digest, concrete base identity, planner semantics version, materialized release/diff digests when available, warnings, destructive action sets, and policy/cost/quota/auth facts. Human or agent display fields are deliberately excluded so copy tweaks do not invalidate an approval.
