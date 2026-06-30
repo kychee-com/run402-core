@@ -9,6 +9,7 @@ on:
         default: patch
         type: choice
         options:
+          - none
           - patch
           - minor
           - major
@@ -76,14 +77,21 @@ jobs:
           set -euo pipefail
           cd packages/runtime-kernel
           CUR=$(node -p "require('./package.json').version")
-          npm version "${{ inputs.bump }}" --no-git-tag-version >/dev/null
+          if [ "${{ inputs.bump }}" != "none" ]; then
+            npm version "${{ inputs.bump }}" --no-git-tag-version >/dev/null
+          fi
           NEW=$(node -p "require('./package.json').version")
           echo "Bumping @run402/runtime-kernel: $CUR -> $NEW"
           echo "old=$CUR" >> "$GITHUB_OUTPUT"
           echo "new=$NEW" >> "$GITHUB_OUTPUT"
 
       - name: Sync lockfile to reflect new version
-        run: npm install --package-lock-only
+        run: |
+          if [ "${{ inputs.bump }}" = "none" ]; then
+            echo "Package version already committed; lockfile sync skipped."
+          else
+            npm install --package-lock-only
+          fi
 
       - name: Tarball smoke test
         run: |
@@ -134,7 +142,7 @@ jobs:
           publish_idempotent "@run402/runtime-kernel"
 
       - name: Commit version bump
-        if: ${{ !inputs.dry_run }}
+        if: ${{ !inputs.dry_run && inputs.bump != 'none' }}
         run: |
           set -euo pipefail
           NEW="${{ steps.bump.outputs.new }}"
