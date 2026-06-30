@@ -1,6 +1,6 @@
-# Core Storage And Routing Developer Preview
+# Core Storage And Routing Run402 Core
 
-Run402 Core storage/routing is a single-node Developer Preview reference runtime. It is designed to make application data-plane behavior portable and inspectable, not to replace managed production operations.
+Run402 Core storage/routing is a single-node Run402 Core reference runtime. It is designed to make application data-plane behavior portable and inspectable, not to replace managed production operations.
 
 ## Supported
 

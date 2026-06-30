@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 
-export type AppKitTargetPolicy = "core-developer-preview" | "cloud";
+export type AppKitTargetPolicy = "core" | "cloud";
 export type AppKitDiagnosticSeverity = "error" | "warning" | "omitted";
 
 export interface AppKitDiagnostic {
@@ -168,11 +168,11 @@ export type PortableAppManifest = Record<string, unknown>;
 const DEFAULT_RUNTIME = "node22";
 
 const TOP_LEVEL_UNSUPPORTED: Record<string, Omit<AppKitDiagnostic, "resource">> = {
-  subdomains: unsupported("run402.core.unsupported.managed_subdomains", "managed.subdomains", "Managed subdomains are a Run402 Cloud convenience and are omitted from Core Developer Preview."),
-  custom_domains: unsupported("run402.core.unsupported.custom_domains", "managed.custom_domains", "Custom domain automation is not part of Core Developer Preview."),
-  domains: unsupported("run402.core.unsupported.custom_domains", "managed.custom_domains", "Custom domain automation is not part of Core Developer Preview."),
-  i18n: unsupported("run402.core.unsupported.i18n_routing", "i18n.routing", "i18n routing is not part of Core Developer Preview."),
-  hosted_oauth: unsupported("run402.core.unsupported.hosted_oauth", "auth.hosted_oauth", "Hosted OAuth is not part of Core Developer Preview."),
+  subdomains: unsupported("run402.core.unsupported.managed_subdomains", "managed.subdomains", "Managed subdomains are a Run402 Cloud convenience and are omitted from Run402 Core."),
+  custom_domains: unsupported("run402.core.unsupported.custom_domains", "managed.custom_domains", "Custom domain automation is not part of Run402 Core."),
+  domains: unsupported("run402.core.unsupported.custom_domains", "managed.custom_domains", "Custom domain automation is not part of Run402 Core."),
+  i18n: unsupported("run402.core.unsupported.i18n_routing", "i18n.routing", "i18n routing is not part of Run402 Core."),
+  hosted_oauth: unsupported("run402.core.unsupported.hosted_oauth", "auth.hosted_oauth", "Hosted OAuth is not part of Run402 Core."),
   mailboxes: unsupported(
     "run402.core.unsupported.email_manifest",
     "email.outbound_configuration",
@@ -183,11 +183,11 @@ const TOP_LEVEL_UNSUPPORTED: Record<string, Omit<AppKitDiagnostic, "resource">> 
     "email.outbound_configuration",
     "Core outbound email is configured through the gateway provider and /mailboxes/v1; managed inbound, bounce, and sender-domain operations remain Cloud-only.",
   ),
-  billing: unsupported("run402.core.unsupported.billing", "billing.managed", "Managed billing is not part of Core Developer Preview."),
-  monitoring: unsupported("run402.core.unsupported.monitoring", "monitoring.managed", "Managed monitoring is not part of Core Developer Preview."),
-  backups: unsupported("run402.core.unsupported.backups", "backups.managed", "Managed backups are not part of Core Developer Preview."),
-  compliance: unsupported("run402.core.unsupported.compliance", "compliance.managed", "Managed compliance operations are not part of Core Developer Preview."),
-  fleet: unsupported("run402.core.unsupported.fleet", "fleet.operations", "Fleet operations are not part of Core Developer Preview."),
+  billing: unsupported("run402.core.unsupported.billing", "billing.managed", "Managed billing is not part of Run402 Core."),
+  monitoring: unsupported("run402.core.unsupported.monitoring", "monitoring.managed", "Managed monitoring is not part of Run402 Core."),
+  backups: unsupported("run402.core.unsupported.backups", "backups.managed", "Managed backups are not part of Run402 Core."),
+  compliance: unsupported("run402.core.unsupported.compliance", "compliance.managed", "Managed compliance operations are not part of Run402 Core."),
+  fleet: unsupported("run402.core.unsupported.fleet", "fleet.operations", "Fleet operations are not part of Run402 Core."),
 };
 
 const NESTED_UNSUPPORTED_KEYS: Record<string, Omit<AppKitDiagnostic, "resource">> = {
@@ -390,7 +390,7 @@ export function omittedFeatureDiagnostics(inputs: readonly AppKitOmittedFeatureI
   return inputs.map((input) => omittedFeatureDiagnostic(input));
 }
 
-export function diagnoseCoreDeveloperPreviewCompatibility(manifest: Record<string, unknown>): AppKitDiagnostic[] {
+export function diagnoseCoreCompatibility(manifest: Record<string, unknown>): AppKitDiagnostic[] {
   const diagnostics: AppKitDiagnostic[] = [];
   for (const key of Object.keys(manifest).sort()) {
     const template = TOP_LEVEL_UNSUPPORTED[key];
@@ -403,11 +403,11 @@ export function diagnoseCoreDeveloperPreviewCompatibility(manifest: Record<strin
   return uniqueDiagnostics(diagnostics);
 }
 
-export function assertCoreDeveloperPreviewCompatible(manifest: Record<string, unknown>): void {
-  const diagnostics = diagnoseCoreDeveloperPreviewCompatibility(manifest)
+export function assertCoreCompatible(manifest: Record<string, unknown>): void {
+  const diagnostics = diagnoseCoreCompatibility(manifest)
     .filter((diagnostic) => diagnostic.severity === "error");
   if (diagnostics.length > 0) {
-    throw new AppKitError("Manifest uses features outside Core Developer Preview", diagnostics);
+    throw new AppKitError("Manifest uses features outside Run402 Core", diagnostics);
   }
 }
 

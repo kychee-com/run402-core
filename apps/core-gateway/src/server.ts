@@ -2656,7 +2656,7 @@ async function staticResponse(
   if (ssrFallback) {
     if (isUpgradeRequest(request.headers)) {
       const requestId = newFunctionRequestId();
-      const error = new AstroSsrUnsupportedFeatureError("http_upgrade", "Core Astro SSR Developer Preview does not support WebSocket or HTTP upgrade requests.", {
+      const error = new AstroSsrUnsupportedFeatureError("http_upgrade", "Run402 Core Astro SSR does not support WebSocket or HTTP upgrade requests.", {
         route_pattern: CORE_ASTRO_SSR_FALLBACK_PATTERN,
         function_name: ssrFallback.target.name,
       });

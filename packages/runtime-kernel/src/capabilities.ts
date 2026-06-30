@@ -122,7 +122,7 @@ export interface RuntimeCapabilityDocument {
 }
 
 export interface CorePortableArchiveCapability {
-  maturity: "developer_preview";
+  maturity: "self_hosted_core";
   format_versions: [typeof PROJECT_ARCHIVE_VERSION];
   transports: Array<(typeof PROJECT_ARCHIVE_TRANSPORTS)[number]>;
   default_extension: typeof PROJECT_ARCHIVE_DEFAULT_EXTENSION;
@@ -181,7 +181,7 @@ export function runtimeCapabilities(version = "0.1.1"): RuntimeCapabilityDocumen
 
 export function corePortableArchiveCapability(): CorePortableArchiveCapability {
   return {
-    maturity: "developer_preview",
+    maturity: "self_hosted_core",
     format_versions: [PROJECT_ARCHIVE_VERSION],
     transports: [...PROJECT_ARCHIVE_TRANSPORTS],
     default_extension: PROJECT_ARCHIVE_DEFAULT_EXTENSION,

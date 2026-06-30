@@ -2,7 +2,7 @@
 
 This guide verifies the self-hosted Run402 Core path: build the Core Gateway Docker image, run it with local Postgres, PostgREST, and the function worker, then execute the Core conformance scripts against the hosted gateway.
 
-Run402 Core is a Developer Preview single-node runtime. This path is meant to prove the supported runtime slice is runnable outside Run402 Cloud; it is not yet a production HA deployment.
+Run402 Core is a single-node self-hosting runtime. This path is meant to prove the supported runtime slice is runnable outside Run402 Cloud; it is not yet a production HA deployment.
 
 ## Prerequisites
 

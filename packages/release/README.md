@@ -33,7 +33,7 @@ This package defines the production-used, deterministic behavior for parsing, va
 | Normalize typed config descriptors | Yes |
 | Fingerprint gateway-reviewed plans | Yes |
 | Materialize local function source files | Yes |
-| Diagnose Core Developer Preview omissions | Yes |
+| Diagnose Run402 Core omissions | Yes |
 | Deploy resources | No |
 | Execute migrations | No |
 | Store secrets/content | No |

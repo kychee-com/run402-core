@@ -11,11 +11,11 @@ Included:
 - `@run402/runtime-kernel`
 - Core gateway composition root
 - Docker Compose local runtime
-- Postgres/PostgREST/RLS Developer Preview
+- Postgres/PostgREST/RLS Run402 Core
 - supported ReleaseSpec apply plan/commit
 - storage/static routing subset
-- trusted local functions Developer Preview
-- narrow Astro SSR Developer Preview
+- trusted local functions Run402 Core
+- narrow Astro SSR
 - portable archive inspect/verify/import into Core
 
 Excluded:

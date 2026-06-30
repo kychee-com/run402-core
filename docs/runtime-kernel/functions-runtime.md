@@ -1,4 +1,4 @@
-# Core Functions Runtime Developer Preview
+# Run402 Core Functions Runtime
 
 Run402 Core functions run trusted project-owner code for local development and portability testing. This is not a hostile-code sandbox, not public multi-tenant hosting, and not a miniature copy of Run402 Cloud operations.
 
@@ -27,7 +27,7 @@ The first public implementation supports only pre-bundled `source` artifacts wit
 
 The machine-readable capability document exposes:
 
-- `maturity: developer_preview`
+- `maturity: self_hosted_core`
 - `security_profile: trusted_local_code`
 - `hostile_code_isolation: false`
 - `default_executor: docker_compose_worker`
@@ -66,7 +66,7 @@ Current hardening limits:
 - stdout/stderr capture is capped at 64 KiB per invocation and 16 KiB per line.
 - Docker Compose sets the worker service memory limit to 512 MiB.
 
-Temp-dir byte quotas and `node_modules` byte quotas are documented resource defaults but are not yet enforced by a filesystem quota in this Developer Preview adapter.
+Temp-dir byte quotas and `node_modules` byte quotas are documented resource defaults but are not yet enforced by a filesystem quota in this Run402 Core adapter.
 
 ## Resource Defaults
 
@@ -88,7 +88,7 @@ Temp-dir byte quotas and `node_modules` byte quotas are documented resource defa
 
 ## Supported Matrix
 
-| Area | Developer Preview status |
+| Area | Run402 Core status |
 | --- | --- |
 | Node runtime | `node22` only |
 | bundle form | pre-bundled `source` content ref |
@@ -124,7 +124,7 @@ Limits are host-owned through `CORE_SCHEDULER_ENABLED`, `CORE_SCHEDULER_MAX_PER_
 
 ## Local Secrets
 
-Set and list local function secrets through Core preview endpoints:
+Set and list local function secrets through Core local endpoints:
 
 ```bash
 curl -X POST "$CORE_URL/projects/v1/$PROJECT_ID/functions/secrets" \
@@ -149,7 +149,7 @@ curl "$CORE_URL/projects/v1/$PROJECT_ID/functions/logs?request_id=$REQUEST_ID&ta
 
 Supported filters are `request_id`, `function_name`, `since` as an ISO-8601 timestamp, and `tail` capped at 1000 rows. Responses are chronological within the selected tail. Platform log messages are structured JSON strings and intentionally omit headers, bodies, raw env, provider metadata, and raw user exception text. User stdout/stderr is capped and best-effort redacted for known secret values, authorization/cookie/payment/service-key patterns, and secret-looking tokens.
 
-Local retention defaults to 10 MiB or 24h, whichever prunes first. The cleanup path reports function log cleanup counts; bundle-directory cleanup remains conservative in Developer Preview and must preserve active release references.
+Local retention defaults to 10 MiB or 24h, whichever prunes first. The cleanup path reports function log cleanup counts; bundle-directory cleanup remains conservative in Run402 Core and must preserve active release references.
 
 ## Dependency Policy
 

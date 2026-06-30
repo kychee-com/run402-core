@@ -1,6 +1,6 @@
 # Run402 Core Runtime Kernel Quickstart
 
-Run402 Core is a Developer Preview single-node reference runtime. It is meant to prove portability and local execution for the supported release slice; it is not a production operations stack.
+Run402 Core is an Apache-2.0 self-hosting runtime. It is meant to prove portability and local execution for the supported release slice; it is not a production operations stack.
 
 ## Start
 

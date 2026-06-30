@@ -1,6 +1,6 @@
 # Storage Routing Core Fixture
 
-This fixture is the canonical public Developer Preview app for Run402 Core storage and static routing conformance.
+This fixture is the canonical public Run402 Core app for Run402 Core storage and static routing conformance.
 
 It exercises:
 

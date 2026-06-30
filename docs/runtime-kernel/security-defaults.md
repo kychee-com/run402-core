@@ -16,7 +16,7 @@ Default credentials are local-development credentials. Do not expose this stack 
 - local signed-read URLs with bounded TTL
 - immutable URL records resolved by content digest rather than mutable object rows
 - static route manifests that fail closed for unsupported dynamic targets
-- trusted-code functions Developer Preview capability fields
+- trusted-code functions Run402 Core capability fields
 - explicit functions resource defaults and dependency policy
 - pre-bundled/no-external-deps function apply validation
 - function code runs outside the gateway process in the Compose worker path

@@ -28,7 +28,7 @@ For outbound transactional email on the same Dockerized Core gateway, see `docs/
 
 ## Current Shape
 
-This is an EC2 + Docker Compose Developer Preview path.
+This is an EC2 + Docker Compose Run402 Core path.
 
 ```text
 EC2
@@ -59,7 +59,7 @@ AWS:
   - `4020/tcp` Core Gateway
   - `4300/tcp` PostgREST preview endpoint
 
-Do not open `4020` or `4300` to the internet during this Developer Preview unless you understand the risk.
+Do not open `4020` or `4300` to the internet during this Run402 Core unless you understand the risk.
 
 ## Step 1: Launch An EC2 Host
 
@@ -107,7 +107,7 @@ export RUN402_CORE_SG="$(
   aws ec2 create-security-group \
     --vpc-id "$RUN402_CORE_VPC_ID" \
     --group-name "$RUN402_CORE_NAME" \
-    --description "Run402 Core AWS preview" \
+    --description "Run402 Core AWS" \
     --query GroupId \
     --output text
 )"
@@ -353,7 +353,7 @@ mkdir -p /home/ubuntu/run402-core/imports
 cp /home/ubuntu/project.r402ar /home/ubuntu/run402-core/imports/project.r402ar
 ```
 
-Core archive import is path-based in the current Developer Preview: the Core Gateway reads an archive path from the Core container filesystem. The AWS compose override mounts `./imports` from the EC2 checkout into the Core container at `/imports`.
+Core archive import is path-based in the current Run402 Core: the Core Gateway reads an archive path from the Core container filesystem. The AWS compose override mounts `./imports` from the EC2 checkout into the Core container at `/imports`.
 
 Create an import request. Fill `secret_values` with every secret listed by `run402 archives inspect`; use `{}` if the archive has no required secrets.
 

@@ -311,7 +311,7 @@ function validateFunctionSubset(spec: ReleaseSpec, ports: RuntimeKernelPorts): v
     });
   }
   if (ssrCount > 1) {
-    throw new AstroSsrUnsupportedFeatureError("multiple_ssr_targets", "Core Astro SSR Developer Preview supports one fallback target per release.", {
+    throw new AstroSsrUnsupportedFeatureError("multiple_ssr_targets", "Run402 Core Astro SSR supports one fallback target per release.", {
       ssr_target_count: ssrCount,
     });
   }
@@ -325,19 +325,19 @@ function validateCoreFunctionSpec(name: string, fn: FunctionSpec, ports: Runtime
     });
   }
   if (!fn.source) {
-    throw new FunctionBundleValidationError("invalid_function_bundle", `Function ${name} must use source in Core Developer Preview.`, {
+    throw new FunctionBundleValidationError("invalid_function_bundle", `Function ${name} must use source in Run402 Core.`, {
       function_name: name,
       reason: "missing_source_ref",
     });
   }
   if (fn.files && Object.keys(fn.files).length > 0) {
-    throw new FunctionBundleValidationError("invalid_function_bundle", `Function ${name} files maps are not supported in Core Developer Preview.`, {
+    throw new FunctionBundleValidationError("invalid_function_bundle", `Function ${name} files maps are not supported in Run402 Core.`, {
       function_name: name,
       reason: "files_map_unsupported",
     });
   }
   if ((fn.deps?.length ?? 0) > 0) {
-    throw new DependencyInstallRejectedError("Core Functions Developer Preview supports pre-bundled function artifacts with no external deps.", {
+    throw new DependencyInstallRejectedError("Run402 Core Functions supports pre-bundled function artifacts with no external deps.", {
       function_name: name,
       deps: fn.deps,
       dependency_mode: CORE_FUNCTION_DEPENDENCY_MODE,
@@ -377,7 +377,7 @@ function validateCoreFunctionSpec(name: string, fn: FunctionSpec, ports: Runtime
     });
   }
   if (fn.requireRole?.cacheTtl && fn.requireRole.cacheTtl > 0) {
-    throw new FunctionBundleValidationError("role_cache_unsupported", `Function ${name} requireRole.cacheTtl must be 0 in Core Developer Preview.`, {
+    throw new FunctionBundleValidationError("role_cache_unsupported", `Function ${name} requireRole.cacheTtl must be 0 in Run402 Core.`, {
       function_name: name,
       cache_ttl: fn.requireRole.cacheTtl,
     });
@@ -446,7 +446,7 @@ function bundleMetadataFromSpec(
   requiredSecrets: string[],
 ): CoreFunctionBundleMetadata {
   if (!spec.source) {
-    throw new FunctionBundleValidationError("invalid_function_bundle", `Function ${name} must use source in Core Developer Preview.`, {
+    throw new FunctionBundleValidationError("invalid_function_bundle", `Function ${name} must use source in Run402 Core.`, {
       function_name: name,
     });
   }

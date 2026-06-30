@@ -7,10 +7,10 @@ import { join } from "node:path";
 
 import {
   AppKitError,
-  assertCoreDeveloperPreviewCompatible,
+  assertCoreCompatible,
   buildPortableAppManifest,
   databaseMigrationsSlice,
-  diagnoseCoreDeveloperPreviewCompatibility,
+  diagnoseCoreCompatibility,
   inlineSqlMigration,
   localDirSiteReplace,
   materializeFunctionManifestMap,
@@ -50,7 +50,7 @@ describe("@run402/release/app-kit function materialization", () => {
     }, {
       rootDir: root,
       outDir: join(root, "dist", "run402", "functions"),
-      targetPolicy: "core-developer-preview",
+      targetPolicy: "core",
     });
 
     assert.deepEqual(Object.keys(result.functions), ["api/v1", "worker"]);
@@ -85,7 +85,7 @@ describe("@run402/release/app-kit function materialization", () => {
     }, {
       rootDir: root,
       outDir: join(root, "functions"),
-      targetPolicy: "core-developer-preview",
+      targetPolicy: "core",
     });
 
     assert.deepEqual(Object.keys(result.functions), ["cron", "http"]);
@@ -101,7 +101,7 @@ describe("@run402/release/app-kit function materialization", () => {
     }, {
       rootDir: root,
       outDir: join(root, "functions"),
-      targetPolicy: "core-developer-preview",
+      targetPolicy: "core",
     });
 
     assert.equal(materialized.spec.schedule, "0 * * * *");
@@ -179,8 +179,8 @@ describe("@run402/release/app-kit site and database helpers", () => {
 });
 
 describe("@run402/release/app-kit Core capability diagnostics", () => {
-  it("reports unsupported Core Developer Preview features", () => {
-    const diagnostics = diagnoseCoreDeveloperPreviewCompatibility({
+  it("reports unsupported Run402 Core features", () => {
+    const diagnostics = diagnoseCoreCompatibility({
       functions: {
         replace: {
           cron: { schedule: "0 * * * *" },
@@ -214,7 +214,7 @@ describe("@run402/release/app-kit Core capability diagnostics", () => {
       ],
     );
     assert.throws(
-      () => assertCoreDeveloperPreviewCompatible({ subdomains: { set: [] } }),
+      () => assertCoreCompatible({ subdomains: { set: [] } }),
       (err) => err instanceof AppKitError &&
         err.diagnostics[0]?.capability === "managed.subdomains",
     );

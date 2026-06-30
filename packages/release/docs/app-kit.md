@@ -38,7 +38,7 @@ const functions = materializeFunctionManifestMap({
 }, {
   rootDir,
   outDir: `${rootDir}/dist/run402/functions`,
-  targetPolicy: "core-developer-preview",
+  targetPolicy: "core",
 });
 
 const manifest = buildPortableAppManifest({
@@ -67,9 +67,9 @@ writePortableAppManifest("app.json", manifest);
 
 Then deploy the generated manifest through the normal SDK/CLI path.
 
-## Core Developer Preview Policy
+## Run402 Core Policy
 
-Use `targetPolicy: "core-developer-preview"` when building a manifest intended for Run402 Core. The policy reports features that are not part of Core Developer Preview, including:
+Use `targetPolicy: "core"` when building a manifest intended for Run402 Core. The policy reports features that are not part of Run402 Core, including:
 
 - managed subdomains and custom domains
 - i18n routing
@@ -83,7 +83,7 @@ Use `targetPolicy: "core-developer-preview"` when building a manifest intended f
 
 Scheduled functions are part of the Core manifest surface. Core runs them with
 the gateway's single-node scheduler; distributed scheduling, missed-tick replay,
-and fleet operations remain outside the Developer Preview policy.
+and fleet operations remain outside the Run402 Core policy.
 
 Apps can omit an unsupported feature intentionally and record that decision:
 

@@ -59,9 +59,9 @@ test("runtime capability document advertises first-slice boundaries", () => {
   assert.ok(capabilities.supported_features.includes("archives.format.run402-project-archive-v1"));
   assert.ok(capabilities.supported_features.includes("archives.verify.local"));
   assert.ok(capabilities.supported_features.includes("archives.import.local-new-project"));
-  assert.equal(capabilities.functions_runtime.maturity, "developer_preview");
-  assert.equal(capabilities.astro_ssr_runtime.maturity, "developer_preview");
-  assert.equal(capabilities.portable_archives.maturity, "developer_preview");
+  assert.equal(capabilities.functions_runtime.maturity, "self_hosted_core");
+  assert.equal(capabilities.astro_ssr_runtime.maturity, "self_hosted_core");
+  assert.equal(capabilities.portable_archives.maturity, "self_hosted_core");
   assert.equal(capabilities.portable_archives.local_verify, true);
   assert.equal(capabilities.portable_archives.local_import, true);
   assert.equal(capabilities.astro_ssr_runtime.output_contract_version, CORE_ASTRO_SSR_OUTPUT_CONTRACT_VERSION);

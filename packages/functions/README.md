@@ -368,7 +368,7 @@ Runtime route failure codes to branch on: `ROUTE_MANIFEST_LOAD_FAILED` (manifest
 
 ## Scheduled functions
 
-Run402 Cloud and Run402 Core both use the existing release manifest `functions.replace.<name>.schedule` field for cron-style functions. In Core Developer Preview this is a single-node gateway scheduler, not a managed distributed jobs system.
+Run402 Cloud and Run402 Core both use the existing release manifest `functions.replace.<name>.schedule` field for cron-style functions. In Run402 Core this is a single-node gateway scheduler, not a managed distributed jobs system.
 
 Scheduled functions receive the same Fetch `Request` shape as routed functions. The request is a synthetic `POST` with `X-Run402-Trigger: cron` for wall-clock ticks, or `X-Run402-Trigger: manual` when a Core agent calls the service-key testing hook. The JSON body contains `trigger` and `scheduled_at`.
 

@@ -12,7 +12,7 @@ import type {
 } from "@run402/release";
 import { Cron } from "croner";
 
-export const CORE_FUNCTION_RUNTIME_MATURITY = "developer_preview" as const;
+export const CORE_FUNCTION_RUNTIME_MATURITY = "self_hosted_core" as const;
 export const CORE_FUNCTION_SECURITY_PROFILE = "trusted_local_code" as const;
 export const CORE_FUNCTION_DEFAULT_EXECUTOR = "docker_compose_worker" as const;
 export const CORE_FUNCTION_DEPENDENCY_MODE = "prebundled_no_external_deps" as const;
@@ -99,7 +99,7 @@ export interface CoreFunctionIsolationProfile {
   host_environment_inherited: false;
   gateway_secrets_visible_by_default: false;
   filesystem_policy: "project_worker_scoped";
-  network_policy: "developer_preview_not_hardened";
+  network_policy: "self_hosted_not_hardened";
 }
 
 export const CORE_FUNCTION_ISOLATION_PROFILE: CoreFunctionIsolationProfile = {
@@ -112,7 +112,7 @@ export const CORE_FUNCTION_ISOLATION_PROFILE: CoreFunctionIsolationProfile = {
   host_environment_inherited: false,
   gateway_secrets_visible_by_default: false,
   filesystem_policy: "project_worker_scoped",
-  network_policy: "developer_preview_not_hardened",
+  network_policy: "self_hosted_not_hardened",
 };
 
 export interface CoreFunctionDependencyPolicy {

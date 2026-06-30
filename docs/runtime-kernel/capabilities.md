@@ -19,7 +19,7 @@
 - active-release static serving for explicit public paths
 - exact static alias routes with GET/HEAD behavior
 - route-first matching, query-insensitive selection, trailing-slash equivalence, and route miss/static lookup
-- Core Functions Developer Preview contract for trusted local Node 22 functions
+- Run402 Core Functions contract for trusted local Node 22 functions
 - pre-bundled function source refs with no external npm dependencies
 - function bundle content digest verification during apply commit
 - routed HTTP function targets through the local worker executor
@@ -30,11 +30,11 @@
 - single-node scheduled functions from the existing release-spec `schedule` field, with local manual trigger and mutable schedule metadata
 - function route targets that fail closed with typed dynamic-runtime errors when the worker executor is not configured
 - machine-readable functions isolation profile, resource defaults, schedule limits, dependency policy, and known exclusions
-- Astro SSR Developer Preview for `astro.ssr.v1`
+- Astro SSR for `astro.ssr.v1`
 - one Node 22 ESM SSR target with Web `Request` input and buffered Web `Response` output
 - SSR fallback after static aliases, public assets, prerendered HTML, and function routes
 - inherited function runtime request IDs, logs, required secrets, env allowlist, timeout, body/response caps, and trusted-local-code isolation profile
-- portable archive Developer Preview verification for `run402-project-archive.v1`
+- portable archive Run402 Core verification for `run402-project-archive.v1`
 - offline archive inspect/verify from directory and uncompressed tar transports
 - local new-project import for verified `run402-project-archive.v1` archives
 - phased Postgres pre-data, client `COPY`, sequence, and post-data import

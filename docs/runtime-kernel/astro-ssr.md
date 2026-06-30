@@ -1,4 +1,4 @@
-# Core Astro SSR Developer Preview
+# Run402 Core Astro SSR
 
 Run402 Core supports Astro SSR only through the first public `@run402/astro` output contract. This is a portability slice, not full Astro hosting and not Run402 Cloud production operations.
 
