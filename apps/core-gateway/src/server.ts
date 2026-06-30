@@ -78,6 +78,7 @@ import {
 } from "./postgres-mailboxes.js";
 import { createPostgresPool, PostgresProjectCatalog, PostgresProjectSql, type ProjectSqlResult } from "./postgres-projects.js";
 import { PostgresStorageStore } from "./postgres-storage.js";
+import { CoreWebhookDeliveryWorker, webhookDeliveryConfigFromEnv, type WebhookDeliveryConfig } from "./webhook-delivery.js";
 
 export interface CoreGatewayConfig {
   host: string;
@@ -95,6 +96,7 @@ export interface CoreGatewayConfig {
   functionWorkerUrl?: string;
   emailProvider: EmailProviderConfig;
   emailInboundProvider: EmailInboundProviderConfig;
+  webhookDelivery: WebhookDeliveryConfig;
 }
 
 export interface CoreGatewayRuntime {
@@ -191,6 +193,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): CoreGatewayCon
     functionWorkerUrl: env.CORE_FUNCTION_WORKER_URL,
     emailProvider: emailProviderConfigFromEnv(env),
     emailInboundProvider: emailInboundProviderConfigFromEnv(env),
+    webhookDelivery: webhookDeliveryConfigFromEnv(env),
   };
 }
 
@@ -894,10 +897,19 @@ export async function requestHandler(
 
 export async function startServer(config = loadConfig()): Promise<http.Server> {
   const runtime = await createGatewayRuntime(config);
+  const webhookDeliveryWorker = runtime.mailboxes
+    ? new CoreWebhookDeliveryWorker({
+      store: runtime.mailboxes,
+      config: config.webhookDelivery,
+      fetch: runtime.fetch,
+    })
+    : null;
+  webhookDeliveryWorker?.start();
   const server = http.createServer((req, res) => {
     void requestHandler(req, res, runtime);
   });
   server.on("close", () => {
+    webhookDeliveryWorker?.stop();
     void runtime.close?.();
   });
   await new Promise<void>((resolve) => {

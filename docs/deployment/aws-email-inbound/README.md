@@ -8,7 +8,7 @@ The boundary stays simple:
 - app code still uses `/mailboxes/v1`
 - SES receives SMTP and stores raw RFC-822 messages
 - a small forwarder calls the Core ingestion endpoint
-- Core resolves the mailbox, enforces reply-first policy, stores the inbound message, preserves raw bytes, and enqueues `reply_received`
+- Core resolves the mailbox, enforces reply-first policy, stores the inbound message, preserves raw bytes, and delivers queued `reply_received` webhooks
 
 This guide assumes outbound email is already working from `docs/deployment/aws-email/README.md`.
 
@@ -31,6 +31,7 @@ export CORE_EMAIL_INBOUND_SES_REGION="us-east-1"
 export CORE_EMAIL_INBOUND_RAW_BUCKET="run402-core-inbound-$(date +%s)"
 export CORE_EMAIL_INBOUND_RAW_PREFIX="inbound-email/"
 export CORE_EMAIL_INBOUND_INGEST_TOKEN="$(openssl rand -hex 32)"
+export CORE_WEBHOOK_DELIVERY_ENABLED="true"
 ```
 
 Use the same domain as outbound if that is safe for your test, or use a dedicated subdomain for the first proof.
@@ -240,7 +241,7 @@ Expected mailbox shape:
 
 ## Register A Reply Webhook
 
-This is optional because message polling is always a backstop.
+This is optional because message polling is always a backstop, but apps such as KeySigned should register it for the live reply-to-sign loop. Core delivers webhooks from the gateway runtime. You can tune the worker with `CORE_WEBHOOK_DELIVERY_INTERVAL_MS`, `CORE_WEBHOOK_DELIVERY_BATCH_SIZE`, `CORE_WEBHOOK_DELIVERY_TIMEOUT_MS`, `CORE_WEBHOOK_DELIVERY_MAX_ATTEMPTS`, `CORE_WEBHOOK_DELIVERY_RETRY_BASE_MS`, and `CORE_WEBHOOK_DELIVERY_RETRY_MAX_MS`.
 
 ```bash
 export REPLY_WEBHOOK_URL="https://example.com/run402-email-events"
@@ -299,9 +300,40 @@ file /tmp/run402-core-inbound.eml
 Check the webhook delivery queue:
 
 ```bash
-curl -sS "$CORE_API_BASE/mailboxes/v1/$RUN402_MAILBOX_ID/webhooks/deliveries?status=pending" \
+curl -sS "$CORE_API_BASE/mailboxes/v1/$RUN402_MAILBOX_ID/webhooks/deliveries" \
   -H "authorization: Bearer $RUN402_SERVICE_KEY" \
-  | jq .
+  | jq '.deliveries[] | {delivery_id, event_type, status, attempts, last_status, last_error, next_attempt_at, delivered_at, message_id: .payload.payload.message_id}'
+```
+
+Expected for a healthy receiver:
+
+```json
+{
+  "delivery_id": "whd_...",
+  "event_type": "reply_received",
+  "status": "delivered",
+  "attempts": 1,
+  "last_status": 200,
+  "last_error": null,
+  "next_attempt_at": "2026-06-30T00:00:00.000Z",
+  "delivered_at": "2026-06-30T00:00:00.000Z",
+  "message_id": "msg_..."
+}
+```
+
+If the receiver was down, inspect failed deliveries and redrive after fixing the URL or app:
+
+```bash
+curl -sS "$CORE_API_BASE/mailboxes/v1/$RUN402_MAILBOX_ID/webhooks/deliveries?status=failed_permanent" \
+  -H "authorization: Bearer $RUN402_SERVICE_KEY" \
+  | tee /tmp/run402-core-failed-webhooks.json \
+  | jq '.deliveries[] | {delivery_id, attempts, last_status, last_error}'
+
+export RUN402_WEBHOOK_DELIVERY_ID="$(jq -r '.deliveries[0].delivery_id' /tmp/run402-core-failed-webhooks.json)"
+
+curl -sS -X POST "$CORE_API_BASE/mailboxes/v1/$RUN402_MAILBOX_ID/webhooks/deliveries/$RUN402_WEBHOOK_DELIVERY_ID/redrive" \
+  -H "authorization: Bearer $RUN402_SERVICE_KEY" \
+  | jq '{delivery_id, status, attempts, next_attempt_at}'
 ```
 
 ## KeySigned Reply-To-Sign Proof
@@ -313,7 +345,7 @@ For the first portability proof:
 3. Send a signing-request-style email through Core outbound SES.
 4. Reply to the Core mailbox address.
 5. Confirm the reply appears through `messages?direction=inbound`.
-6. Confirm any registered `reply_received` delivery references the same inbound `message_id`.
+6. Confirm the registered `reply_received` delivery reaches `delivered` or is redriven after receiver recovery, and references the same inbound `message_id`.
 
 No Run402 Cloud mailbox, managed sender domain, fleet routing, billing, or Cloud email Lambda is part of this proof.
 
@@ -369,3 +401,15 @@ If no objects exist, check that the MX record is visible from public DNS and tha
 ### Reply is dropped as unsolicited
 
 Core's first inbound slice is reply-first. The sender must reply to a message that the Core mailbox previously sent to that sender. Compose-new email to the mailbox is intentionally dropped.
+
+### Webhook stays pending or fails
+
+Check that `CORE_WEBHOOK_DELIVERY_ENABLED` is not `false`, then inspect the receiver URL from the webhook row:
+
+```bash
+curl -sS "$CORE_API_BASE/mailboxes/v1/$RUN402_MAILBOX_ID/webhooks" \
+  -H "authorization: Bearer $RUN402_SERVICE_KEY" \
+  | jq '.webhooks[] | {webhook_id, url, events, status}'
+```
+
+`pending` with a future `next_attempt_at` means Core is waiting for the next retry. `failed_permanent` means the attempt limit was exhausted; fix the receiver and redrive the delivery.

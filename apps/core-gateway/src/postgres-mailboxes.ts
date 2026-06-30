@@ -118,6 +118,9 @@ export interface CoreMailboxStorePort {
   enqueueWebhookDelivery(input: EnqueueWebhookDeliveryInput): Promise<CoreWebhookDeliveryRecord[]>;
   listWebhookDeliveries(input: { projectId: string; mailboxId: string; status?: CoreWebhookDeliveryStatus }): Promise<CoreWebhookDeliveryRecord[]>;
   redriveWebhookDelivery(input: { projectId: string; mailboxId: string; deliveryId: string }): Promise<CoreWebhookDeliveryRecord>;
+  claimDueWebhookDeliveries(input: { limit: number; leaseMs: number; now?: Date }): Promise<CoreWebhookDeliveryRecord[]>;
+  markWebhookDeliveryDelivered(input: { deliveryId: string; status: number; now?: Date }): Promise<CoreWebhookDeliveryRecord | null>;
+  markWebhookDeliveryFailed(input: { deliveryId: string; status: number | null; error: string; maxAttempts: number; retryDelayMs: number; now?: Date }): Promise<CoreWebhookDeliveryRecord | null>;
 }
 
 export interface StageMessageInput {
@@ -297,6 +300,10 @@ export class PostgresCoreMailboxStore implements CoreMailboxStorePort {
 
       CREATE INDEX IF NOT EXISTS core_webhook_deliveries_mailbox_idx
         ON internal.core_webhook_deliveries(project_id, mailbox_id, created_at DESC);
+
+      CREATE INDEX IF NOT EXISTS core_webhook_deliveries_due_idx
+        ON internal.core_webhook_deliveries(next_attempt_at, created_at)
+        WHERE status = 'pending';
     `);
   }
 
@@ -808,6 +815,79 @@ export class PostgresCoreMailboxStore implements CoreMailboxStorePort {
     return deliveryFromRow(result.rows[0]);
   }
 
+  async claimDueWebhookDeliveries(input: { limit: number; leaseMs: number; now?: Date }): Promise<CoreWebhookDeliveryRecord[]> {
+    const now = input.now ?? new Date();
+    const result = await this.#pool.query<DeliveryRow>(
+      `
+        WITH due AS (
+          SELECT delivery_id
+          FROM internal.core_webhook_deliveries
+          WHERE status = 'pending'
+            AND next_attempt_at <= $2::timestamptz
+          ORDER BY next_attempt_at ASC, created_at ASC
+          LIMIT $1
+          FOR UPDATE SKIP LOCKED
+        )
+        UPDATE internal.core_webhook_deliveries AS delivery
+           SET attempts = delivery.attempts + 1,
+               next_attempt_at = $2::timestamptz + ($3::integer * INTERVAL '1 millisecond'),
+               last_error = NULL,
+               updated_at = $2::timestamptz
+          FROM due
+         WHERE delivery.delivery_id = due.delivery_id
+         RETURNING delivery.*
+      `,
+      [input.limit, now.toISOString(), input.leaseMs],
+    );
+    return result.rows.map(deliveryFromRow);
+  }
+
+  async markWebhookDeliveryDelivered(input: { deliveryId: string; status: number; now?: Date }): Promise<CoreWebhookDeliveryRecord | null> {
+    const now = input.now ?? new Date();
+    const result = await this.#pool.query<DeliveryRow>(
+      `
+        UPDATE internal.core_webhook_deliveries
+           SET status = 'delivered',
+               last_status = $2,
+               last_error = NULL,
+               delivered_at = $3::timestamptz,
+               updated_at = $3::timestamptz
+         WHERE delivery_id = $1
+         RETURNING *
+      `,
+      [input.deliveryId, input.status, now.toISOString()],
+    );
+    return result.rows[0] ? deliveryFromRow(result.rows[0]) : null;
+  }
+
+  async markWebhookDeliveryFailed(input: {
+    deliveryId: string;
+    status: number | null;
+    error: string;
+    maxAttempts: number;
+    retryDelayMs: number;
+    now?: Date;
+  }): Promise<CoreWebhookDeliveryRecord | null> {
+    const now = input.now ?? new Date();
+    const result = await this.#pool.query<DeliveryRow>(
+      `
+        UPDATE internal.core_webhook_deliveries
+           SET status = CASE WHEN attempts >= $4 THEN 'failed_permanent' ELSE 'pending' END,
+               last_status = $2,
+               last_error = $3,
+               next_attempt_at = CASE
+                 WHEN attempts >= $4 THEN next_attempt_at
+                 ELSE $5::timestamptz + ($6::integer * INTERVAL '1 millisecond')
+               END,
+               updated_at = $5::timestamptz
+         WHERE delivery_id = $1
+         RETURNING *
+      `,
+      [input.deliveryId, input.status, truncateWebhookError(input.error), input.maxAttempts, now.toISOString(), input.retryDelayMs],
+    );
+    return result.rows[0] ? deliveryFromRow(result.rows[0]) : null;
+  }
+
   async requireOwnedMailbox(projectId: string, mailboxId: string): Promise<CoreMailboxRecord> {
     const mailbox = await this.getMailbox(mailboxId);
     if (!mailbox) {
@@ -1045,6 +1125,10 @@ function deliveryFromRow(row: DeliveryRow): CoreWebhookDeliveryRecord {
     updated_at: toIso(row.updated_at),
     delivered_at: toIsoOrNull(row.delivered_at),
   };
+}
+
+function truncateWebhookError(value: string): string {
+  return value.length > 500 ? `${value.slice(0, 497)}...` : value;
 }
 
 function attachmentsMetaFromDb(value: unknown): Array<{ filename: string; content_type: string; size_bytes: number }> | null {

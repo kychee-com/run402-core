@@ -47,6 +47,7 @@ import type {
   StoreInboundMessageInput,
 } from "./postgres-mailboxes.js";
 import { coreGatewayResponse, loadConfig } from "./server.js";
+import { DEFAULT_WEBHOOK_DELIVERY_CONFIG, drainWebhookDeliveries } from "./webhook-delivery.js";
 
 test("loadConfig does not require Cloud environment variables", () => {
   assert.deepEqual(loadConfig({}), {
@@ -74,6 +75,7 @@ test("loadConfig does not require Cloud environment variables", () => {
       rawPrefix: undefined,
       maxRawBytes: 10 * 1024 * 1024,
     },
+    webhookDelivery: DEFAULT_WEBHOOK_DELIVERY_CONFIG,
   });
 });
 
@@ -492,6 +494,110 @@ test("Core inbound ingestion stores reply messages, raw MIME, and reply_received
   assert.equal(rows[0].status, "pending");
   assert.equal(rows[0].payload.payload.message_id, inboundMessages[0].message_id);
   assert.match(rows[0].payload.idempotency_key, /^wh_/);
+});
+
+test("Core webhook delivery drain posts pending reply_received deliveries with stable identity", async () => {
+  const fixture = await createInboundReplyFixture("http://localhost/run402-email-webhook");
+  const calls: Array<{ url: string; headers: Headers; body: unknown }> = [];
+  const fetchImpl: typeof fetch = async (url, init) => {
+    calls.push({
+      url: String(url),
+      headers: new Headers(init?.headers),
+      body: JSON.parse(String(init?.body)),
+    });
+    return new Response("ok", { status: 200 });
+  };
+
+  const drained = await drainWebhookDeliveries({
+    store: fixture.mailboxes,
+    fetch: fetchImpl,
+    now: new Date(1_000),
+    config: { batchSize: 10, leaseMs: 60_000, timeoutMs: 1_000 },
+  });
+
+  assert.equal(drained.claimed, 1);
+  assert.equal(drained.results[0]?.status, "delivered");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "http://localhost/run402-email-webhook");
+  assert.equal(calls[0].headers.get("X-Run402-Webhook-Attempt"), "1");
+  assert.equal(calls[0].headers.get("X-Run402-Webhook-Event-Type"), "reply_received");
+  const body = calls[0].body as { id: string; idempotency_key: string; payload: { message_id: string } };
+  assert.equal(calls[0].headers.get("X-Run402-Webhook-Delivery-Id"), body.id);
+  assert.equal(calls[0].headers.get("X-Run402-Webhook-Idempotency-Key"), body.idempotency_key);
+  assert.equal(body.payload.message_id, fixture.inboundMessageId);
+
+  const delivered = await coreGatewayResponse({
+    method: "GET",
+    pathname: `/mailboxes/v1/${fixture.mailboxId}/webhooks/deliveries?status=delivered`,
+    headers: { authorization: `Bearer ${fixture.project.service_key}` },
+  }, fixture.runtime);
+  assert.equal(delivered.status, 200);
+  const rows = (delivered.body as { deliveries: Array<{ status: string; attempts: number; last_status: number; delivered_at: string | null }> }).deliveries;
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].status, "delivered");
+  assert.equal(rows[0].attempts, 1);
+  assert.equal(rows[0].last_status, 200);
+  assert.ok(rows[0].delivered_at);
+});
+
+test("Core webhook delivery drain retries, fails permanently, redrives, and preserves raw readback", async () => {
+  const fixture = await createInboundReplyFixture("http://localhost/run402-email-webhook");
+  const fetchImpl: typeof fetch = async () => new Response("retry later", { status: 503 });
+
+  const first = await drainWebhookDeliveries({
+    store: fixture.mailboxes,
+    fetch: fetchImpl,
+    now: new Date(1_000),
+    config: { batchSize: 10, leaseMs: 60_000, timeoutMs: 1_000, maxAttempts: 2, retryBaseMs: 1_000, retryMaxMs: 1_000 },
+  });
+  assert.equal(first.claimed, 1);
+  assert.equal(first.results[0]?.status, "retrying");
+
+  const early = await drainWebhookDeliveries({
+    store: fixture.mailboxes,
+    fetch: fetchImpl,
+    now: new Date(1_500),
+    config: { batchSize: 10, leaseMs: 60_000, timeoutMs: 1_000, maxAttempts: 2, retryBaseMs: 1_000, retryMaxMs: 1_000 },
+  });
+  assert.equal(early.claimed, 0);
+
+  const second = await drainWebhookDeliveries({
+    store: fixture.mailboxes,
+    fetch: fetchImpl,
+    now: new Date(3_000),
+    config: { batchSize: 10, leaseMs: 60_000, timeoutMs: 1_000, maxAttempts: 2, retryBaseMs: 1_000, retryMaxMs: 1_000 },
+  });
+  assert.equal(second.claimed, 1);
+  assert.equal(second.results[0]?.status, "failed_permanent");
+
+  const failed = await coreGatewayResponse({
+    method: "GET",
+    pathname: `/mailboxes/v1/${fixture.mailboxId}/webhooks/deliveries?status=failed_permanent`,
+    headers: { authorization: `Bearer ${fixture.project.service_key}` },
+  }, fixture.runtime);
+  assert.equal(failed.status, 200);
+  const failedRows = (failed.body as { deliveries: Array<{ delivery_id: string; attempts: number; last_status: number; last_error: string }> }).deliveries;
+  assert.equal(failedRows.length, 1);
+  assert.equal(failedRows[0].attempts, 2);
+  assert.equal(failedRows[0].last_status, 503);
+  assert.equal(failedRows[0].last_error, "HTTP 503");
+
+  const raw = await coreGatewayResponse({
+    method: "GET",
+    pathname: `/mailboxes/v1/${fixture.mailboxId}/messages/${fixture.inboundMessageId}/raw`,
+    headers: { authorization: `Bearer ${fixture.project.service_key}` },
+  }, fixture.runtime);
+  assert.equal(raw.status, 200);
+  assert.equal(Buffer.from(raw.body as Uint8Array).toString("utf8"), fixture.rawMime);
+
+  const redrive = await coreGatewayResponse({
+    method: "POST",
+    pathname: `/mailboxes/v1/${fixture.mailboxId}/webhooks/deliveries/${failedRows[0].delivery_id}/redrive`,
+    headers: { authorization: `Bearer ${fixture.project.service_key}` },
+  }, fixture.runtime);
+  assert.equal(redrive.status, 200);
+  assert.equal((redrive.body as { status?: string; attempts?: number }).status, "pending");
+  assert.equal((redrive.body as { status?: string; attempts?: number }).attempts, 0);
 });
 
 test("Core inbound ingestion validates provider payloads and drops unsolicited senders", async () => {
@@ -2342,6 +2448,103 @@ function functionBundle(sha256: string, size: number): CoreFunctionBundleMetadat
   };
 }
 
+async function createInboundReplyFixture(webhookUrl: string): Promise<{
+  project: CoreProject;
+  mailboxId: string;
+  inboundMessageId: string;
+  rawMime: string;
+  mailboxes: MemoryMailboxStore;
+  runtime: {
+    projects: MemoryProjectCatalog;
+    projectKeys: MemoryProjectCatalog;
+    mailboxes: MemoryMailboxStore;
+    emailProvider: MockEmailProvider;
+    emailInboundProvider: MockEmailInboundProvider;
+  };
+}> {
+  const catalog = new MemoryProjectCatalog();
+  const project = await catalog.create({ name: "webhook delivery app" });
+  const mailboxes = new MemoryMailboxStore();
+  const runtime = {
+    projects: catalog,
+    projectKeys: catalog,
+    mailboxes,
+    emailProvider: new MockEmailProvider("example.com"),
+    emailInboundProvider: new MockEmailInboundProvider({
+      provider: "mock",
+      inboundDomains: ["example.com"],
+      ingestToken: "inbound-secret",
+      maxRawBytes: 1024 * 1024,
+    }),
+  };
+
+  const created = await coreGatewayResponse({
+    method: "POST",
+    pathname: "/mailboxes/v1",
+    headers: { authorization: `Bearer ${project.service_key}` },
+    body: { slug: "signing" },
+  }, runtime);
+  assert.equal(created.status, 201);
+  const mailboxId = (created.body as { mailbox_id: string }).mailbox_id;
+
+  const outbound = await coreGatewayResponse({
+    method: "POST",
+    pathname: `/mailboxes/v1/${mailboxId}/messages`,
+    headers: { authorization: `Bearer ${project.service_key}` },
+    body: {
+      to: "signer@example.net",
+      subject: "Signature requested",
+      html: "<p>Please sign.</p>",
+    },
+  }, runtime);
+  assert.equal(outbound.status, 201);
+
+  const webhook = await coreGatewayResponse({
+    method: "POST",
+    pathname: `/mailboxes/v1/${mailboxId}/webhooks`,
+    headers: { authorization: `Bearer ${project.service_key}` },
+    body: { url: webhookUrl, events: ["reply_received"] },
+  }, runtime);
+  assert.equal(webhook.status, 201);
+
+  const rawMime = [
+    "From: Signer <signer@example.net>",
+    "To: signing@example.com",
+    "Subject: Re: Signature requested",
+    "In-Reply-To: <mock_1>",
+    "References: <mock_1>",
+    "Content-Type: text/plain; charset=utf-8",
+    "",
+    "I approve this signature.",
+  ].join("\r\n");
+
+  const ingested = await coreGatewayResponse({
+    method: "POST",
+    pathname: "/mailboxes/v1/inbound/ingestions",
+    headers: { authorization: "Bearer inbound-secret" },
+    body: {
+      provider: "mock",
+      ses_message_id: "ses_in_1",
+      recipients: ["signing@example.com"],
+      source: "signer@example.net",
+      common_headers: { from: ["Signer <signer@example.net>"] },
+      raw_mime: rawMime,
+    },
+  }, runtime);
+  assert.equal(ingested.status, 202);
+
+  const inboundList = await coreGatewayResponse({
+    method: "GET",
+    pathname: `/mailboxes/v1/${mailboxId}/messages?direction=inbound`,
+    headers: { authorization: `Bearer ${project.service_key}` },
+  }, runtime);
+  assert.equal(inboundList.status, 200);
+  const inboundMessageId = (inboundList.body as { messages: Array<{ message_id: string }> }).messages[0]?.message_id;
+  assert.ok(inboundMessageId);
+
+  return { project, mailboxId, inboundMessageId, rawMime, mailboxes, runtime };
+}
+
 function portableFunction(
   name: string,
   fnClass: "standard" | "ssr",
@@ -2749,6 +2952,67 @@ class MemoryMailboxStore implements CoreMailboxStorePort {
       throw new CoreMailboxError("Only failed_permanent deliveries can be redriven", 409, "webhook_delivery_not_failed");
     }
     const updated: CoreWebhookDeliveryRecord = { ...current, status: "pending", attempts: 0, next_attempt_at: new Date(0).toISOString() };
+    this.deliveries.set(input.deliveryId, updated);
+    return updated;
+  }
+
+  async claimDueWebhookDeliveries(input: { limit: number; leaseMs: number; now?: Date }): Promise<CoreWebhookDeliveryRecord[]> {
+    const now = input.now ?? new Date();
+    const claimed = [...this.deliveries.values()]
+      .filter((delivery) => delivery.status === "pending" && Date.parse(delivery.next_attempt_at) <= now.getTime())
+      .sort((a, b) => Date.parse(a.next_attempt_at) - Date.parse(b.next_attempt_at))
+      .slice(0, input.limit)
+      .map((delivery) => {
+        const updated: CoreWebhookDeliveryRecord = {
+          ...delivery,
+          attempts: delivery.attempts + 1,
+          next_attempt_at: new Date(now.getTime() + input.leaseMs).toISOString(),
+          last_error: null,
+          updated_at: now.toISOString(),
+        };
+        this.deliveries.set(delivery.delivery_id, updated);
+        return updated;
+      });
+    return claimed;
+  }
+
+  async markWebhookDeliveryDelivered(input: { deliveryId: string; status: number; now?: Date }): Promise<CoreWebhookDeliveryRecord | null> {
+    const current = this.deliveries.get(input.deliveryId);
+    if (!current) return null;
+    const now = input.now ?? new Date();
+    const updated: CoreWebhookDeliveryRecord = {
+      ...current,
+      status: "delivered",
+      last_status: input.status,
+      last_error: null,
+      delivered_at: now.toISOString(),
+      updated_at: now.toISOString(),
+    };
+    this.deliveries.set(input.deliveryId, updated);
+    return updated;
+  }
+
+  async markWebhookDeliveryFailed(input: {
+    deliveryId: string;
+    status: number | null;
+    error: string;
+    maxAttempts: number;
+    retryDelayMs: number;
+    now?: Date;
+  }): Promise<CoreWebhookDeliveryRecord | null> {
+    const current = this.deliveries.get(input.deliveryId);
+    if (!current) return null;
+    const now = input.now ?? new Date();
+    const updated: CoreWebhookDeliveryRecord = {
+      ...current,
+      status: current.attempts >= input.maxAttempts ? "failed_permanent" : "pending",
+      next_attempt_at: current.attempts >= input.maxAttempts
+        ? current.next_attempt_at
+        : new Date(now.getTime() + input.retryDelayMs).toISOString(),
+      last_status: input.status,
+      last_error: input.error,
+      updated_at: now.toISOString(),
+    };
     this.deliveries.set(input.deliveryId, updated);
     return updated;
   }
