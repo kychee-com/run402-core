@@ -23,8 +23,8 @@ export default async function handler(event) {
         rawQuery: event.rawQuery,
         requestId: event.context.requestId,
         cookie: event.cookies.raw,
-        body: event.body ? Buffer.from(event.body.data, "base64").toString("utf8") : null,
-        headers: event.headers,
+        body: routedBodyText(event),
+        headers: headerList(event.headers),
         routePattern: event.context.routePattern,
         locale: event.context.locale,
         defaultLocale: event.context.defaultLocale,
@@ -110,6 +110,17 @@ function sleep(ms) {
 }
 
 function headerValue(headers, name) {
+  if (typeof headers.get === "function") return headers.get(name);
   const found = headers.find(([candidate]) => candidate.toLowerCase() === name.toLowerCase());
   return found?.[1] ?? null;
+}
+
+function headerList(headers) {
+  if (typeof headers.entries === "function") return Array.from(headers.entries());
+  return headers;
+}
+
+function routedBodyText(event) {
+  const body = event.routedBody ?? event.body;
+  return body ? Buffer.from(body.data, "base64").toString("utf8") : null;
 }
