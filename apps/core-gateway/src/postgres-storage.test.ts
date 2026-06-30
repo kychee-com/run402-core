@@ -3,7 +3,9 @@ import test from "node:test";
 
 import {
   ApplyInvariantError,
+  CORE_FUNCTION_DEPENDENCY_MODE,
   StorageValidationError,
+  type CoreFunctionApplyEffects,
   type CoreStorageApplyEffects,
 } from "@run402/runtime-kernel";
 import { emptyPortableReleaseState } from "@run402/release";
@@ -172,6 +174,63 @@ test("postgres storage rejects stale release activation before applying storage 
   assert.equal(client.released, true);
 });
 
+test("postgres storage persists function schedule and mutable schedule metadata on activation", async () => {
+  const client = new FakeStorageClient((text) => {
+    if (text.includes("SELECT active_release_id")) {
+      return { rows: [{ active_release_id: null }], rowCount: 1 };
+    }
+  });
+  const store = storeFor(new FakeStoragePool(client));
+
+  await store.activateReleaseWithStorage({
+    projectId: PROJECT_ID,
+    releaseId: "rel_scheduled",
+    digest: "sha256:scheduled",
+    release: emptyPortableReleaseState(),
+    expectedBaseReleaseId: null,
+    functionEffects: functionEffects({
+      bundles: [{
+        name: "reminder",
+        runtime: "node22",
+        entrypoint: "default",
+        source: { sha256: SHA_A, size: 12, contentType: "application/javascript" },
+        bundle_sha256: SHA_A,
+        bundle_size_bytes: 12,
+        dependency_mode: CORE_FUNCTION_DEPENDENCY_MODE,
+        dependency_lock_digest: null,
+        deps: [],
+        required_secrets: [],
+        timeout_ms: 10_000,
+        memory_bytes: 128 * 1024 * 1024,
+        require_auth: false,
+        require_role: null,
+        schedule: "*/5 * * * *",
+        schedule_meta: {
+          last_run_at: null,
+          last_status: null,
+          run_count: 0,
+          last_error: null,
+          next_run_at: "2026-01-01T00:05:00.000Z",
+        },
+        class: "standard",
+        capabilities: [],
+      }],
+    }),
+  });
+
+  const bundleInsert = client.queries.find((query) => query.text.includes("INSERT INTO internal.core_function_bundles"));
+  assert.ok(bundleInsert);
+  assert.equal(bundleInsert.values?.[15], "*/5 * * * *");
+  assert.equal(bundleInsert.values?.[16], JSON.stringify({
+    last_run_at: null,
+    last_status: null,
+    run_count: 0,
+    last_error: null,
+    next_run_at: "2026-01-01T00:05:00.000Z",
+  }));
+  assert.equal(client.queries.map((query) => query.text.trim()).at(-1), "COMMIT");
+});
+
 test("postgres storage rolls back asset sync-prune drift before deletes or puts", async () => {
   const client = new FakeStorageClient((text) => {
     if (text.includes("SELECT key") && text.includes("FROM internal.core_storage_objects")) {
@@ -294,6 +353,18 @@ function storageEffects(overrides: Partial<CoreStorageApplyEffects> = {}): CoreS
     puts: [],
     deletes: [],
     sync_prune: null,
+    noop: false,
+    ...overrides,
+  };
+}
+
+function functionEffects(overrides: Partial<CoreFunctionApplyEffects> = {}): CoreFunctionApplyEffects {
+  return {
+    bundles: [],
+    dynamic_routes: [],
+    astro_ssr_fallback: null,
+    required_secrets: [],
+    dependency_mode: CORE_FUNCTION_DEPENDENCY_MODE,
     noop: false,
     ...overrides,
   };

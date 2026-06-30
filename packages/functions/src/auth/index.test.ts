@@ -28,7 +28,7 @@ function inContext<T>(opts: {
   headers?: Record<string, string | string[] | undefined>;
   url?: string;
   method?: string;
-  invocationKind?: "routed_http" | "direct";
+  invocationKind?: "routed_http" | "direct" | "scheduled";
 }, fn: () => T | Promise<T>): T | Promise<T> {
   return runWithContext(
     {

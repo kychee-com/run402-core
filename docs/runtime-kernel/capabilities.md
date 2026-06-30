@@ -27,8 +27,9 @@
 - `requireAuth` and `requireRole` gates with generated local user/role context
 - local function secrets with metadata-only readback and required-secret commit/invocation checks
 - structured local function logs, generated request IDs, timestamp/request-id/tail filters, retention pruning, and best-effort stdout/stderr redaction
+- single-node scheduled functions from the existing release-spec `schedule` field, with local manual trigger and mutable schedule metadata
 - function route targets that fail closed with typed dynamic-runtime errors when the worker executor is not configured
-- machine-readable functions isolation profile, resource defaults, dependency policy, and known exclusions
+- machine-readable functions isolation profile, resource defaults, schedule limits, dependency policy, and known exclusions
 - Astro SSR Developer Preview for `astro.ssr.v1`
 - one Node 22 ESM SSR target with Web `Request` input and buffered Web `Response` output
 - SSR fallback after static aliases, public assets, prerendered HTML, and function routes
@@ -47,7 +48,8 @@ Unsupported required capabilities fail with `unsupported_capability`.
 - full Astro support and arbitrary Astro adapters
 - Astro streaming-to-client, WebSockets, HTTP upgrade, ISR/cache, edge runtime, Cloud globals, and Cloud routing hooks
 - external npm dependency installation for functions
-- function schedules and background jobs
+- managed jobs and background queues
+- HA/distributed scheduling, leader election, missed-tick replay, and Cloud fleet scheduling
 - hostile-code isolation and public multi-tenant function hosting
 - function WebSockets and streaming-to-client
 - S3-compatible storage

@@ -12,6 +12,7 @@ import type {
   CoreFunctionInvocationResult,
   CoreFunctionInvocationRecord,
   CoreFunctionLogEntry,
+  CoreFunctionScheduleLimits,
   CoreFunctionSecretMetadata,
 } from "./functions-runtime.js";
 import type { PortableArchiveImporterPort } from "./archive.js";
@@ -432,6 +433,7 @@ export interface RuntimeKernelPorts {
   routes?: RouteManifestPort;
   cleanup?: CleanupPort;
   functions?: FunctionRuntimePort;
+  scheduleLimits?: CoreFunctionScheduleLimits;
   secrets?: FunctionSecretPort;
   migrations: MigrationPort;
   archiveImporter?: PortableArchiveImporterPort;

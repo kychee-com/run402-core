@@ -15,6 +15,15 @@ export default async function handler(event) {
 
   const url = new URL(event.url);
   switch (event.path) {
+    case "/functions/v1/api": {
+      const body = await event.json();
+      return jsonResponse({
+        version: VERSION,
+        trigger: event.headers.get("x-run402-trigger"),
+        bodyTrigger: body.trigger,
+        scheduledAt: body.scheduled_at,
+      });
+    }
     case "/api/json":
       return jsonResponse({
         version: VERSION,

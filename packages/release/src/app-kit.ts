@@ -53,6 +53,7 @@ export interface AppKitFunctionInput {
 export interface AppKitManifestFunctionSpec {
   runtime: string;
   source: { path: string };
+  schedule?: string | null;
   config?: {
     timeout_seconds?: number;
     memory_mb?: number;
@@ -295,12 +296,6 @@ export function materializeFunctionSource(
   options: MaterializeFunctionOptions,
 ): MaterializedFunction {
   assertNonEmptyString(name, "function name");
-  if (options.targetPolicy === "core-developer-preview" || options.targetPolicy === undefined) {
-    const scheduleDiagnostic = scheduledFunctionDiagnostic(name, input.schedule);
-    if (scheduleDiagnostic) {
-      throw new AppKitError(`Core Developer Preview cannot include scheduled function ${name}`, [scheduleDiagnostic]);
-    }
-  }
   if (typeof input.source !== "string" || input.source.length === 0) {
     throw appKitError(`Function ${name} must include string source`, "run402.app_kit.function_missing_source", {
       resource: `functions.${name}`,
@@ -329,6 +324,7 @@ export function materializeFunctionSource(
   const spec: AppKitManifestFunctionSpec = {
     runtime: input.runtime ?? DEFAULT_RUNTIME,
     source: { path: manifestPath },
+    ...(input.schedule !== undefined ? { schedule: input.schedule } : {}),
     ...(config ? { config } : {}),
     ...(input.deps ? { deps: [...input.deps] } : {}),
     ...(input.entrypoint ? { entrypoint: input.entrypoint } : {}),
@@ -360,22 +356,6 @@ export function materializeFunctionManifestMap(
   for (const name of Object.keys(functions).sort()) {
     const input = functions[name];
     if (!input) continue;
-    const scheduleDiagnostic = options.targetPolicy === "cloud"
-      ? null
-      : scheduledFunctionDiagnostic(name, input.schedule);
-    if (scheduleDiagnostic) {
-      if (options.onUnsupportedFeature === "omit") {
-        omittedFunctionNames.push(name);
-        diagnostics.push({
-          ...scheduleDiagnostic,
-          severity: "omitted",
-          nextAction: "Remove this function from the Core build or deploy it to Run402 Cloud.",
-        });
-        continue;
-      }
-      throw new AppKitError(`Core Developer Preview cannot include scheduled function ${name}`, [scheduleDiagnostic]);
-    }
-
     const materialized = materializeFunctionSource(name, input, options);
     out[name] = materialized.spec;
     writtenFiles.push(materialized.sourcePath);
@@ -416,17 +396,6 @@ export function diagnoseCoreDeveloperPreviewCompatibility(manifest: Record<strin
     const template = TOP_LEVEL_UNSUPPORTED[key];
     if (template && manifest[key] !== undefined) {
       diagnostics.push({ ...template, resource: key });
-    }
-  }
-
-  const functions = record(manifest.functions);
-  for (const section of ["replace", "patch.set"]) {
-    const functionMap = section === "replace"
-      ? record(functions?.replace)
-      : record(record(functions?.patch)?.set);
-    for (const name of Object.keys(functionMap ?? {}).sort()) {
-      const diagnostic = scheduledFunctionDiagnostic(name, record(functionMap?.[name])?.schedule);
-      if (diagnostic) diagnostics.push(diagnostic);
     }
   }
 
@@ -510,19 +479,6 @@ function assertNonEmptyString(value: string, resource: string): void {
       resource,
     });
   }
-}
-
-function scheduledFunctionDiagnostic(name: string, schedule: unknown): AppKitDiagnostic | null {
-  if (schedule === undefined || schedule === null || schedule === false) return null;
-  return {
-    code: "run402.core.unsupported.scheduled_functions",
-    severity: "error",
-    resource: `functions.${name}.schedule`,
-    capability: "functions.scheduled",
-    owner: "run402-core",
-    message: "Scheduled functions are not part of Core Developer Preview.",
-    nextAction: "Deploy this schedule to Run402 Cloud or omit it from the Core build.",
-  };
 }
 
 function unsupported(

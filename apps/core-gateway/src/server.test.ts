@@ -11,11 +11,13 @@ import {
   CORE_ASTRO_SSR_OUTPUT_CONTRACT_VERSION,
   CORE_FUNCTION_DEPENDENCY_MODE,
   CORE_FUNCTION_RESOURCE_DEFAULTS,
+  CORE_FUNCTION_SCHEDULE_LIMIT_DEFAULTS,
   LocalExecutorError,
   runtimeCapabilities,
   type CoreFunctionBundleMetadata,
   type CoreFunctionInvocationRecord,
   type CoreFunctionLogEntry,
+  type CoreFunctionScheduleMetadata,
   type CoreProject,
   type CoreStorageObject,
   type CoreUploadSession,
@@ -49,7 +51,8 @@ import type {
   StageMessageInput,
   StoreInboundMessageInput,
 } from "./postgres-mailboxes.js";
-import { coreGatewayResponse, loadConfig } from "./server.js";
+import { CoreFunctionScheduler, type CoreScheduleStorePort, type CoreScheduledFunctionRecord } from "./scheduler.js";
+import { coreGatewayResponse, invokeScheduledFunction, loadConfig } from "./server.js";
 import { DEFAULT_WEBHOOK_DELIVERY_CONFIG, drainWebhookDeliveries } from "./webhook-delivery.js";
 
 test("loadConfig does not require Cloud environment variables", () => {
@@ -81,6 +84,7 @@ test("loadConfig does not require Cloud environment variables", () => {
     emailDeliveryEvents: { provider: "disabled", ingestToken: undefined },
     emailSendRateLimit: { enabled: true, maxPerWindow: 60, windowMs: 60_000 },
     webhookDelivery: DEFAULT_WEBHOOK_DELIVERY_CONFIG,
+    scheduleLimits: { ...CORE_FUNCTION_SCHEDULE_LIMIT_DEFAULTS },
   });
 });
 
@@ -2356,6 +2360,134 @@ test("function logs persist platform and user records with request filters", asy
   assert.deepEqual((future.body as { logs: CoreFunctionLogEntry[] }).logs, []);
 });
 
+test("manual scheduled function trigger uses project auth, cron envelope, metadata, and logs", async () => {
+  const catalog = new MemoryProjectCatalog();
+  const project = await catalog.create({ name: "scheduled app" });
+  const functionLogs = new MemoryFunctionLogs();
+  const scheduleStore = new MemoryScheduleStore();
+  scheduleStore.set({
+    projectId: project.project_id,
+    releaseId: "rel_test",
+    functionName: "api",
+    schedule: "*/5 * * * *",
+    scheduleMeta: null,
+  });
+  const executor = new MemoryFunctionExecutor({
+    logs: (input) => [userLog(input, "stdout", `trigger=${input.request?.headers.find(([name]) => name === "x-run402-trigger")?.[1]}`)],
+  });
+  const runtime = {
+    projects: catalog,
+    releases: new MemoryReleaseState(emptyCoreReleaseState()),
+    content: new MemoryContentStore(),
+    functionBundles: new MemoryFunctionBundles(functionBundle("c".repeat(64), 12)),
+    functionExecutor: executor,
+    functionLogs,
+    functionApiBaseUrl: "http://core:4020",
+  };
+  const scheduler = new CoreFunctionScheduler({
+    store: scheduleStore,
+    invoker: {
+      invokeScheduledFunction: async (input) => await invokeScheduledFunction(runtime, input),
+    },
+  });
+  Object.assign(runtime, { scheduler });
+
+  const response = await coreGatewayResponse({
+    method: "POST",
+    pathname: `/projects/v1/${project.project_id}/functions/api/trigger`,
+    headers: { apikey: project.service_key },
+  }, runtime);
+
+  assert.equal(response.status, 200);
+  const body = response.body as {
+    request_id: string;
+    status: number;
+    response: { status: number; body?: { data: string } | null };
+    schedule_meta: CoreFunctionScheduleMetadata;
+  };
+  assert.match(body.request_id, /^req_/);
+  assert.equal(body.status, 201);
+  assert.equal(body.response.status, 201);
+  assert.equal(Buffer.from(body.response.body?.data ?? "", "base64").toString("utf8"), "ok");
+  assert.equal(body.schedule_meta.run_count, 1);
+  assert.equal(body.schedule_meta.last_status, 201);
+  assert.equal(body.schedule_meta.last_error, null);
+
+  assert.equal(executor.last?.invocationKind, "scheduled");
+  assert.equal(executor.last?.request?.method, "POST");
+  assert.equal(executor.last?.request?.url, "http://core:4020/functions/v1/api");
+  assert.equal(executor.last?.request?.headers.some(([name, value]) => name === "x-run402-trigger" && value === "manual"), true);
+  assert.deepEqual(JSON.parse(Buffer.from(executor.last?.request?.body?.data ?? "", "base64").toString("utf8")), {
+    trigger: "manual",
+    scheduled_at: scheduleStore.lastUpdate?.ranAt,
+  });
+
+  const logs = await coreGatewayResponse({
+    method: "GET",
+    pathname: `/projects/v1/${project.project_id}/functions/logs?request_id=${body.request_id}`,
+    headers: { apikey: project.service_key },
+  }, runtime);
+  assert.equal(logs.status, 200);
+  const listed = (logs.body as { logs: CoreFunctionLogEntry[] }).logs;
+  assert.equal(listed.some((entry) => entry.request_id === body.request_id && entry.message === "trigger=manual"), true);
+  assert.equal(functionLogs.invocations[0]?.invocation_kind, "scheduled");
+});
+
+test("manual scheduled function trigger rejects another project's service key before schedule lookup", async () => {
+  const catalog = new MemoryProjectCatalog();
+  const owner = await catalog.create({ name: "scheduled owner" });
+  const other = makeProject("prj_0000000000000002", "anon_other", "service_other");
+  catalog.projects.set(other.project_id, other);
+  const scheduleStore = new MemoryScheduleStore();
+  const runtime = {
+    projects: catalog,
+    scheduler: new CoreFunctionScheduler({
+      store: scheduleStore,
+      invoker: {
+        invokeScheduledFunction: async () => {
+          throw new Error("should not invoke");
+        },
+      },
+    }),
+  };
+
+  const response = await coreGatewayResponse({
+    method: "POST",
+    pathname: `/projects/v1/${owner.project_id}/functions/not-there/trigger`,
+    headers: { apikey: other.service_key },
+  }, runtime);
+
+  assert.equal(response.status, 403);
+  assert.equal(scheduleStore.lookupCount, 0);
+});
+
+test("manual scheduled function trigger reports missing scheduled functions to authorized projects", async () => {
+  const catalog = new MemoryProjectCatalog();
+  const project = await catalog.create({ name: "scheduled missing" });
+  const scheduleStore = new MemoryScheduleStore();
+  const runtime = {
+    projects: catalog,
+    scheduler: new CoreFunctionScheduler({
+      store: scheduleStore,
+      invoker: {
+        invokeScheduledFunction: async () => {
+          throw new Error("should not invoke");
+        },
+      },
+    }),
+  };
+
+  const response = await coreGatewayResponse({
+    method: "POST",
+    pathname: `/projects/v1/${project.project_id}/functions/not-there/trigger`,
+    headers: { apikey: project.service_key },
+  }, runtime);
+
+  assert.equal(response.status, 404);
+  assert.equal((response.body as { error?: string }).error, "scheduled_function_not_found");
+  assert.equal(scheduleStore.lookupCount, 1);
+});
+
 test("routed function errors return sanitized request diagnostics and platform logs", async () => {
   const catalog = new MemoryProjectCatalog();
   const project = await catalog.create({ name: "failing routes app" });
@@ -2577,6 +2709,64 @@ class MemoryFunctionLogs implements FunctionLogPort {
   }
 }
 
+class MemoryScheduleStore implements CoreScheduleStorePort {
+  readonly #records = new Map<string, CoreScheduledFunctionRecord>();
+  lookupCount = 0;
+  lastUpdate: {
+    projectId: string;
+    releaseId: string;
+    functionName: string;
+    status: number | null;
+    error: string | null;
+    schedule: string;
+    ranAt: string;
+  } | null = null;
+
+  set(record: CoreScheduledFunctionRecord): void {
+    this.#records.set(scheduleStoreKey(record.projectId, record.functionName), record);
+  }
+
+  async listActiveSchedules(projectId?: string): Promise<CoreScheduledFunctionRecord[]> {
+    return [...this.#records.values()].filter((record) => !projectId || record.projectId === projectId);
+  }
+
+  async getActiveSchedule(input: {
+    projectId: string;
+    functionName: string;
+  }): Promise<CoreScheduledFunctionRecord | null> {
+    this.lookupCount += 1;
+    return this.#records.get(scheduleStoreKey(input.projectId, input.functionName)) ?? null;
+  }
+
+  async updateScheduleMeta(input: {
+    projectId: string;
+    releaseId: string;
+    functionName: string;
+    status: number | null;
+    error: string | null;
+    schedule: string;
+    ranAt: string;
+  }): Promise<CoreFunctionScheduleMetadata> {
+    this.lastUpdate = input;
+    const key = scheduleStoreKey(input.projectId, input.functionName);
+    const record = this.#records.get(key);
+    const previous = record?.scheduleMeta;
+    const scheduleMeta: CoreFunctionScheduleMetadata = {
+      last_run_at: input.ranAt,
+      last_status: input.status,
+      run_count: (previous?.run_count ?? 0) + 1,
+      last_error: input.error,
+      next_run_at: "2099-01-01T00:00:00.000Z",
+    };
+    if (record) record.scheduleMeta = scheduleMeta;
+    return scheduleMeta;
+  }
+}
+
+function scheduleStoreKey(projectId: string, functionName: string): string {
+  return `${projectId}:${functionName}`;
+}
+
 function secretMetadata(
   projectId: string,
   name: string,
@@ -2646,6 +2836,8 @@ function functionBundle(sha256: string, size: number): CoreFunctionBundleMetadat
     memory_bytes: 128 * 1024 * 1024,
     require_auth: false,
     require_role: null,
+    schedule: null,
+    schedule_meta: null,
     class: "standard",
     capabilities: [],
   };

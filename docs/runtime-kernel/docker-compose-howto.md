@@ -49,6 +49,7 @@ This runs the supported end-to-end runtime slice:
 - static content serving
 - storage uploads, signed reads, immutable URLs, and route/static behavior
 - trusted local functions
+- single-node scheduled functions with manual trigger proof
 - narrow Astro SSR runtime
 - portable archive import with restart checks
 
@@ -102,6 +103,6 @@ Omit `-v` when you want to keep local Postgres/content/function volumes between 
 
 ## What This Does Not Prove
 
-This Docker path does not include Run402 Cloud-only operations: billing, managed abuse controls, Aurora operations, global routing, S3/CloudFront storage, custom domains, backups, monitoring, compliance automation, or hostile multi-tenant function isolation.
+This Docker path does not include Run402 Cloud-only operations: billing, managed abuse controls, Aurora operations, global routing, S3/CloudFront storage, custom domains, backups, monitoring, compliance automation, HA/distributed scheduling, missed-tick replay, or hostile multi-tenant function isolation.
 
 It proves the open-source Core Gateway can host the current supported local runtime slice and pass the same conformance scripts that exercise apply, storage, functions, Astro SSR, and portable archive import.

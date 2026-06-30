@@ -40,11 +40,11 @@ Cloud remains the managed production layer for global routing, edge caching, dur
 
 ## Functions Developer Preview
 
-Core now exposes the public contract for trusted local Node functions. The first subset is deliberately narrow: pre-bundled `node22` source refs, no external npm dependencies, route-manifest function targets, direct invocation, local auth/role gates, local secrets, local logs/request-id diagnostics, typed fail-closed errors, and machine-readable resource/isolation defaults.
+Core now exposes the public contract for trusted local Node functions. The first subset is deliberately narrow: pre-bundled `node22` source refs, no external npm dependencies, route-manifest function targets, direct invocation, single-node scheduled functions from the existing manifest `schedule` field, local auth/role gates, local secrets, local logs/request-id diagnostics, typed fail-closed errors, and machine-readable resource/isolation defaults.
 
-Core must not run project code inside the gateway/control-plane process. The supported local executor path is a Docker Compose project worker container. Until that worker is configured, function routes fail with `dynamic_runtime_unavailable`.
+Core must not run project code inside the gateway/control-plane process. The supported local executor path is a Docker Compose project worker container. Until that worker is configured, function routes and scheduled invocations fail with `dynamic_runtime_unavailable`.
 
-Cloud remains proprietary for Lambda/ECS/fleet execution, managed log operations, global routing, billing/quota/abuse controls, production secret custody, backups, monitoring, compliance, and support. Cloud may consume or verify public function semantics, but public Core must not expose Cloud provider identifiers or operational internals.
+Cloud remains proprietary for Lambda/ECS/fleet execution, distributed scheduling, missed-tick replay, managed log operations, global routing, billing/quota/abuse controls, production secret custody, backups, monitoring, compliance, and support. Cloud may consume or verify public function semantics, but public Core must not expose Cloud provider identifiers or operational internals.
 
 Open-source Core reduces lock-in risk because the supported application runtime slice can execute outside Run402 Cloud. Run402 Cloud allowance and spend controls reduce financial-risk exposure. These are separate trust claims.
 

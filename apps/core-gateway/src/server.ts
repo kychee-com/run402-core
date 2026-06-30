@@ -22,6 +22,7 @@ import {
   ProjectNotFoundError,
   projectNotFoundEnvelope,
   CORE_FUNCTION_RESOURCE_DEFAULTS,
+  CORE_FUNCTION_SCHEDULE_LIMIT_DEFAULTS,
   RequestBodyTooLargeError,
   runtimeCapabilities,
   runtimeHealth,
@@ -36,6 +37,7 @@ import {
   type CoreFunctionBundleMetadata,
   type CoreFunctionInvocationRecord,
   type CoreFunctionLogEntry,
+  type CoreFunctionScheduleLimits,
   type CoreProject,
   type FunctionLogPort,
   type PortableArchiveImportInput,
@@ -85,6 +87,12 @@ import {
   type CoreMailboxStorePort,
 } from "./postgres-mailboxes.js";
 import { createPostgresPool, PostgresProjectCatalog, PostgresProjectSql, type ProjectSqlResult } from "./postgres-projects.js";
+import {
+  CoreFunctionScheduler,
+  CoreSchedulerError,
+  PostgresCoreScheduleStore,
+  type CoreScheduleStorePort,
+} from "./scheduler.js";
 import { PostgresStorageStore } from "./postgres-storage.js";
 import { CoreWebhookDeliveryWorker, webhookDeliveryConfigFromEnv, type WebhookDeliveryConfig } from "./webhook-delivery.js";
 
@@ -107,6 +115,7 @@ export interface CoreGatewayConfig {
   emailDeliveryEvents: EmailDeliveryEventConfig;
   emailSendRateLimit: EmailSendRateLimitConfig;
   webhookDelivery: WebhookDeliveryConfig;
+  scheduleLimits: CoreFunctionScheduleLimits;
 }
 
 export interface CoreGatewayRuntime {
@@ -133,6 +142,9 @@ export interface CoreGatewayRuntime {
   emailInboundProvider?: EmailInboundProviderPort;
   emailDeliveryEvents?: EmailDeliveryEventConfig;
   emailSendRateLimit?: EmailSendRateLimitConfig;
+  scheduler?: CoreFunctionScheduler;
+  scheduleStore?: CoreScheduleStorePort;
+  scheduleLimits?: CoreFunctionScheduleLimits;
   rootProjectId?: string;
   publicBaseUrl?: string;
   functionApiBaseUrl?: string;
@@ -220,6 +232,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): CoreGatewayCon
     emailDeliveryEvents: emailDeliveryEventConfigFromEnv(env),
     emailSendRateLimit: emailSendRateLimitConfigFromEnv(env),
     webhookDelivery: webhookDeliveryConfigFromEnv(env),
+    scheduleLimits: scheduleLimitsConfigFromEnv(env),
   };
 }
 
@@ -240,6 +253,28 @@ function emailSendRateLimitConfigFromEnv(env: NodeJS.ProcessEnv): EmailSendRateL
   };
 }
 
+function scheduleLimitsConfigFromEnv(env: NodeJS.ProcessEnv): CoreFunctionScheduleLimits {
+  const rawEnabled = env.CORE_SCHEDULER_ENABLED;
+  const enabled = rawEnabled === undefined
+    ? CORE_FUNCTION_SCHEDULE_LIMIT_DEFAULTS.enabled
+    : rawEnabled !== "0" && rawEnabled.toLowerCase() !== "false";
+  return {
+    enabled,
+    maxScheduledFunctionsPerProject: parsePositiveInteger(
+      env.CORE_SCHEDULER_MAX_PER_PROJECT,
+      CORE_FUNCTION_SCHEDULE_LIMIT_DEFAULTS.maxScheduledFunctionsPerProject,
+    ),
+    minIntervalMinutes: parsePositiveInteger(
+      env.CORE_SCHEDULER_MIN_INTERVAL_MINUTES,
+      CORE_FUNCTION_SCHEDULE_LIMIT_DEFAULTS.minIntervalMinutes,
+    ),
+    maxConcurrentScheduledInvocationsPerProject: parsePositiveInteger(
+      env.CORE_SCHEDULER_MAX_CONCURRENT_PER_PROJECT,
+      CORE_FUNCTION_SCHEDULE_LIMIT_DEFAULTS.maxConcurrentScheduledInvocationsPerProject,
+    ),
+  };
+}
+
 export async function createGatewayRuntime(config: CoreGatewayConfig): Promise<CoreGatewayRuntime> {
   if (!config.databaseUrl) {
     return {
@@ -250,6 +285,7 @@ export async function createGatewayRuntime(config: CoreGatewayConfig): Promise<C
       jwtSecret: config.jwtSecret,
       emailDeliveryEvents: config.emailDeliveryEvents,
       emailSendRateLimit: config.emailSendRateLimit,
+      scheduleLimits: config.scheduleLimits,
     };
   }
 
@@ -272,13 +308,23 @@ export async function createGatewayRuntime(config: CoreGatewayConfig): Promise<C
     publicBaseUrl: config.publicBaseUrl,
     postgrestPublicUrl: config.postgrestPublicUrl,
   });
+  const scheduleStore = new PostgresCoreScheduleStore(pool);
   await projects.bootstrap();
   await applyStore.bootstrap();
   await storage.bootstrap();
   await mailboxes.bootstrap();
   await archiveImporter.bootstrap();
 
-  return {
+  let runtime: CoreGatewayRuntime;
+  const scheduler = new CoreFunctionScheduler({
+    store: scheduleStore,
+    limits: config.scheduleLimits,
+    invoker: {
+      invokeScheduledFunction: async (input) => await invokeScheduledFunction(runtime, input),
+    },
+  });
+
+  runtime = {
     projects,
     projectKeys: projects,
     projectSql: new PostgresProjectSql(pool),
@@ -299,6 +345,9 @@ export async function createGatewayRuntime(config: CoreGatewayConfig): Promise<C
     emailInboundProvider,
     emailDeliveryEvents: config.emailDeliveryEvents,
     emailSendRateLimit: config.emailSendRateLimit,
+    scheduler,
+    scheduleStore,
+    scheduleLimits: config.scheduleLimits,
     archiveImporter,
     rootProjectId: config.rootProjectId,
     publicBaseUrl: config.publicBaseUrl,
@@ -315,15 +364,18 @@ export async function createGatewayRuntime(config: CoreGatewayConfig): Promise<C
           effects: context.storage_effects,
           functionEffects: context.function_effects,
         });
+        await scheduler.refresh(context.plan.project_id);
         return { status: "activated", release_id: context.release_id };
       },
     },
     jwtSecret: config.jwtSecret,
     maxObjectBytes: config.maxObjectBytes,
     close: async () => {
+      scheduler.stop();
       await pool.end();
     },
   };
+  return runtime;
 }
 
 export async function coreGatewayResponse(
@@ -874,6 +926,54 @@ export async function coreGatewayResponse(
     }
   }
 
+  const functionTriggerMatch = /^\/projects\/v1\/([^/]+)\/functions\/([^/]+)\/trigger$/.exec(pathname);
+  if (method === "POST" && functionTriggerMatch) {
+    const projectId = functionTriggerMatch[1];
+    const functionName = decodePathSegment(functionTriggerMatch[2]);
+    if (!functionName) {
+      return { status: 400, body: { error: "invalid_function_name", message: "Function name is invalid." } };
+    }
+    const auth = await requireProjectService(runtime, projectId, headers);
+    if ("status" in auth) {
+      if (auth.status === 401 && serviceTokenFromHeaders(headers)) {
+        return {
+          status: 403,
+          body: {
+            error: "forbidden",
+            message: "The supplied project service key is not authorized for this project.",
+          },
+        };
+      }
+      return auth;
+    }
+    if (!runtime.scheduler) {
+      return unavailable("scheduler_unavailable", "Run402 Core scheduled functions are not configured.");
+    }
+    try {
+      const result = await runtime.scheduler.triggerNow({
+        projectId: auth.project_id,
+        functionName,
+      });
+      return {
+        status: 200,
+        body: {
+          request_id: result.requestId,
+          status: result.status,
+          response: result.body,
+          schedule_meta: result.schedule_meta,
+        },
+      };
+    } catch (error) {
+      if (error instanceof CoreSchedulerError) {
+        return {
+          status: error.status,
+          body: { error: error.code, message: error.message },
+        };
+      }
+      return functionErrorToGateway(error, newFunctionRequestId());
+    }
+  }
+
   if (method === "POST" && pathname === "/functions/v1/invoke") {
     try {
       const input = directInvokeInput(request.body);
@@ -955,8 +1055,10 @@ export async function startServer(config = loadConfig()): Promise<http.Server> {
   const server = http.createServer((req, res) => {
     void requestHandler(req, res, runtime);
   });
+  await runtime.scheduler?.start();
   server.on("close", () => {
     webhookDeliveryWorker?.stop();
+    runtime.scheduler?.stop();
     void runtime.close?.();
   });
   await new Promise<void>((resolve) => {
@@ -983,6 +1085,7 @@ function runtimePorts(runtime: CoreGatewayRuntime): RuntimeKernelPorts | null {
     migrations: runtime.migrations,
     archiveImporter: runtime.archiveImporter,
     lifecycle: runtime.lifecycle,
+    scheduleLimits: runtime.scheduleLimits,
   };
 }
 
@@ -2906,6 +3009,122 @@ async function invokeDirectFunction(
   };
 }
 
+export async function invokeScheduledFunction(
+  runtime: CoreGatewayRuntime,
+  input: {
+    projectId: string;
+    releaseId: string;
+    functionName: string;
+    trigger: "cron" | "manual";
+    scheduledAt: string;
+  },
+): Promise<{
+  requestId: string;
+  status: number;
+  body: unknown;
+}> {
+  const requestId = newFunctionRequestId();
+  if (!runtime.functionExecutor || !runtime.functionBundles) {
+    const error = new DynamicRuntimeUnavailableError("Run402 Core dynamic functions runtime is not configured.", {
+      function_name: input.functionName,
+    });
+    return {
+      requestId,
+      status: error.status,
+      body: runtimeKernelErrorEnvelope(error),
+    };
+  }
+
+  const bundle = await runtime.functionBundles.getFunctionBundle({
+    projectId: input.projectId,
+    releaseId: input.releaseId,
+    functionName: input.functionName,
+  });
+  if (!bundle) {
+    const error = new DynamicRuntimeUnavailableError("Run402 Core function bundle metadata is not available.", {
+      function_name: input.functionName,
+      release_id: input.releaseId,
+    });
+    return {
+      requestId,
+      status: error.status,
+      body: runtimeKernelErrorEnvelope(error),
+    };
+  }
+
+  const secrets = await resolveFunctionSecrets(runtime, input.projectId, bundle);
+  if (isGatewayResult(secrets)) {
+    return { requestId, status: secrets.status, body: secrets.body };
+  }
+  const run402Env = await resolveFunctionRuntimeEnv(runtime, input.projectId);
+  if (isGatewayResult(run402Env)) {
+    return { requestId, status: run402Env.status, body: run402Env.body };
+  }
+
+  const publicPath = `/functions/v1/${input.functionName}`;
+  const baseUrl = (runtime.functionApiBaseUrl ?? runtime.publicBaseUrl ?? "http://127.0.0.1:4020").replace(/\/+$/, "");
+  try {
+    const result = await invokeFunctionWithDiagnostics(runtime, {
+      projectId: input.projectId,
+      releaseId: input.releaseId,
+      functionName: input.functionName,
+      invocationKind: "scheduled",
+      requestId,
+      actor: null,
+      secrets,
+      run402Env,
+      bundle,
+      request: {
+        version: "run402.routed_http.v1",
+        method: "POST",
+        url: `${baseUrl}${publicPath}`,
+        path: publicPath,
+        rawPath: publicPath,
+        rawQuery: "",
+        headers: scheduledRequestHeaders({
+          projectId: input.projectId,
+          releaseId: input.releaseId,
+          requestId,
+          functionName: input.functionName,
+          trigger: input.trigger,
+        }),
+        cookies: { raw: null },
+        body: routedBody({ trigger: input.trigger, scheduled_at: input.scheduledAt }),
+        context: {
+          source: "route",
+          projectId: input.projectId,
+          releaseId: input.releaseId,
+          deploymentId: null,
+          host: "run402-core.local",
+          proto: "http",
+          routePattern: `scheduler:${input.functionName}`,
+          routeKind: "exact",
+          routeTarget: { type: "function", name: input.functionName },
+          requestId,
+          locale: null,
+          defaultLocale: null,
+        },
+      },
+    }, secrets, {
+      routePattern: `scheduler:${input.functionName}`,
+      method: "POST",
+      path: publicPath,
+    });
+    return {
+      requestId: result.requestId,
+      status: result.response.status,
+      body: result.response,
+    };
+  } catch (error) {
+    const result = functionErrorToGateway(error, requestId);
+    return {
+      requestId,
+      status: result.status,
+      body: result.body,
+    };
+  }
+}
+
 interface FunctionDiagnosticsContext {
   routePattern?: string;
   method?: string;
@@ -3371,6 +3590,24 @@ function routedRequestHeaders(
   return out;
 }
 
+function scheduledRequestHeaders(context: {
+  projectId: string;
+  releaseId: string;
+  requestId: string;
+  functionName: string;
+  trigger: "cron" | "manual";
+}): Array<[string, string]> {
+  return [
+    ["content-type", "application/json"],
+    ["x-run402-trigger", context.trigger],
+    ["x-run402-project-id", context.projectId],
+    ["x-run402-release-id", context.releaseId],
+    ["x-run402-request-id", context.requestId],
+    ["x-run402-function-name", context.functionName],
+    ["x-run402-route-pattern", `scheduler:${context.functionName}`],
+  ];
+}
+
 function routedBody(body: unknown): NonNullable<LocalFunctionExecutorInput["request"]>["body"] {
   if (body === undefined || body === null) return null;
   const bytes = body instanceof Uint8Array
@@ -3384,6 +3621,16 @@ function routedBody(body: unknown): NonNullable<LocalFunctionExecutorInput["requ
     data: bytes.toString("base64"),
     size: bytes.byteLength,
   };
+}
+
+function decodePathSegment(raw: string): string | null {
+  try {
+    const decoded = decodeURIComponent(raw).normalize("NFC");
+    if (!decoded || decoded.includes("/") || decoded.includes("\\") || /[\x00-\x1f\x7f]/.test(decoded)) return null;
+    return decoded;
+  } catch {
+    return null;
+  }
 }
 
 function hostHeader(headers: CoreGatewayRequest["headers"]): string {

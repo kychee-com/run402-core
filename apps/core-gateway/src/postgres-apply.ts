@@ -141,11 +141,19 @@ export class PostgresApplyStore implements ReleaseStatePort, ApplyPlanStorePort,
         require_role jsonb,
         class text NOT NULL DEFAULT 'standard',
         capabilities jsonb NOT NULL DEFAULT '[]'::jsonb,
+        schedule text,
+        schedule_meta jsonb,
         timeout_ms integer NOT NULL,
         memory_bytes bigint NOT NULL,
         created_at timestamptz NOT NULL DEFAULT now(),
         PRIMARY KEY (project_id, release_id, name)
       );
+
+      ALTER TABLE internal.core_function_bundles
+        ADD COLUMN IF NOT EXISTS schedule text;
+
+      ALTER TABLE internal.core_function_bundles
+        ADD COLUMN IF NOT EXISTS schedule_meta jsonb;
 
       CREATE TABLE IF NOT EXISTS internal.core_function_secrets (
         project_id text NOT NULL REFERENCES internal.core_projects(project_id) ON DELETE CASCADE,
@@ -163,13 +171,20 @@ export class PostgresApplyStore implements ReleaseStatePort, ApplyPlanStorePort,
         project_id text NOT NULL REFERENCES internal.core_projects(project_id) ON DELETE CASCADE,
         release_id text,
         function_name text NOT NULL,
-        invocation_kind text NOT NULL CHECK (invocation_kind IN ('routed_http', 'direct')),
+        invocation_kind text NOT NULL CHECK (invocation_kind IN ('routed_http', 'direct', 'scheduled')),
         status text NOT NULL,
         started_at timestamptz NOT NULL DEFAULT now(),
         finished_at timestamptz,
         duration_ms integer,
         error_code text
       );
+
+      ALTER TABLE internal.core_function_invocations
+        DROP CONSTRAINT IF EXISTS core_function_invocations_invocation_kind_check;
+
+      ALTER TABLE internal.core_function_invocations
+        ADD CONSTRAINT core_function_invocations_invocation_kind_check
+        CHECK (invocation_kind IN ('routed_http', 'direct', 'scheduled'));
 
       CREATE TABLE IF NOT EXISTS internal.core_function_logs (
         id bigserial PRIMARY KEY,

@@ -32,10 +32,14 @@ import {
   CORE_ASTRO_SSR_OUTPUT_CONTRACT_VERSION,
   CORE_FUNCTION_DEPENDENCY_MODE,
   CORE_FUNCTION_RESOURCE_DEFAULTS,
+  CORE_FUNCTION_SCHEDULE_LIMIT_DEFAULTS,
   emptyFunctionApplyEffects,
+  emptyCoreFunctionScheduleMetadata,
   functionMemoryBytes,
   isAstroSsrFunction,
+  nextCoreCronRunIso,
   normalizeFunctionEntrypoint,
+  validateCoreFunctionSchedule,
   type CoreDynamicFunctionRoute,
   type CoreFunctionApplyEffects,
   type CoreFunctionBundleMetadata,
@@ -94,7 +98,7 @@ export async function createApplyPlan(
   input: CreateApplyPlanInput,
 ): Promise<CoreApplyPlan> {
   const spec = parseReleaseSpec(input.spec);
-  validateSupportedSpec(spec);
+  validateSupportedSpec(spec, ports);
   validateProjectId(spec.project);
 
   const project = await ports.projects.inspect(spec.project);
@@ -142,7 +146,7 @@ export async function commitApplyPlan(
     throw new ApplyInvariantError("release_spec_digest_mismatch", "Apply plan digest does not match commit input.");
   }
   const spec = parseReleaseSpec(plan.spec);
-  validateSupportedSpec(spec);
+  validateSupportedSpec(spec, ports);
 
   if (plan.status === "committed") {
     return {
@@ -259,8 +263,8 @@ function deferredCommitResult(
   };
 }
 
-function validateSupportedSpec(spec: ReleaseSpec): void {
-  validateFunctionSubset(spec);
+function validateSupportedSpec(spec: ReleaseSpec, ports: RuntimeKernelPorts): void {
+  validateFunctionSubset(spec, ports);
   if (spec.subdomains) throw new UnsupportedCapabilityError("subdomains.managed");
   if (spec.assets && !spec.assets.put && !spec.assets.delete && !spec.assets.sync) {
     throw new ApplyInvariantError("asset_spec_empty", "Asset spec must include put, delete, or sync.");
@@ -286,16 +290,25 @@ function validateSupportedSpec(spec: ReleaseSpec): void {
   }
 }
 
-function validateFunctionSubset(spec: ReleaseSpec): void {
+function validateFunctionSubset(spec: ReleaseSpec, ports: RuntimeKernelPorts): void {
   if (!spec.functions) return;
   if (!("replace" in spec.functions) || !spec.functions.replace) {
     throw new UnsupportedCapabilityError("functions.patch");
   }
 
   let ssrCount = 0;
+  let scheduledCount = 0;
   for (const [name, fn] of Object.entries(spec.functions.replace)) {
-    validateCoreFunctionSpec(name, fn);
+    validateCoreFunctionSpec(name, fn, ports);
     if (fn.class === "ssr") ssrCount += 1;
+    if (fn.schedule !== undefined && fn.schedule !== null) scheduledCount += 1;
+  }
+  const scheduleLimits = ports.scheduleLimits ?? CORE_FUNCTION_SCHEDULE_LIMIT_DEFAULTS;
+  if (scheduledCount > scheduleLimits.maxScheduledFunctionsPerProject) {
+    throw new FunctionBundleValidationError("schedule_limit_exceeded", `Core schedule limit exceeded: ${scheduledCount} scheduled function(s), maximum is ${scheduleLimits.maxScheduledFunctionsPerProject}.`, {
+      scheduled_count: scheduledCount,
+      max_scheduled_functions_per_project: scheduleLimits.maxScheduledFunctionsPerProject,
+    });
   }
   if (ssrCount > 1) {
     throw new AstroSsrUnsupportedFeatureError("multiple_ssr_targets", "Core Astro SSR Developer Preview supports one fallback target per release.", {
@@ -304,7 +317,7 @@ function validateFunctionSubset(spec: ReleaseSpec): void {
   }
 }
 
-function validateCoreFunctionSpec(name: string, fn: FunctionSpec): void {
+function validateCoreFunctionSpec(name: string, fn: FunctionSpec, ports: RuntimeKernelPorts): void {
   if (fn.runtime !== "node22") {
     throw new FunctionBundleValidationError("invalid_function_bundle", `Function ${name} must use runtime node22.`, {
       function_name: name,
@@ -330,8 +343,17 @@ function validateCoreFunctionSpec(name: string, fn: FunctionSpec): void {
       dependency_mode: CORE_FUNCTION_DEPENDENCY_MODE,
     });
   }
-  if (fn.schedule) {
-    throw new UnsupportedCapabilityError("functions.scheduled");
+  try {
+    validateCoreFunctionSchedule({
+      functionName: name,
+      schedule: fn.schedule,
+      limits: ports.scheduleLimits,
+    });
+  } catch (error) {
+    throw new FunctionBundleValidationError("invalid_function_schedule", error instanceof Error ? error.message : String(error), {
+      function_name: name,
+      schedule: fn.schedule ?? null,
+    });
   }
   if (fn.class === "ssr") {
     if (!fn.capabilities?.includes(CORE_ASTRO_SSR_OUTPUT_CONTRACT_VERSION)) {
@@ -446,6 +468,11 @@ function bundleMetadataFromSpec(
     memory_bytes: functionMemoryBytes({ memory_mb: spec.config?.memoryMb ?? 128 }),
     require_auth: spec.requireAuth === true,
     require_role: requireRole,
+    schedule: spec.schedule ?? null,
+    schedule_meta: spec.schedule ? {
+      ...emptyCoreFunctionScheduleMetadata(),
+      next_run_at: nextCoreCronRunIso(spec.schedule),
+    } : null,
     class: spec.class ?? "standard",
     capabilities: spec.capabilities ? [...spec.capabilities].sort() : [],
   };

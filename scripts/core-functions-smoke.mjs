@@ -45,6 +45,7 @@ await expectRedirectAndCookies();
 await expectHeadOmitsBody();
 await expectCorsOwnership();
 await expectDirectInvoke();
+await expectScheduledTrigger();
 await expectRequestBodyLimit();
 await expectResponseBodyLimit();
 await expectQueuedInvocations();
@@ -90,6 +91,7 @@ console.log(JSON.stringify({
     "response-body-limit",
     "timeout",
     "queue",
+    "scheduled-manual-trigger",
     "no-op-reapply",
     "stale-plan-rejection",
     "unsupported-dynamic-feature",
@@ -365,6 +367,37 @@ async function expectDirectInvoke() {
   }
 }
 
+async function expectScheduledTrigger() {
+  const body = await postJson(
+    `/projects/v1/${project.project_id}/functions/api/trigger`,
+    {},
+    serviceHeaders,
+  );
+  if (!/^req_/.test(body.request_id) || body.status !== 200) {
+    throw new Error(`Scheduled trigger did not return request id/status: ${JSON.stringify(body)}`);
+  }
+  const responseBody = decodeFunctionJsonBody(body.response?.body);
+  if (
+    body.response?.status !== 200 ||
+    responseBody.version !== "v1" ||
+    responseBody.trigger !== "manual" ||
+    responseBody.bodyTrigger !== "manual" ||
+    !responseBody.scheduledAt
+  ) {
+    throw new Error(`Scheduled trigger envelope mismatch: ${JSON.stringify(body)}`);
+  }
+  if (body.schedule_meta?.run_count < 1 || body.schedule_meta?.last_status !== 200) {
+    throw new Error(`Scheduled trigger did not update metadata: ${JSON.stringify(body.schedule_meta)}`);
+  }
+  const listed = await getJson(
+    `/projects/v1/${project.project_id}/functions/logs?request_id=${encodeURIComponent(body.request_id)}&function_name=api&tail=20`,
+    serviceHeaders,
+  );
+  if (!listed.logs?.some((entry) => entry.request_id === body.request_id && entry.message.includes("function_invocation_completed"))) {
+    throw new Error(`Scheduled trigger logs missing completion entry: ${JSON.stringify(listed)}`);
+  }
+}
+
 async function expectRequestBodyLimit() {
   const response = await fetch(`${baseUrl}/projects/v1/${project.project_id}/static/api/json`, {
     method: "POST",
@@ -493,7 +526,10 @@ function functionSpec(apiFile, options = {}) {
     },
     functions: {
       replace: {
-        api: functionEntry,
+        api: {
+          ...functionEntry,
+          schedule: "*/5 * * * *",
+        },
         auth: {
           ...functionEntry,
           requireAuth: true,

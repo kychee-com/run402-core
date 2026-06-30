@@ -18,6 +18,7 @@ npm run test:functions:smoke
 - Keep changes scoped to the public Core package in this repository.
 - Preserve documented package exports and runtime behavior unless the change explicitly proposes a compatibility break.
 - Add or update tests for behavior changes.
+- For agent-facing release/runtime/functions/storage/routing/config/schema changes, run the [Agent DX Core Applicability](docs/agent-dx-core-applicability.md) checklist and update every affected Core package README, changelog, fixture, schema, smoke test, or conformance script.
 - Avoid adding runtime dependencies unless the package genuinely needs them.
 - Do not include secrets, customer data, private infrastructure runbooks, or abuse-control internals.
 

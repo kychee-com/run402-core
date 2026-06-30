@@ -17,7 +17,7 @@ This matrix defines how `@run402/release` treats the current ReleaseSpec surface
 | `functions.*.source` | Public content requirement | CAS presence is a fact supplied by adapters. |
 | `functions.*.files` | Public content requirement | Bundling and activation remain Cloud behavior. |
 | `functions.*.config` | Publicly interpreted | Provider limits and tier caps remain Cloud policy. |
-| `functions.*.schedule` | Publicly interpreted | Scheduler side effects remain Cloud behavior. |
+| `functions.*.schedule` | Publicly interpreted | Core runs schedules with a single-node gateway scheduler; distributed scheduling and fleet replay remain Cloud behavior. |
 | `functions.*.deps` | Publicly interpreted | Dependency resolution and bundling remain Cloud behavior. |
 | `functions.*.requireAuth` | Publicly interpreted | Runtime enforcement remains Cloud/data-plane behavior. |
 | `functions.*.requireRole` | Publicly interpreted | Role lookup and enforcement remain Cloud/data-plane behavior. |

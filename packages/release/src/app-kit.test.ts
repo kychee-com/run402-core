@@ -73,7 +73,7 @@ describe("@run402/release/app-kit function materialization", () => {
     });
   }));
 
-  it("can omit scheduled functions with structured diagnostics", () => withScratch((root) => {
+  it("preserves scheduled functions in Core manifests", () => withScratch((root) => {
     const result = materializeFunctionManifestMap({
       cron: {
         source: "export default () => new Response('cron');\n",
@@ -86,28 +86,25 @@ describe("@run402/release/app-kit function materialization", () => {
       rootDir: root,
       outDir: join(root, "functions"),
       targetPolicy: "core-developer-preview",
-      onUnsupportedFeature: "omit",
     });
 
-    assert.deepEqual(Object.keys(result.functions), ["http"]);
-    assert.deepEqual(result.omittedFunctionNames, ["cron"]);
-    assert.equal(result.diagnostics[0]?.severity, "omitted");
-    assert.equal(result.diagnostics[0]?.capability, "functions.scheduled");
+    assert.deepEqual(Object.keys(result.functions), ["cron", "http"]);
+    assert.deepEqual(result.functions.cron.schedule, "*/5 * * * *");
+    assert.deepEqual(result.omittedFunctionNames, []);
+    assert.deepEqual(result.diagnostics, []);
   }));
 
-  it("throws when a Core build includes scheduled functions without omit policy", () => withScratch((root) => {
-    assert.throws(
-      () => materializeFunctionSource("cron", {
-        source: "export default () => new Response('cron');\n",
-        schedule: "0 * * * *",
-      }, {
-        rootDir: root,
-        outDir: join(root, "functions"),
-        targetPolicy: "core-developer-preview",
-      }),
-      (err) => err instanceof AppKitError &&
-        err.diagnostics[0]?.code === "run402.core.unsupported.scheduled_functions",
-    );
+  it("materializes a single scheduled function source", () => withScratch((root) => {
+    const materialized = materializeFunctionSource("cron", {
+      source: "export default () => new Response('cron');\n",
+      schedule: "0 * * * *",
+    }, {
+      rootDir: root,
+      outDir: join(root, "functions"),
+      targetPolicy: "core-developer-preview",
+    });
+
+    assert.equal(materialized.spec.schedule, "0 * * * *");
   }));
 
   it("rejects paths outside the manifest root", () => withScratch((root) => {
@@ -210,7 +207,6 @@ describe("@run402/release/app-kit Core capability diagnostics", () => {
         "compliance.managed",
         "email.outbound_configuration",
         "fleet.operations",
-        "functions.scheduled",
         "i18n.routing",
         "managed.custom_domains",
         "managed.subdomains",

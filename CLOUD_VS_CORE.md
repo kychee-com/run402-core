@@ -6,9 +6,11 @@ Run402 Core and Run402 Cloud make different promises.
 
 Run402 Core is public runtime and server code. Its job is to reduce vendor-lock-in risk by making the application runtime inspectable, buildable, testable, and progressively portable.
 
-The public repo now includes the production-used function helper package, deterministic release compiler boundary, public runtime-kernel contracts, and a Developer Preview Core gateway with local project creation, Postgres/PostgREST/RLS, apply, static serving, storage objects, static route-manifest behavior, trusted local functions, a narrow Astro SSR target, and portable archive import.
+The public repo now includes the production-used function helper package, deterministic release compiler boundary, public runtime-kernel contracts, and a Developer Preview Core gateway with local project creation, Postgres/PostgREST/RLS, apply, static serving, storage objects, static route-manifest behavior, trusted local functions, single-node scheduled functions, a narrow Astro SSR target, and portable archive import.
 
 Future phases can add stronger self-hosting assets, broader compatibility tests, S3-compatible storage, harder runtime isolation, and more production packaging.
+
+When a Run402 Cloud or client-surface change touches shared release/runtime/functions/storage/routing/config/schema semantics, use the [Agent DX Core Applicability](docs/agent-dx-core-applicability.md) checklist. Core-applicable behavior needs package/docs/schema/fixture/conformance updates here; Cloud-only behavior must be marked explicitly so Core and Cloud do not drift by accident.
 
 Current Core capability table:
 
@@ -28,6 +30,7 @@ Current Core capability table:
 | Immutable local object URLs | Yes |
 | Explicit public paths and exact static aliases | Yes |
 | Trusted local functions Developer Preview | Yes |
+| Single-node scheduled functions Developer Preview | Yes |
 | Astro SSR Developer Preview | Yes |
 | Portable archive inspect/verify/import | Yes |
 | S3-compatible storage operations | No |
@@ -59,6 +62,6 @@ Open source reduces vendor-lock-in risk. Allowances and hard caps reduce financi
 
 ## Developer Preview Scope
 
-This repo does not yet provide a complete production self-hosted Run402 control plane. It includes Docker Compose, local Postgres/PostgREST, Core gateway execution, storage/routing conformance, trusted local functions, a narrow Astro SSR target, and Core import for verified portable archives. It does not include HA, TLS automation, managed backups, monitoring, custom domains, global routing, S3-compatible storage, hostile multi-tenant runtime isolation, or Cloud import back into managed Run402.
+This repo does not yet provide a complete production self-hosted Run402 control plane. It includes Docker Compose, local Postgres/PostgREST, Core gateway execution, storage/routing conformance, trusted local functions, single-node scheduled functions, a narrow Astro SSR target, and Core import for verified portable archives. It does not include HA scheduler coordination, missed-tick replay, TLS automation, managed backups, monitoring, custom domains, global routing, S3-compatible storage, hostile multi-tenant runtime isolation, or Cloud import back into managed Run402.
 
 The Developer Preview proves the public/private split with real production-used packages and a runnable local data plane first.

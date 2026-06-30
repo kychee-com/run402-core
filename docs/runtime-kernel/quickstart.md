@@ -35,7 +35,7 @@ For a step-by-step Docker-hosted Core Gateway verification run, see [docker-comp
 - upload, complete, list, read, sign, delete, and clean up local storage objects
 - verify public/private visibility, anonymous private denial, immutable URL retention, and restart persistence
 - verify exact static aliases, explicit public paths, HEAD/GET behavior, route miss/static lookup, private asset non-disclosure, route-conflict rejection, and unsupported dynamic-route failure
-- verify trusted-code Node function apply, routed HTTP fidelity, direct invoke, auth gates, role gates, local secrets, request IDs, logs/diagnostics, redaction, no-op reapply, stale-plan rejection, unsupported dynamic features, cleanup reporting, and worker restart persistence
+- verify trusted-code Node function apply, routed HTTP fidelity, direct invoke, single-node scheduled function manual trigger, auth gates, role gates, local secrets, request IDs, logs/diagnostics, redaction, no-op reapply, stale-plan rejection, unsupported dynamic features, cleanup reporting, and worker restart persistence
 - verify limited Astro SSR apply, static/SSR/function precedence, Web Request/Response behavior, redirects, multiple cookies, binary response bytes, HEAD behavior, required secrets, request IDs, logs/diagnostics, unsupported upgrade failure, no-op reapply, stale-plan rejection, cleanup reporting, and worker restart persistence
 
 ## Stop

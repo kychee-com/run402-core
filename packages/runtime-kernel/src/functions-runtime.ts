@@ -10,6 +10,7 @@ import type {
   RoleGateSpec,
   RouteEntry,
 } from "@run402/release";
+import { Cron } from "croner";
 
 export const CORE_FUNCTION_RUNTIME_MATURITY = "developer_preview" as const;
 export const CORE_FUNCTION_SECURITY_PROFILE = "trusted_local_code" as const;
@@ -43,6 +44,13 @@ export const CORE_FUNCTION_FILESYSTEM_LAYOUT = {
   logDir: "functions/logs",
 } as const;
 
+export const CORE_FUNCTION_SCHEDULE_LIMIT_DEFAULTS = {
+  enabled: true,
+  maxScheduledFunctionsPerProject: 20,
+  minIntervalMinutes: 1,
+  maxConcurrentScheduledInvocationsPerProject: 1,
+} as const;
+
 export const CORE_FUNCTION_KNOWN_EXCLUSIONS = [
   "hostile_code_isolation",
   "public_multi_tenant_hosting",
@@ -56,7 +64,6 @@ export const CORE_FUNCTION_KNOWN_EXCLUSIONS = [
   "private_registries",
   "websockets",
   "streaming_to_client",
-  "scheduled_functions",
   "background_jobs",
   "managed_jobs",
   "managed_kms",
@@ -153,6 +160,7 @@ export interface CoreFunctionRuntimeCapability {
   default_executor: typeof CORE_FUNCTION_DEFAULT_EXECUTOR;
   dependency_policy: CoreFunctionDependencyPolicy;
   resource_defaults: typeof CORE_FUNCTION_RESOURCE_DEFAULTS;
+  schedule_limits: CoreFunctionScheduleLimits;
   filesystem_layout: typeof CORE_FUNCTION_FILESYSTEM_LAYOUT;
   supported_output: {
     runtime: "node22";
@@ -160,6 +168,21 @@ export interface CoreFunctionRuntimeCapability {
     envelope: "run402.routed_http.v1";
   };
   known_exclusions: Array<(typeof CORE_FUNCTION_KNOWN_EXCLUSIONS)[number]>;
+}
+
+export interface CoreFunctionScheduleLimits {
+  enabled: boolean;
+  maxScheduledFunctionsPerProject: number;
+  minIntervalMinutes: number;
+  maxConcurrentScheduledInvocationsPerProject: number;
+}
+
+export interface CoreFunctionScheduleMetadata {
+  last_run_at: string | null;
+  last_status: number | null;
+  run_count: number;
+  last_error: string | null;
+  next_run_at: string | null;
 }
 
 export interface CoreAstroSsrRuntimeCapability {
@@ -206,6 +229,8 @@ export interface CoreFunctionBundleMetadata {
   memory_bytes: number;
   require_auth: boolean;
   require_role: RoleGateSpec | null;
+  schedule: string | null;
+  schedule_meta: CoreFunctionScheduleMetadata | null;
   class: "standard" | "ssr";
   capabilities: string[];
 }
@@ -235,7 +260,7 @@ export interface CoreFunctionInvocationInput {
   projectId: string;
   releaseId: string | null;
   functionName: string;
-  invocationKind: "routed_http" | "direct";
+  invocationKind: "routed_http" | "direct" | "scheduled";
   requestId: string;
   actor?: CoreFunctionActorContext | null;
   request?: RoutedHttpRequestV1;
@@ -297,6 +322,7 @@ export function coreFunctionRuntimeCapability(): CoreFunctionRuntimeCapability {
     default_executor: CORE_FUNCTION_DEFAULT_EXECUTOR,
     dependency_policy: CORE_FUNCTION_DEPENDENCY_POLICY,
     resource_defaults: CORE_FUNCTION_RESOURCE_DEFAULTS,
+    schedule_limits: { ...CORE_FUNCTION_SCHEDULE_LIMIT_DEFAULTS },
     filesystem_layout: CORE_FUNCTION_FILESYSTEM_LAYOUT,
     supported_output: {
       runtime: "node22",
@@ -361,4 +387,78 @@ export function normalizeFunctionEntrypoint(spec: FunctionSpec): string {
 
 export function functionMemoryBytes(entry: Pick<PortableFunctionEntry, "memory_mb">): number {
   return entry.memory_mb * 1024 * 1024;
+}
+
+export function emptyCoreFunctionScheduleMetadata(): CoreFunctionScheduleMetadata {
+  return {
+    last_run_at: null,
+    last_status: null,
+    run_count: 0,
+    last_error: null,
+    next_run_at: null,
+  };
+}
+
+export function isValidCoreCronExpression(expr: string): boolean {
+  try {
+    assertFiveFieldCron(expr);
+    const job = new Cron(expr, { paused: true }, () => {});
+    job.stop();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function coreCronIntervalMinutes(expr: string): number {
+  try {
+    assertFiveFieldCron(expr);
+    const job = new Cron(expr, { paused: true }, () => {});
+    const next1 = job.nextRun();
+    const next2 = job.nextRuns(2)[1];
+    job.stop();
+    if (!next1 || !next2) return Infinity;
+    return (next2.getTime() - next1.getTime()) / 60_000;
+  } catch {
+    return 0;
+  }
+}
+
+export function nextCoreCronRunIso(expr: string): string | null {
+  try {
+    assertFiveFieldCron(expr);
+    const job = new Cron(expr, { paused: true }, () => {});
+    const next = job.nextRun();
+    job.stop();
+    return next?.toISOString() ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export function validateCoreFunctionSchedule(input: {
+  functionName: string;
+  schedule: string | null | undefined;
+  limits?: CoreFunctionScheduleLimits;
+}): string | null {
+  const schedule = input.schedule ?? null;
+  if (schedule === null) return null;
+  const limits = input.limits ?? CORE_FUNCTION_SCHEDULE_LIMIT_DEFAULTS;
+  if (!limits.enabled) {
+    throw new Error(`Function ${input.functionName} schedules are disabled in this Core gateway.`);
+  }
+  if (typeof schedule !== "string" || !isValidCoreCronExpression(schedule)) {
+    throw new Error(`Function ${input.functionName} schedule must be a valid 5-field cron expression.`);
+  }
+  const interval = coreCronIntervalMinutes(schedule);
+  if (interval < limits.minIntervalMinutes) {
+    throw new Error(`Function ${input.functionName} schedule runs every ${interval} minute(s), below the Core minimum of ${limits.minIntervalMinutes} minute(s).`);
+  }
+  return schedule;
+}
+
+function assertFiveFieldCron(expr: string): void {
+  if (expr.trim().split(/\s+/).length !== 5) {
+    throw new Error("Cron expression must contain exactly 5 fields.");
+  }
 }

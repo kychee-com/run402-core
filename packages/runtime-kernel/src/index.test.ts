@@ -11,11 +11,14 @@ import {
   CORE_ASTRO_SSR_OUTPUT_CONTRACT_VERSION,
   CORE_FUNCTION_DEFAULT_EXECUTOR,
   CORE_FUNCTION_DEPENDENCY_MODE,
+  CORE_FUNCTION_SCHEDULE_LIMIT_DEFAULTS,
+  coreCronIntervalMinutes,
   emptyCoreReleaseState,
   ApplyInvariantError,
   DependencyInstallRejectedError,
   DynamicRuntimeUnavailableError,
   FunctionBundleValidationError,
+  isValidCoreCronExpression,
   inspectCoreProject,
   MissingRequiredSecretError,
   ProjectNotFoundError,
@@ -50,6 +53,7 @@ test("runtime capability document advertises first-slice boundaries", () => {
   assert.ok(capabilities.supported_features.includes("site.static.exact-alias-routes"));
   assert.ok(capabilities.supported_features.includes("functions.node"));
   assert.ok(capabilities.supported_features.includes("functions.routed-http.local"));
+  assert.ok(capabilities.supported_features.includes("functions.scheduled.local"));
   assert.ok(capabilities.supported_features.includes("astro.ssr"));
   assert.ok(capabilities.supported_features.includes("astro.ssr.run402-output-v1"));
   assert.ok(capabilities.supported_features.includes("archives.format.run402-project-archive-v1"));
@@ -66,7 +70,9 @@ test("runtime capability document advertises first-slice boundaries", () => {
   assert.equal(capabilities.functions_runtime.hostile_code_isolation, false);
   assert.equal(capabilities.functions_runtime.dependency_policy.mode, CORE_FUNCTION_DEPENDENCY_MODE);
   assert.equal(capabilities.functions_runtime.dependency_policy.npm_install_supported, false);
+  assert.deepEqual(capabilities.functions_runtime.schedule_limits, CORE_FUNCTION_SCHEDULE_LIMIT_DEFAULTS);
   assert.ok(capabilities.unsupported_features.some((entry) => entry.feature === "functions.external-npm-dependencies"));
+  assert.equal(capabilities.unsupported_features.some((entry) => entry.feature === "functions.scheduled"), false);
   assert.ok(capabilities.unsupported_features.some((entry) => entry.feature === "astro.streaming"));
   assert.ok(capabilities.unsupported_features.some((entry) => entry.feature === "archives.import.existing-project-merge"));
   assert.equal(capabilities.unsupported_features.some((entry) => entry.feature === "functions.node"), false);
@@ -673,6 +679,83 @@ test("function no-op comparison tolerates JSONB key and array ordering", async (
   assert.equal(secondPlan.noop, true);
 });
 
+test("function apply accepts scheduled functions and records schedule metadata", async () => {
+  assert.equal(isValidCoreCronExpression("*/5 * * * *"), true);
+  assert.equal(isValidCoreCronExpression("* * * *"), false);
+  assert.equal(coreCronIntervalMinutes("*/5 * * * *"), 5);
+
+  const spec = prebundledFunctionSpec("7".repeat(64), 12);
+  const api = spec.functions.replace.api as typeof spec.functions.replace.api & { schedule?: string };
+  api.schedule = "*/5 * * * *";
+
+  const plan = await createApplyPlan(new MemoryRuntimePorts({ contentPresent: true }), { spec });
+  const bundle = plan.function_effects?.bundles.find((entry) => entry.name === "api");
+
+  assert.equal(bundle?.schedule, "*/5 * * * *");
+  assert.equal(bundle?.schedule_meta?.last_run_at, null);
+  assert.equal(bundle?.schedule_meta?.last_status, null);
+  assert.equal(bundle?.schedule_meta?.run_count, 0);
+  assert.equal(bundle?.schedule_meta?.last_error, null);
+  assert.match(bundle?.schedule_meta?.next_run_at ?? "", /^\d{4}-\d{2}-\d{2}T/);
+});
+
+test("function apply rejects invalid schedules and host-owned schedule limit violations", async () => {
+  {
+    const spec = prebundledFunctionSpec("8".repeat(64), 12);
+    const api = spec.functions.replace.api as typeof spec.functions.replace.api & { schedule?: string };
+    api.schedule = "not-a-cron";
+
+    await assert.rejects(
+      createApplyPlan(new MemoryRuntimePorts(), { spec }),
+      (error) => error instanceof FunctionBundleValidationError && error.code === "invalid_function_schedule",
+    );
+  }
+
+  {
+    const spec = prebundledFunctionSpec("9".repeat(64), 12);
+    const api = spec.functions.replace.api as typeof spec.functions.replace.api & { schedule?: string };
+    api.schedule = "* * * * *";
+
+    await assert.rejects(
+      createApplyPlan(new MemoryRuntimePorts({
+        scheduleLimits: {
+          enabled: true,
+          maxScheduledFunctionsPerProject: 20,
+          minIntervalMinutes: 5,
+          maxConcurrentScheduledInvocationsPerProject: 1,
+        },
+      }), { spec }),
+      (error) => error instanceof FunctionBundleValidationError && error.code === "invalid_function_schedule",
+    );
+  }
+
+  {
+    const spec = prebundledFunctionSpec("a".repeat(64), 12);
+    spec.functions.replace = {
+      api: {
+        ...spec.functions.replace.api,
+        schedule: "*/5 * * * *",
+      },
+      worker: {
+        ...spec.functions.replace.api,
+        schedule: "*/10 * * * *",
+      },
+    };
+
+    await assert.rejects(
+      createApplyPlan(new MemoryRuntimePorts({
+        scheduleLimits: {
+          enabled: true,
+          maxScheduledFunctionsPerProject: 1,
+          minIntervalMinutes: 1,
+          maxConcurrentScheduledInvocationsPerProject: 1,
+        },
+      }), { spec }),
+      (error) => error instanceof FunctionBundleValidationError && error.code === "schedule_limit_exceeded",
+    );
+  }
+});
+
 test("function commit rejects stale plans before staging content", async () => {
   const ports = new MemoryRuntimePorts({ contentPresent: true });
   const plan = await createApplyPlan(ports, {
@@ -933,6 +1016,7 @@ class MemoryRuntimePorts implements RuntimeKernelPorts {
   readonly content: RuntimeKernelPorts["content"];
   readonly storage?: RuntimeKernelPorts["storage"];
   readonly secrets?: RuntimeKernelPorts["secrets"];
+  readonly scheduleLimits?: RuntimeKernelPorts["scheduleLimits"];
   readonly migrations: RuntimeKernelPorts["migrations"];
   readonly lifecycle?: RuntimeKernelPorts["lifecycle"];
 
@@ -948,12 +1032,14 @@ class MemoryRuntimePorts implements RuntimeKernelPorts {
     contentPresent?: boolean;
     storage?: RuntimeKernelPorts["storage"];
     secrets?: RuntimeKernelPorts["secrets"];
+    scheduleLimits?: RuntimeKernelPorts["scheduleLimits"];
   } = {}) {
     this.#order = options.order ?? [];
     this.#activeReleaseId = options.activeReleaseId ?? null;
     this.lifecycle = options.lifecycle;
     this.storage = options.storage;
     this.secrets = options.secrets;
+    this.scheduleLimits = options.scheduleLimits;
     this.projects = {
       create: async () => {
         throw new Error("not used");

@@ -24,6 +24,7 @@ Default credentials are local-development credentials. Do not expose this stack 
 - required function secrets fail closed and secret values are never returned by list APIs
 - platform diagnostics omit headers, bodies, env, provider metadata, and raw user exception text
 - user stdout/stderr is capped and best-effort redacted
+- single-node scheduled functions use the same worker, secret, log, timeout, and redaction path as routed/direct functions
 - Astro SSR targets run through the same dynamic worker path as functions
 - SSR receives only generated `x-run402-*` metadata after inbound spoofed `x-run402-*` headers are stripped
 
@@ -37,7 +38,8 @@ Default credentials are local-development credentials. Do not expose this stack 
 - untrusted code sandboxing
 - arbitrary third-party function hosting
 - external npm dependency installation for functions
-- function or SSR WebSockets, streaming, schedules, and background jobs
+- function or SSR WebSockets and streaming
+- managed jobs, background queues, distributed scheduling, leader election, and missed-tick replay
 - full Astro support, arbitrary Astro adapters, ISR/cache, edge runtime, and Cloud globals
 - tenant isolation hardening beyond the local fixture path
 - upgrade automation

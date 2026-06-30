@@ -15,6 +15,7 @@ Private Cloud owns these production operations and they must not move into the p
 Public Core owns the portable semantics:
 
 - `ReleaseSpec.functions` metadata and function route target interpretation
+- `ReleaseSpec.functions.replace.<name>.schedule` 5-field cron metadata for local single-node schedules
 - pre-bundled Node 22 function bundle identity and content digest verification
 - `run402.routed_http.v1` request/response envelope compatibility
 - dynamic route fail-closed behavior before the local worker is configured
@@ -95,13 +96,31 @@ Temp-dir byte quotas and `node_modules` byte quotas are documented resource defa
 | route targets | `{ "type": "function", "name": "..." }` in route manifests |
 | routed envelope | `run402.routed_http.v1` |
 | direct invoke | local `/functions/v1/invoke`, service-key authorized |
+| schedules | single-node gateway scheduler from the existing `schedule` manifest field, service-key manual trigger |
 | auth gates | `requireAuth` enforced before user-code dispatch |
 | role gates | `cacheTtl: 0` only; positive cache TTL rejected |
 | secrets | local metadata APIs, required-secret commit checks, target invocation injection, no readback |
 | logs | structured platform logs, capped stdout/stderr capture, service-key log reads, request-id/since/tail filters, retention pruning |
 | Astro SSR | supported only through `astro.ssr.v1`; see `docs/runtime-kernel/astro-ssr.md` |
-| schedules/background jobs | unsupported |
+| managed jobs/background queues | unsupported |
 | WebSockets/streaming | unsupported |
+
+## Scheduled Functions
+
+Core accepts the existing release-spec `schedule` field on a supported Node 22 function. The first adapter is single-node and in-process in the Core Gateway: it registers active schedules on startup, refreshes timers after release activation, stops timers during shutdown, and guards stale callbacks from older registrations.
+
+Scheduled invocations use the same local worker, secrets, request IDs, logs, redaction, timeout, and body/response caps as routed functions. The worker receives a synthetic POST request with `X-Run402-Trigger: cron` and a JSON body containing `trigger` and `scheduled_at`.
+
+Agents can test a scheduled function immediately without waiting for wall-clock cron:
+
+```bash
+curl -X POST "$CORE_URL/projects/v1/$PROJECT_ID/functions/reminder-sweep/trigger" \
+  -H "apikey: $SERVICE_KEY"
+```
+
+The response includes `request_id`, function response status/body, and `schedule_meta`. This is a testing hook under the existing functions namespace, not a new jobs API.
+
+Limits are host-owned through `CORE_SCHEDULER_ENABLED`, `CORE_SCHEDULER_MAX_PER_PROJECT`, `CORE_SCHEDULER_MIN_INTERVAL_MINUTES`, and `CORE_SCHEDULER_MAX_CONCURRENT_PER_PROJECT`. Core does not provide HA scheduling, leader election, missed-tick replay, Cloud fleet scheduling, billing/tier enforcement, or managed abuse controls.
 
 ## Local Secrets
 

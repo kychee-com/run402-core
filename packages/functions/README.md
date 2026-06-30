@@ -366,6 +366,24 @@ The raw `run402.routed_http.v1` envelope is an internal gateway transport. Low-l
 
 Runtime route failure codes to branch on: `ROUTE_MANIFEST_LOAD_FAILED` (manifest/propagation), `ROUTED_INVOKE_WORKER_SECRET_MISSING` (custom-domain Worker secret), `ROUTED_INVOKE_AUTH_FAILED` (internal invoke signature), `ROUTED_ROUTE_STALE` (selected route failed release revalidation), `ROUTE_METHOD_NOT_ALLOWED` (method mismatch), and `ROUTED_RESPONSE_TOO_LARGE` (body over 6 MiB).
 
+## Scheduled functions
+
+Run402 Cloud and Run402 Core both use the existing release manifest `functions.replace.<name>.schedule` field for cron-style functions. In Core Developer Preview this is a single-node gateway scheduler, not a managed distributed jobs system.
+
+Scheduled functions receive the same Fetch `Request` shape as routed functions. The request is a synthetic `POST` with `X-Run402-Trigger: cron` for wall-clock ticks, or `X-Run402-Trigger: manual` when a Core agent calls the service-key testing hook. The JSON body contains `trigger` and `scheduled_at`.
+
+```ts
+export default async function handler(req: Request): Promise<Response> {
+  if (req.headers.get("x-run402-trigger")) {
+    const event = await req.json() as { trigger: string; scheduled_at: string };
+    await runReminderSweep(event.scheduled_at);
+    return Response.json({ ok: true, trigger: event.trigger });
+  }
+
+  return Response.json({ ok: true });
+}
+```
+
 ## Imports auto-resolved
 
 Inside a deployed function you can `import { ... } from "@run402/functions"` directly — the gateway bundles this library plus any `--deps` you declared at deploy time. **Do not list `@run402/functions` in your `--deps`** — it's rejected. Native binary modules (`sharp`, `canvas`, native `bcrypt`, etc.) are also rejected.
