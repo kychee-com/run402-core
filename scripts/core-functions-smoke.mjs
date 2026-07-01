@@ -368,32 +368,33 @@ async function expectDirectInvoke() {
 }
 
 async function expectScheduledTrigger() {
-  const body = await postJson(
-    `/projects/v1/${project.project_id}/functions/api/trigger`,
-    {},
-    serviceHeaders,
-  );
-  if (!/^req_/.test(body.request_id) || body.status !== 200) {
-    throw new Error(`Scheduled trigger did not return request id/status: ${JSON.stringify(body)}`);
+  const response = await fetch(resolveUrl(`/projects/v1/${project.project_id}/functions/api/triggers/api_every_5m/run`), {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...serviceHeaders,
+    },
+    body: "{}",
+  });
+  const text = await response.text();
+  const body = JSON.parse(text);
+  if (response.status !== 202) {
+    throw new Error(`Scheduled trigger did not enqueue with 202: ${response.status} ${text}`);
   }
-  const responseBody = decodeFunctionJsonBody(body.response?.body);
-  if (
-    body.response?.status !== 200 ||
-    responseBody.version !== "v1" ||
-    responseBody.trigger !== "manual" ||
-    responseBody.bodyTrigger !== "manual" ||
-    !responseBody.scheduledAt
-  ) {
-    throw new Error(`Scheduled trigger envelope mismatch: ${JSON.stringify(body)}`);
+  const runId = body.run?.run_id;
+  if (!/^fnrun_/.test(runId) || body.run?.status !== "queued") {
+    throw new Error(`Scheduled trigger did not return queued durable run: ${JSON.stringify(body)}`);
   }
-  if (body.schedule_meta?.run_count < 1 || body.schedule_meta?.last_status !== 200) {
+  if (body.schedule_meta?.run_count < 1 || body.schedule_meta?.last_run_id !== runId || body.schedule_meta?.last_status !== "queued") {
     throw new Error(`Scheduled trigger did not update metadata: ${JSON.stringify(body.schedule_meta)}`);
   }
-  const listed = await getJson(
-    `/projects/v1/${project.project_id}/functions/logs?request_id=${encodeURIComponent(body.request_id)}&function_name=api&tail=20`,
-    serviceHeaders,
-  );
-  if (!listed.logs?.some((entry) => entry.request_id === body.request_id && entry.message.includes("function_invocation_completed"))) {
+
+  const completed = await waitForFunctionRun(runId, "succeeded");
+  if (completed.last_attempt?.response_status !== 200 || !/^fnatt_/.test(completed.last_attempt?.attempt_id ?? "")) {
+    throw new Error(`Scheduled durable run did not record successful attempt: ${JSON.stringify(completed)}`);
+  }
+  const listed = await getJson(`/functions/v1/runs/${encodeURIComponent(runId)}/logs?tail=20`, serviceHeaders);
+  if (!listed.logs?.some((entry) => entry.request_id === runId && entry.message.includes("function_invocation_completed"))) {
     throw new Error(`Scheduled trigger logs missing completion entry: ${JSON.stringify(listed)}`);
   }
 }
@@ -502,6 +503,19 @@ async function waitForFunctionVersion(version) {
   throw new Error(`Function worker did not serve version ${version} after restart: ${lastError}`);
 }
 
+async function waitForFunctionRun(runId, expectedStatus) {
+  let last = null;
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    last = await getJson(`/functions/v1/runs/${encodeURIComponent(runId)}`, serviceHeaders);
+    if (last.status === expectedStatus) return last;
+    if (last.terminal && last.status !== expectedStatus) {
+      throw new Error(`Function run reached ${last.status}, expected ${expectedStatus}: ${JSON.stringify(last)}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  throw new Error(`Function run ${runId} did not reach ${expectedStatus}: ${JSON.stringify(last)}`);
+}
+
 function functionSpec(apiFile, options = {}) {
   const functionEntry = {
     runtime: "node22",
@@ -528,7 +542,14 @@ function functionSpec(apiFile, options = {}) {
       replace: {
         api: {
           ...functionEntry,
-          schedule: "*/5 * * * *",
+          triggers: [
+            {
+              id: "api_every_5m",
+              type: "schedule",
+              cron: "*/5 * * * *",
+              run: { event_type: "api_scheduled" },
+            },
+          ],
         },
         auth: {
           ...functionEntry,
