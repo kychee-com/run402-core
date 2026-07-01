@@ -1,6 +1,6 @@
 {
   "name": "@run402/release",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "description": "Deterministic Run402 release manifest semantics: schema versions, canonicalization, materialization, diffing, and compatibility fixtures.",
   "type": "module",
   "main": "dist/index.js",
