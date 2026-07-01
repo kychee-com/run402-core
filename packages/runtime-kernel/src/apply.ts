@@ -352,7 +352,9 @@ function validateCoreFunctionSpec(name: string, fn: FunctionSpec, ports: Runtime
   }
   try {
     for (const trigger of fn.triggers ?? []) {
-      validateCoreFunctionScheduleTrigger({ functionName: name, trigger, limits: ports.scheduleLimits });
+      if (trigger.type === "schedule") {
+        validateCoreFunctionScheduleTrigger({ functionName: name, trigger, limits: ports.scheduleLimits });
+      }
     }
   } catch (error) {
     throw new FunctionBundleValidationError("invalid_function_schedule", error instanceof Error ? error.message : String(error), {
@@ -475,13 +477,19 @@ function bundleMetadataFromSpec(
     require_role: requireRole,
     schedule: null,
     schedule_meta: null,
-    triggers: (spec.triggers ?? []).map((trigger) => ({
-      ...validateCoreFunctionScheduleTrigger({ functionName: name, trigger }),
-      schedule_meta: {
-        ...emptyCoreFunctionScheduleMetadata(),
-        next_tick_at: nextCoreCronRunIso(trigger.cron),
-      },
-    })),
+    triggers: (spec.triggers ?? []).map((trigger) => {
+      if (trigger.type === "email") {
+        return { ...trigger };
+      }
+      const scheduleTrigger = validateCoreFunctionScheduleTrigger({ functionName: name, trigger });
+      return {
+        ...scheduleTrigger,
+        schedule_meta: {
+          ...emptyCoreFunctionScheduleMetadata(),
+          next_tick_at: nextCoreCronRunIso(scheduleTrigger.cron),
+        },
+      };
+    }),
     class: spec.class ?? "standard",
     capabilities: spec.capabilities ? [...spec.capabilities].sort() : [],
   };

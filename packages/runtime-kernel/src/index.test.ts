@@ -701,10 +701,12 @@ test("function apply accepts scheduled functions and records schedule metadata",
 
   const plan = await createApplyPlan(new MemoryRuntimePorts({ contentPresent: true }), { spec });
   const bundle = plan.function_effects?.bundles.find((entry) => entry.name === "api");
+  const triggers = bundle?.triggers ?? [];
+  const scheduleTriggers = triggers.filter((trigger): trigger is Extract<typeof triggers[number], { type: "schedule" }> => trigger.type === "schedule");
 
   assert.equal(bundle?.schedule, null);
   assert.equal(bundle?.schedule_meta, null);
-  assert.deepEqual(bundle?.triggers.map((trigger) => ({
+  assert.deepEqual(scheduleTriggers.map((trigger) => ({
     id: trigger.id,
     type: trigger.type,
     cron: trigger.cron,
@@ -725,7 +727,39 @@ test("function apply accepts scheduled functions and records schedule metadata",
       last_run_id: null,
     },
   ]);
-  assert.match(bundle?.triggers[0]?.schedule_meta.next_tick_at ?? "", /^\d{4}-\d{2}-\d{2}T/);
+  assert.match(scheduleTriggers[0]?.schedule_meta.next_tick_at ?? "", /^\d{4}-\d{2}-\d{2}T/);
+});
+
+test("function apply accepts email function triggers without schedule metadata", async () => {
+  const spec = prebundledFunctionSpec("e".repeat(64), 12);
+  spec.functions.replace.api.triggers = [
+    {
+      id: "mail_events",
+      type: "email",
+      mailbox: "signing-inbox",
+      events: ["reply_received", "bounced"],
+      run: {
+        event_type: "email.event",
+        payload: { source: "runtime-kernel-test" },
+      },
+    },
+  ];
+
+  const plan = await createApplyPlan(new MemoryRuntimePorts({ contentPresent: true }), { spec });
+  const bundle = plan.function_effects?.bundles.find((entry) => entry.name === "api");
+
+  assert.deepEqual(bundle?.triggers, [
+    {
+      id: "mail_events",
+      type: "email",
+      mailbox: "signing-inbox",
+      events: ["reply_received", "bounced"],
+      run: {
+        event_type: "email.event",
+        payload: { source: "runtime-kernel-test" },
+      },
+    },
+  ]);
 });
 
 test("function apply rejects invalid schedules and host-owned schedule limit violations", async () => {

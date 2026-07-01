@@ -4,7 +4,9 @@ import type {
 } from "@run402/functions";
 import type {
   ContentRefHex,
+  FunctionEmailTriggerSpec,
   FunctionSpec,
+  FunctionScheduleTriggerSpec,
   FunctionTriggerSpec,
   HttpMethod,
   PortableFunctionEntry,
@@ -190,9 +192,13 @@ export interface CoreFunctionScheduleMetadata {
   next_run_at?: string | null;
 }
 
-export interface CoreFunctionScheduleTriggerMetadata extends FunctionTriggerSpec {
+export interface CoreFunctionScheduleTriggerMetadata extends FunctionScheduleTriggerSpec {
   schedule_meta: CoreFunctionScheduleMetadata;
 }
+
+export type CoreFunctionTriggerMetadata =
+  | CoreFunctionScheduleTriggerMetadata
+  | FunctionEmailTriggerSpec;
 
 export interface CoreAstroSsrRuntimeCapability {
   capability: "core-astro-ssr";
@@ -240,7 +246,7 @@ export interface CoreFunctionBundleMetadata {
   require_role: RoleGateSpec | null;
   schedule: string | null;
   schedule_meta: CoreFunctionScheduleMetadata | null;
-  triggers?: CoreFunctionScheduleTriggerMetadata[];
+  triggers?: CoreFunctionTriggerMetadata[];
   class: "standard" | "ssr";
   capabilities: string[];
 }
@@ -473,9 +479,9 @@ export function validateCoreFunctionSchedule(input: {
 
 export function validateCoreFunctionScheduleTrigger(input: {
   functionName: string;
-  trigger: FunctionTriggerSpec;
+  trigger: FunctionScheduleTriggerSpec;
   limits?: CoreFunctionScheduleLimits;
-}): FunctionTriggerSpec {
+}): FunctionScheduleTriggerSpec {
   const limits = input.limits ?? CORE_FUNCTION_SCHEDULE_LIMIT_DEFAULTS;
   if (!limits.enabled) {
     throw new Error(`Function ${input.functionName} schedules are disabled in this Core gateway.`);
