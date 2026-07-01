@@ -507,6 +507,61 @@ describe("portable release materialization", () => {
       { name: "api", fields_changed: ["triggers"] },
     ]);
   });
+
+  it("materializes email triggers with canonical defaults and diffs trigger-only changes", () => {
+    const withoutTrigger = materializeRelease({
+      spec: {
+        project: "p0001",
+        functions: {
+          replace: {
+            worker: {
+              runtime: "node22",
+              source: { sha256: SHA_A, size: 10 },
+            },
+          },
+        },
+      },
+    });
+    const withTrigger = materializeRelease({
+      concreteBase: withoutTrigger,
+      spec: {
+        project: "p0001",
+        functions: {
+          patch: {
+            set: {
+              worker: {
+                runtime: "node22",
+                source: { sha256: SHA_A, size: 10 },
+                triggers: [
+                  {
+                    id: "mail-events",
+                    type: "email",
+                    mailbox: "signing-inbox",
+                    events: ["bounced", "reply_received"],
+                    run: { event_type: "email.event" },
+                  },
+                ],
+              },
+            },
+          },
+        },
+      },
+    });
+
+    assert.deepEqual(withTrigger.functions[0]?.triggers, [
+      {
+        id: "mail-events",
+        type: "email",
+        mailbox: "signing-inbox",
+        events: ["bounced", "reply_received"],
+        run: { event_type: "email.event", payload: {} },
+      },
+    ]);
+    const diff = computeReleaseDiff(withoutTrigger, withTrigger);
+    assert.deepEqual(diff.functions.changed, [
+      { name: "worker", fields_changed: ["triggers"] },
+    ]);
+  });
 });
 
 describe("release diff, warnings, and requirements", () => {
@@ -997,6 +1052,51 @@ describe("ReleaseSpec validation and digest identities", () => {
     );
     assert.throws(
       () => validateReleaseSpec({ project: "p", checks: [{ path: "/" }] }),
+      ReleaseSpecValidationError,
+    );
+  });
+
+  it("validates email function trigger shape", () => {
+    assert.doesNotThrow(() =>
+      validateReleaseSpec({
+        project: "p",
+        functions: {
+          replace: {
+            worker: {
+              runtime: "node22",
+              source: { sha256: "bb".repeat(32), size: 20 },
+              triggers: [{
+                id: "mail-events",
+                type: "email",
+                mailbox: "signing-inbox",
+                events: ["reply_received", "bounced"],
+                run: { event_type: "email.event" },
+              }],
+            },
+          },
+        },
+      }),
+    );
+    assert.throws(
+      () =>
+        validateReleaseSpec({
+          project: "p",
+          functions: {
+            replace: {
+              worker: {
+                runtime: "node22",
+                source: { sha256: "bb".repeat(32), size: 20 },
+                triggers: [{
+                  id: "mail-events",
+                  type: "email",
+                  mailbox: "signing-inbox",
+                  events: ["delivered"],
+                  run: { event_type: "email.event" },
+                }],
+              },
+            },
+          },
+        } as unknown as ReleaseSpec),
       ReleaseSpecValidationError,
     );
   });

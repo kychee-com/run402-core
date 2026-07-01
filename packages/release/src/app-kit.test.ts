@@ -104,6 +104,36 @@ describe("@run402/release/app-kit function materialization", () => {
     assert.deepEqual(result.diagnostics, []);
   }));
 
+  it("preserves email triggers in Core manifests", () => withScratch((root) => {
+    const result = materializeFunctionManifestMap({
+      "email-worker": {
+        source: "export default () => new Response('email');\n",
+        triggers: [{
+          id: "mail-events",
+          type: "email",
+          mailbox: "signing-inbox",
+          events: ["reply_received", "bounced"],
+          run: { event_type: "email.event", payload: { source: "mailbox" } },
+        }],
+      },
+    }, {
+      rootDir: root,
+      outDir: join(root, "functions"),
+      targetPolicy: "core",
+    });
+
+    assert.deepEqual(Object.keys(result.functions), ["email-worker"]);
+    assert.deepEqual(result.functions["email-worker"].triggers, [{
+      id: "mail-events",
+      type: "email",
+      mailbox: "signing-inbox",
+      events: ["reply_received", "bounced"],
+      run: { event_type: "email.event", payload: { source: "mailbox" } },
+    }]);
+    assert.deepEqual(result.omittedFunctionNames, []);
+    assert.deepEqual(result.diagnostics, []);
+  }));
+
   it("materializes a single schedule-triggered function source", () => withScratch((root) => {
     const materialized = materializeFunctionSource("cron", {
       source: "export default () => new Response('cron');\n",

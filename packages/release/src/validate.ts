@@ -32,6 +32,7 @@ const SQL_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const LOCALE_TAG = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const COOKIE_DETECT = /^cookie:[A-Za-z0-9._-]{1,128}$/;
 const TOKEN = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/;
+const EMAIL_TRIGGER_EVENTS = new Set(["reply_received", "delivery", "bounced", "complained"]);
 
 export function parseReleaseSpec(input: unknown): ReleaseSpec {
   if (!isRecord(input)) {
@@ -205,24 +206,50 @@ function validateFunctionTriggers(value: unknown, resource: string): void {
     const trigger = value[i];
     const path = `${resource}[${i}]`;
     if (!isRecord(trigger)) throw invalid(path, "function trigger must be an object");
-    rejectUnknownKeys(trigger, path, ["id", "type", "cron", "timezone", "misfire_policy", "overlap_policy", "run"]);
+    rejectUnknownKeys(trigger, path, ["id", "type", "cron", "timezone", "misfire_policy", "overlap_policy", "mailbox", "events", "run"]);
     if (typeof trigger.id !== "string" || trigger.id.length === 0) {
       throw invalid(`${path}.id`, "function trigger id is required");
     }
     if (seen.has(trigger.id)) throw invalid(`${path}.id`, `duplicate function trigger id '${trigger.id}'`);
     seen.add(trigger.id);
-    if (trigger.type !== "schedule") throw invalid(`${path}.type`, "function trigger type must be schedule");
-    if (typeof trigger.cron !== "string" || trigger.cron.trim().split(/\s+/).length !== 5) {
-      throw invalid(`${path}.cron`, "function trigger cron must be a 5-field string");
-    }
-    if (trigger.timezone !== undefined && typeof trigger.timezone !== "string") {
-      throw invalid(`${path}.timezone`, "function trigger timezone must be a string");
-    }
-    if (trigger.misfire_policy !== undefined && trigger.misfire_policy !== "skip") {
-      throw invalid(`${path}.misfire_policy`, "function trigger misfire_policy must be skip");
-    }
-    if (trigger.overlap_policy !== undefined && trigger.overlap_policy !== "allow") {
-      throw invalid(`${path}.overlap_policy`, "function trigger overlap_policy must be allow");
+    if (trigger.type === "schedule") {
+      if (trigger.mailbox !== undefined || trigger.events !== undefined) {
+        throw invalid(path, "schedule triggers cannot include mailbox or events");
+      }
+      if (typeof trigger.cron !== "string" || trigger.cron.trim().split(/\s+/).length !== 5) {
+        throw invalid(`${path}.cron`, "function trigger cron must be a 5-field string");
+      }
+      if (trigger.timezone !== undefined && typeof trigger.timezone !== "string") {
+        throw invalid(`${path}.timezone`, "function trigger timezone must be a string");
+      }
+      if (trigger.misfire_policy !== undefined && trigger.misfire_policy !== "skip") {
+        throw invalid(`${path}.misfire_policy`, "function trigger misfire_policy must be skip");
+      }
+      if (trigger.overlap_policy !== undefined && trigger.overlap_policy !== "allow") {
+        throw invalid(`${path}.overlap_policy`, "function trigger overlap_policy must be allow");
+      }
+    } else if (trigger.type === "email") {
+      if (
+        trigger.cron !== undefined ||
+        trigger.timezone !== undefined ||
+        trigger.misfire_policy !== undefined ||
+        trigger.overlap_policy !== undefined
+      ) {
+        throw invalid(path, "email triggers cannot include schedule fields");
+      }
+      if (typeof trigger.mailbox !== "string" || trigger.mailbox.length === 0) {
+        throw invalid(`${path}.mailbox`, "function trigger mailbox is required");
+      }
+      if (!Array.isArray(trigger.events) || trigger.events.length === 0) {
+        throw invalid(`${path}.events`, "function trigger events must be a non-empty array");
+      }
+      for (let j = 0; j < trigger.events.length; j++) {
+        if (!EMAIL_TRIGGER_EVENTS.has(String(trigger.events[j]))) {
+          throw invalid(`${path}.events[${j}]`, "function trigger event must be reply_received, delivery, bounced, or complained");
+        }
+      }
+    } else {
+      throw invalid(`${path}.type`, "function trigger type must be schedule or email");
     }
     if (!isRecord(trigger.run)) throw invalid(`${path}.run`, "function trigger run must be an object");
     rejectUnknownKeys(trigger.run, `${path}.run`, ["event_type", "payload", "retry", "expires_after_seconds"]);

@@ -3,6 +3,7 @@ import type { Pool as PgPool } from "pg";
 import type { EmailInboundProviderReadiness, EmailInboundRawStorageProvider } from "./email-inbound.js";
 import type { EmailProviderReadiness } from "./email-provider.js";
 import { mailboxAddress } from "./email-validation.js";
+import type { CoreFunctionRunStorePort } from "./function-runs.js";
 
 export type CoreMailboxStatus = "active" | "suspended" | "tombstoned";
 export type CoreMessageDirection = "outbound" | "inbound";
@@ -199,6 +200,10 @@ export interface EnqueueWebhookDeliveryInput {
   source?: string;
 }
 
+export interface PostgresCoreMailboxStoreOptions {
+  functionRuns?: CoreFunctionRunStorePort;
+}
+
 export class CoreMailboxError extends Error {
   constructor(message: string, readonly status: number, readonly code: string) {
     super(message);
@@ -208,9 +213,11 @@ export class CoreMailboxError extends Error {
 
 export class PostgresCoreMailboxStore implements CoreMailboxStorePort {
   readonly #pool: PgPool;
+  readonly #functionRuns?: CoreFunctionRunStorePort;
 
-  constructor(pool: PgPool) {
+  constructor(pool: PgPool, options: PostgresCoreMailboxStoreOptions = {}) {
     this.#pool = pool;
+    this.#functionRuns = options.functionRuns;
   }
 
   async bootstrap(): Promise<void> {
@@ -963,7 +970,89 @@ export class PostgresCoreMailboxStore implements CoreMailboxStorePort {
       );
       if (result.rows[0]) deliveries.push(deliveryFromRow(result.rows[0]));
     }
+    await this.#enqueueEmailFunctionRuns(input);
     return deliveries;
+  }
+
+  async #enqueueEmailFunctionRuns(input: EnqueueWebhookDeliveryInput): Promise<void> {
+    if (!this.#functionRuns) return;
+    const result = await this.#pool.query<EmailFunctionTriggerRow>(
+      `
+        SELECT
+          b.project_id,
+          b.release_id,
+          b.name,
+          trigger.value->>'id' AS trigger_id,
+          trigger.value->'run' AS run
+        FROM internal.core_mailboxes m
+        JOIN internal.core_projects p
+          ON p.project_id = m.project_id
+        JOIN internal.core_function_bundles b
+          ON b.project_id = p.project_id
+         AND b.release_id = p.active_release_id
+        CROSS JOIN LATERAL jsonb_array_elements(COALESCE(b.triggers, '[]'::jsonb)) AS trigger(value)
+        WHERE m.project_id = $1
+          AND m.mailbox_id = $2
+          AND m.status <> 'tombstoned'
+          AND trigger.value->>'type' = 'email'
+          AND trigger.value->>'mailbox' IN (m.mailbox_id, m.slug)
+          AND EXISTS (
+            SELECT 1
+            FROM jsonb_array_elements_text(COALESCE(trigger.value->'events', '[]'::jsonb)) AS event(value)
+            WHERE event.value = $3
+          )
+        ORDER BY b.name, trigger.value->>'id'
+      `,
+      [input.projectId, input.mailboxId, input.eventType],
+    );
+    for (const row of result.rows) {
+      const run = plainObject(row.run);
+      if (!run || typeof run.event_type !== "string" || run.event_type.length === 0) {
+        console.error("Run402 Core email function trigger has invalid run spec", {
+          project_id: row.project_id,
+          function_name: row.name,
+          trigger_id: row.trigger_id,
+        });
+        continue;
+      }
+      const configuredPayload = plainObject(run.payload) ?? {};
+      const retry = plainObject(run.retry);
+      const expiresAfterSeconds = positiveInteger(run.expires_after_seconds);
+      const body = {
+        event_type: run.event_type,
+        idempotency_key: `email:${row.project_id}:${row.name}:${row.release_id}:${row.trigger_id}:${input.eventType}:${input.discriminator}`,
+        payload: {
+          ...configuredPayload,
+          event: input.payload,
+        },
+        ...(retry ? { retry } : {}),
+        ...(expiresAfterSeconds
+          ? { expires_at: new Date(Date.now() + expiresAfterSeconds * 1000).toISOString() }
+          : {}),
+      };
+      try {
+        await this.#functionRuns.createRun({
+          projectId: row.project_id,
+          functionName: row.name,
+          body,
+          source: {
+            type: "email",
+            trigger_id: row.trigger_id,
+            release_id: row.release_id,
+            mailbox_id: input.mailboxId,
+            event_type: input.eventType,
+            discriminator: input.discriminator,
+          },
+        });
+      } catch (error) {
+        console.error("Run402 Core email function trigger enqueue failed", {
+          project_id: row.project_id,
+          function_name: row.name,
+          trigger_id: row.trigger_id,
+          error,
+        });
+      }
+    }
   }
 
   async listWebhookDeliveries(input: { projectId: string; mailboxId: string; status?: CoreWebhookDeliveryStatus }): Promise<CoreWebhookDeliveryRecord[]> {
@@ -1205,6 +1294,14 @@ function mailboxBlockedReasonFor(mailbox: CoreMailboxRecord): string | null {
   return "mailbox_deleted";
 }
 
+interface EmailFunctionTriggerRow {
+  project_id: string;
+  release_id: string;
+  name: string;
+  trigger_id: string;
+  run: unknown;
+}
+
 interface MailboxRow {
   mailbox_id: string;
   slug: string;
@@ -1214,6 +1311,15 @@ interface MailboxRow {
   tombstoned_at: Date | string | null;
   created_at: Date | string;
   updated_at: Date | string;
+}
+
+function plainObject(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function positiveInteger(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;
 }
 
 interface SettingsRow {

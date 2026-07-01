@@ -104,7 +104,17 @@ export interface FunctionScheduleTriggerSpec {
   run: FunctionTriggerRunSpec;
 }
 
-export type FunctionTriggerSpec = FunctionScheduleTriggerSpec;
+export type EmailTriggerEvent = "reply_received" | "delivery" | "bounced" | "complained";
+
+export interface FunctionEmailTriggerSpec {
+  id: string;
+  type: "email";
+  mailbox: string;
+  events: EmailTriggerEvent[];
+  run: FunctionTriggerRunSpec;
+}
+
+export type FunctionTriggerSpec = FunctionScheduleTriggerSpec | FunctionEmailTriggerSpec;
 
 export type DetectSource = "accept-language" | `cookie:${string}`;
 

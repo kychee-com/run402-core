@@ -315,7 +315,8 @@ export async function createGatewayRuntime(config: CoreGatewayConfig): Promise<C
     signedReadSecret: config.signedReadSecret,
     maxObjectBytes: config.maxObjectBytes,
   });
-  const mailboxes = new PostgresCoreMailboxStore(pool);
+  const functionRuns = new PostgresCoreFunctionRunStore(pool);
+  const mailboxes = new PostgresCoreMailboxStore(pool, { functionRuns });
   const emailProvider = createEmailProvider(config.emailProvider);
   const emailInboundProvider = createEmailInboundProvider(config.emailInboundProvider);
   const archiveImporter = new PostgresArchiveImporter(pool, content, {
@@ -323,13 +324,12 @@ export async function createGatewayRuntime(config: CoreGatewayConfig): Promise<C
     postgrestPublicUrl: config.postgrestPublicUrl,
   });
   const scheduleStore = new PostgresCoreScheduleStore(pool);
-  const functionRuns = new PostgresCoreFunctionRunStore(pool);
   await projects.bootstrap();
   await applyStore.bootstrap();
   await storage.bootstrap();
+  await functionRuns.bootstrap();
   await mailboxes.bootstrap();
   await archiveImporter.bootstrap();
-  await functionRuns.bootstrap();
 
   let runtime: CoreGatewayRuntime;
   const scheduler = new CoreFunctionScheduler({

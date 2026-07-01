@@ -101,22 +101,34 @@ export function normalizePortableReleaseState(state: PortableReleaseState): Port
 
 export function normalizeFunctionTriggers(triggers: readonly FunctionTriggerSpec[] = []): FunctionTriggerSpec[] {
   return [...triggers]
-    .map((trigger) => ({
-      id: trigger.id,
-      type: "schedule" as const,
-      cron: trigger.cron,
-      timezone: trigger.timezone ?? "UTC",
-      misfire_policy: trigger.misfire_policy ?? "skip",
-      overlap_policy: trigger.overlap_policy ?? "allow",
-      run: {
+    .map((trigger) => {
+      const run = {
         event_type: trigger.run.event_type,
         payload: trigger.run.payload ?? {},
         ...(trigger.run.retry !== undefined ? { retry: deepClone(trigger.run.retry) as Record<string, unknown> } : {}),
         ...(trigger.run.expires_after_seconds !== undefined
           ? { expires_after_seconds: trigger.run.expires_after_seconds }
           : {}),
-      },
-    }))
+      };
+      if (trigger.type === "email") {
+        return {
+          id: trigger.id,
+          type: "email" as const,
+          mailbox: trigger.mailbox,
+          events: [...trigger.events].sort(compareAscii),
+          run,
+        };
+      }
+      return {
+        id: trigger.id,
+        type: "schedule" as const,
+        cron: trigger.cron,
+        timezone: trigger.timezone ?? "UTC",
+        misfire_policy: trigger.misfire_policy ?? "skip",
+        overlap_policy: trigger.overlap_policy ?? "allow",
+        run,
+      };
+    })
     .sort((a, b) => compareAscii(a.id, b.id));
 }
 
