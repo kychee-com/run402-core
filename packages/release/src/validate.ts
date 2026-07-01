@@ -165,6 +165,7 @@ function validateFunctionSpec(fn: FunctionSpec, resource: string): void {
     "source",
     "files",
     "config",
+    "triggers",
     "schedule",
     "deps",
     "requireAuth",
@@ -182,6 +183,7 @@ function validateFunctionSpec(fn: FunctionSpec, resource: string): void {
     if (!isRecord(fn.config)) throw invalid(`${resource}.config`, "function config must be an object");
     rejectUnknownKeys(fn.config, `${resource}.config`, ["timeoutSeconds", "memoryMb"]);
   }
+  if (fn.triggers !== undefined) validateFunctionTriggers(fn.triggers, `${resource}.triggers`);
   if (fn.schedule !== undefined && fn.schedule !== null && typeof fn.schedule !== "string") {
     throw invalid(`${resource}.schedule`, "function schedule must be a string or null");
   }
@@ -194,6 +196,54 @@ function validateFunctionSpec(fn: FunctionSpec, resource: string): void {
     throw invalid(`${resource}.class`, "function class must be standard or ssr");
   }
   if (fn.capabilities !== undefined) validateStringArray(fn.capabilities, `${resource}.capabilities`);
+}
+
+function validateFunctionTriggers(value: unknown, resource: string): void {
+  if (!Array.isArray(value)) throw invalid(resource, "function triggers must be an array");
+  const seen = new Set<string>();
+  for (let i = 0; i < value.length; i++) {
+    const trigger = value[i];
+    const path = `${resource}[${i}]`;
+    if (!isRecord(trigger)) throw invalid(path, "function trigger must be an object");
+    rejectUnknownKeys(trigger, path, ["id", "type", "cron", "timezone", "misfire_policy", "overlap_policy", "run"]);
+    if (typeof trigger.id !== "string" || trigger.id.length === 0) {
+      throw invalid(`${path}.id`, "function trigger id is required");
+    }
+    if (seen.has(trigger.id)) throw invalid(`${path}.id`, `duplicate function trigger id '${trigger.id}'`);
+    seen.add(trigger.id);
+    if (trigger.type !== "schedule") throw invalid(`${path}.type`, "function trigger type must be schedule");
+    if (typeof trigger.cron !== "string" || trigger.cron.trim().split(/\s+/).length !== 5) {
+      throw invalid(`${path}.cron`, "function trigger cron must be a 5-field string");
+    }
+    if (trigger.timezone !== undefined && typeof trigger.timezone !== "string") {
+      throw invalid(`${path}.timezone`, "function trigger timezone must be a string");
+    }
+    if (trigger.misfire_policy !== undefined && trigger.misfire_policy !== "skip") {
+      throw invalid(`${path}.misfire_policy`, "function trigger misfire_policy must be skip");
+    }
+    if (trigger.overlap_policy !== undefined && trigger.overlap_policy !== "allow") {
+      throw invalid(`${path}.overlap_policy`, "function trigger overlap_policy must be allow");
+    }
+    if (!isRecord(trigger.run)) throw invalid(`${path}.run`, "function trigger run must be an object");
+    rejectUnknownKeys(trigger.run, `${path}.run`, ["event_type", "payload", "retry", "expires_after_seconds"]);
+    if (typeof trigger.run.event_type !== "string" || trigger.run.event_type.length === 0) {
+      throw invalid(`${path}.run.event_type`, "function trigger run.event_type is required");
+    }
+    if (trigger.run.payload !== undefined && !isRecord(trigger.run.payload)) {
+      throw invalid(`${path}.run.payload`, "function trigger run.payload must be an object");
+    }
+    if (trigger.run.retry !== undefined && !isRecord(trigger.run.retry)) {
+      throw invalid(`${path}.run.retry`, "function trigger run.retry must be an object");
+    }
+    if (
+      trigger.run.expires_after_seconds !== undefined &&
+      (typeof trigger.run.expires_after_seconds !== "number" ||
+        !Number.isInteger(trigger.run.expires_after_seconds) ||
+        trigger.run.expires_after_seconds <= 0)
+    ) {
+      throw invalid(`${path}.run.expires_after_seconds`, "function trigger run.expires_after_seconds must be a positive integer");
+    }
+  }
 }
 
 function validateRoleGate(gate: RoleGateSpec, resource: string): void {

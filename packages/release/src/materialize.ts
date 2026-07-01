@@ -1,5 +1,10 @@
 import { ReleaseSpecValidationError } from "./errors.js";
-import { emptyPortableReleaseState, normalizePortableReleaseState, normalizeReleaseSpec } from "./normalize.js";
+import {
+  emptyPortableReleaseState,
+  normalizeFunctionTriggers,
+  normalizePortableReleaseState,
+  normalizeReleaseSpec,
+} from "./normalize.js";
 import { materializeRoutes } from "./routes.js";
 import {
   buildStaticManifestFromEntries,
@@ -296,6 +301,8 @@ function clonePortableReleaseState(base: PortableReleaseState): PortableReleaseS
         require_auth: fn.require_auth,
         require_role: fn.require_role ? cloneRoleGate(fn.require_role) : null,
       };
+      const triggers = normalizeFunctionTriggers(fn.triggers ?? []);
+      if (triggers.length > 0) cloned.triggers = triggers;
       if (fn.class) cloned.class = fn.class;
       if (fn.capabilities) cloned.capabilities = [...fn.capabilities];
       return cloned;
@@ -319,7 +326,7 @@ function clonePortableReleaseState(base: PortableReleaseState): PortableReleaseS
 }
 
 function functionEntryFromSpec(name: string, spec: FunctionSpec): PortableFunctionEntry {
-  return {
+  const entry: PortableFunctionEntry = {
     name,
     code_hash: spec.source?.sha256 ?? "",
     runtime: spec.runtime,
@@ -332,6 +339,9 @@ function functionEntryFromSpec(name: string, spec: FunctionSpec): PortableFuncti
     ...(spec.class ? { class: spec.class } : {}),
     ...(spec.capabilities ? { capabilities: [...spec.capabilities].sort(compareAscii) } : {}),
   };
+  const triggers = normalizeFunctionTriggers(spec.triggers ?? []);
+  if (triggers.length > 0) entry.triggers = triggers;
+  return entry;
 }
 
 function cloneRoleGate(gate: RoleGateSpec): RoleGateSpec {

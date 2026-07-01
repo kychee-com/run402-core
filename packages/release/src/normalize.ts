@@ -1,6 +1,6 @@
 import { PORTABLE_RELEASE_STATE_VERSION } from "./versions.js";
 import { canonicalizeStaticManifest } from "./static-manifest.js";
-import type { PortableReleaseState, ReleaseSpec } from "./types.js";
+import type { FunctionTriggerSpec, PortableReleaseState, ReleaseSpec } from "./types.js";
 import { validateReleaseSpec } from "./validate.js";
 
 export function normalizeReleaseSpec(spec: ReleaseSpec): ReleaseSpec {
@@ -59,6 +59,7 @@ export function normalizePortableReleaseState(state: PortableReleaseState): Port
     static_manifest: state.static_manifest ? canonicalizeStaticManifest(state.static_manifest) : null,
     functions: [...state.functions]
       .map((fn) => {
+        const triggers = normalizeFunctionTriggers(fn.triggers ?? []);
         const normalized = {
           name: fn.name,
           code_hash: fn.code_hash,
@@ -72,6 +73,7 @@ export function normalizePortableReleaseState(state: PortableReleaseState): Port
             ? { ...fn.require_role, allowed: [...fn.require_role.allowed].sort(compareAscii) }
             : null,
         } as typeof fn;
+        if (triggers.length > 0) normalized.triggers = triggers;
         if (fn.class) normalized.class = fn.class;
         if (fn.capabilities) normalized.capabilities = [...fn.capabilities].sort(compareAscii);
         return normalized;
@@ -95,6 +97,27 @@ export function normalizePortableReleaseState(state: PortableReleaseState): Port
         }
       : null,
   };
+}
+
+export function normalizeFunctionTriggers(triggers: readonly FunctionTriggerSpec[] = []): FunctionTriggerSpec[] {
+  return [...triggers]
+    .map((trigger) => ({
+      id: trigger.id,
+      type: "schedule" as const,
+      cron: trigger.cron,
+      timezone: trigger.timezone ?? "UTC",
+      misfire_policy: trigger.misfire_policy ?? "skip",
+      overlap_policy: trigger.overlap_policy ?? "allow",
+      run: {
+        event_type: trigger.run.event_type,
+        payload: trigger.run.payload ?? {},
+        ...(trigger.run.retry !== undefined ? { retry: deepClone(trigger.run.retry) as Record<string, unknown> } : {}),
+        ...(trigger.run.expires_after_seconds !== undefined
+          ? { expires_after_seconds: trigger.run.expires_after_seconds }
+          : {}),
+      },
+    }))
+    .sort((a, b) => compareAscii(a.id, b.id));
 }
 
 function deepClone<T>(value: T): T {

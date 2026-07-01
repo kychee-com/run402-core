@@ -78,6 +78,7 @@ export interface FunctionSpec {
   source?: ContentRefHex;
   files?: FileSet;
   config?: { timeoutSeconds?: number; memoryMb?: number };
+  triggers?: FunctionTriggerSpec[];
   schedule?: string | null;
   deps?: string[];
   requireAuth?: boolean;
@@ -85,6 +86,25 @@ export interface FunctionSpec {
   class?: "ssr" | "standard";
   capabilities?: string[];
 }
+
+export interface FunctionTriggerRunSpec {
+  event_type: string;
+  payload?: Record<string, unknown>;
+  retry?: Record<string, unknown>;
+  expires_after_seconds?: number;
+}
+
+export interface FunctionScheduleTriggerSpec {
+  id: string;
+  type: "schedule";
+  cron: string;
+  timezone?: string;
+  misfire_policy?: "skip";
+  overlap_policy?: "allow";
+  run: FunctionTriggerRunSpec;
+}
+
+export type FunctionTriggerSpec = FunctionScheduleTriggerSpec;
 
 export type DetectSource = "accept-language" | `cookie:${string}`;
 
@@ -255,6 +275,7 @@ export interface PortableFunctionEntry {
   timeout_seconds: number;
   memory_mb: number;
   schedule: string | null;
+  triggers?: FunctionTriggerSpec[];
   deps: string[];
   require_auth: boolean;
   require_role: RoleGateSpec | null;

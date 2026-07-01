@@ -93,6 +93,18 @@ import {
   PostgresCoreScheduleStore,
   type CoreScheduleStorePort,
 } from "./scheduler.js";
+import {
+  CoreFunctionRunError,
+  CoreFunctionRunWorker,
+  FUNCTION_RUN_STATUSES,
+  PostgresCoreFunctionRunStore,
+  coreFunctionRunEnvelope,
+  type CoreFunctionRunClaim,
+  type CoreFunctionRunCreateInput,
+  type CoreFunctionRunStatus,
+  type CoreFunctionRunStorePort,
+  type CoreFunctionRunWorkerResult,
+} from "./function-runs.js";
 import { PostgresStorageStore } from "./postgres-storage.js";
 import { CoreWebhookDeliveryWorker, webhookDeliveryConfigFromEnv, type WebhookDeliveryConfig } from "./webhook-delivery.js";
 
@@ -145,6 +157,8 @@ export interface CoreGatewayRuntime {
   scheduler?: CoreFunctionScheduler;
   scheduleStore?: CoreScheduleStorePort;
   scheduleLimits?: CoreFunctionScheduleLimits;
+  functionRuns?: CoreFunctionRunStorePort;
+  functionRunWorker?: CoreFunctionRunWorker;
   rootProjectId?: string;
   publicBaseUrl?: string;
   functionApiBaseUrl?: string;
@@ -309,11 +323,13 @@ export async function createGatewayRuntime(config: CoreGatewayConfig): Promise<C
     postgrestPublicUrl: config.postgrestPublicUrl,
   });
   const scheduleStore = new PostgresCoreScheduleStore(pool);
+  const functionRuns = new PostgresCoreFunctionRunStore(pool);
   await projects.bootstrap();
   await applyStore.bootstrap();
   await storage.bootstrap();
   await mailboxes.bootstrap();
   await archiveImporter.bootstrap();
+  await functionRuns.bootstrap();
 
   let runtime: CoreGatewayRuntime;
   const scheduler = new CoreFunctionScheduler({
@@ -321,6 +337,12 @@ export async function createGatewayRuntime(config: CoreGatewayConfig): Promise<C
     limits: config.scheduleLimits,
     invoker: {
       invokeScheduledFunction: async (input) => await invokeScheduledFunction(runtime, input),
+    },
+  });
+  const functionRunWorker = new CoreFunctionRunWorker({
+    store: functionRuns,
+    invoker: {
+      invokeFunctionRun: async (claim) => await invokeCoreFunctionRun(runtime, claim),
     },
   });
 
@@ -348,6 +370,8 @@ export async function createGatewayRuntime(config: CoreGatewayConfig): Promise<C
     scheduler,
     scheduleStore,
     scheduleLimits: config.scheduleLimits,
+    functionRuns,
+    functionRunWorker,
     archiveImporter,
     rootProjectId: config.rootProjectId,
     publicBaseUrl: config.publicBaseUrl,
@@ -372,6 +396,7 @@ export async function createGatewayRuntime(config: CoreGatewayConfig): Promise<C
     maxObjectBytes: config.maxObjectBytes,
     close: async () => {
       scheduler.stop();
+      functionRunWorker.stop();
       await pool.end();
     },
   };
@@ -974,6 +999,136 @@ export async function coreGatewayResponse(
     }
   }
 
+  const functionRunGetMatch = /^\/functions\/v1\/runs\/([^/]+)$/.exec(pathname);
+  if (method === "GET" && functionRunGetMatch) {
+    const store = runtime.functionRuns;
+    if (!store) return unavailable("function_runs_unavailable", "Run402 Core function runs are not configured.");
+    const auth = await requireServiceProjectFromHeaders(runtime, headers);
+    if ("status" in auth) return auth;
+    try {
+      const run = await store.getRun({
+        projectId: auth.project_id,
+        runId: decodePathSegment(functionRunGetMatch[1]) ?? "",
+      });
+      return { status: 200, body: run };
+    } catch (error) {
+      return functionRunErrorToGateway(error);
+    }
+  }
+
+  const functionRunLogsMatch = /^\/functions\/v1\/runs\/([^/]+)\/logs$/.exec(pathname);
+  if (method === "GET" && functionRunLogsMatch) {
+    const store = runtime.functionRuns;
+    const logs = runtime.functionLogs;
+    if (!store) return unavailable("function_runs_unavailable", "Run402 Core function runs are not configured.");
+    if (!logs) return unavailable("function_logs_unavailable", "Run402 Core function logs are not configured.");
+    const auth = await requireServiceProjectFromHeaders(runtime, headers);
+    if ("status" in auth) return auth;
+    try {
+      const runId = decodePathSegment(functionRunLogsMatch[1]) ?? "";
+      const run = await store.getRun({ projectId: auth.project_id, runId });
+      const logQuery = functionLogQuery(query);
+      const listed = await logs.listLogs({
+        projectId: auth.project_id,
+        functionName: run.function_name,
+        requestId: run.run_id,
+        ...(logQuery.since ? { since: logQuery.since } : {}),
+        ...(logQuery.tail ? { tail: logQuery.tail } : {}),
+      });
+      return { status: 200, body: { logs: listed } };
+    } catch (error) {
+      if (error instanceof CoreFunctionRunError) return functionRunErrorToGateway(error);
+      return storageRouteError(error);
+    }
+  }
+
+  const functionRunCancelMatch = /^\/functions\/v1\/runs\/([^/]+)\/cancel$/.exec(pathname);
+  if (method === "POST" && functionRunCancelMatch) {
+    const store = runtime.functionRuns;
+    if (!store) return unavailable("function_runs_unavailable", "Run402 Core function runs are not configured.");
+    const auth = await requireServiceProjectFromHeaders(runtime, headers);
+    if ("status" in auth) return auth;
+    try {
+      const run = await store.cancelRun({
+        projectId: auth.project_id,
+        runId: decodePathSegment(functionRunCancelMatch[1]) ?? "",
+      });
+      return { status: 200, body: run };
+    } catch (error) {
+      return functionRunErrorToGateway(error);
+    }
+  }
+
+  const functionRunRedriveMatch = /^\/functions\/v1\/runs\/([^/]+)\/redrive$/.exec(pathname);
+  if (method === "POST" && functionRunRedriveMatch) {
+    const store = runtime.functionRuns;
+    if (!store) return unavailable("function_runs_unavailable", "Run402 Core function runs are not configured.");
+    const auth = await requireServiceProjectFromHeaders(runtime, headers);
+    if ("status" in auth) return auth;
+    try {
+      const body = objectBody(request.body);
+      const retry = isPlainObject(body.retry) ? body.retry : undefined;
+      const run = await store.redriveRun({
+        projectId: auth.project_id,
+        runId: decodePathSegment(functionRunRedriveMatch[1]) ?? "",
+        ...(retry ? { retry } : {}),
+      });
+      return { status: 200, body: run };
+    } catch (error) {
+      return functionRunErrorToGateway(error);
+    }
+  }
+
+  if (pathname === "/functions/v1/runs" || pathname.startsWith("/functions/v1/runs/")) {
+    return {
+      status: 404,
+      body: { error: "function_run_route_not_found", message: "Function run route not found." },
+    };
+  }
+
+  const functionRunCreateListMatch = /^\/functions\/v1\/([^/]+)\/runs$/.exec(pathname);
+  if ((method === "POST" || method === "GET") && functionRunCreateListMatch) {
+    const store = runtime.functionRuns;
+    if (!store) return unavailable("function_runs_unavailable", "Run402 Core function runs are not configured.");
+    const functionName = decodePathSegment(functionRunCreateListMatch[1]);
+    if (!functionName) return { status: 400, body: { error: "invalid_function_name", message: "Function name is invalid." } };
+    const auth = await requireServiceProjectFromHeaders(runtime, headers);
+    if ("status" in auth) return auth;
+    try {
+      if (method === "POST") {
+        const source = sourceFromFunctionRunParentHeaders(headers);
+        const result = await store.createRun({
+          projectId: auth.project_id,
+          functionName,
+          body: objectBody(request.body) as unknown as CoreFunctionRunCreateInput,
+          idempotencyKeyHeader: headerValueFromNormalizedHeaders(headers, "idempotency-key"),
+          source: source ?? { type: "api" },
+        });
+        return { status: result.httpStatus, body: result.run };
+      }
+      const status = validateOptionalFunctionRunStatus(query.get("status") ?? undefined);
+      const eventType = query.get("event_type") ?? query.get("eventType") ?? undefined;
+      const since = query.get("since") ?? undefined;
+      const until = query.get("until") ?? undefined;
+      const cursor = query.get("cursor") ?? undefined;
+      const result = await store.listRuns({
+        projectId: auth.project_id,
+        functionName,
+        options: {
+          ...(status ? { status } : {}),
+          ...(eventType ? { eventType } : {}),
+          ...(since ? { since } : {}),
+          ...(until ? { until } : {}),
+          ...(cursor ? { cursor } : {}),
+          limit: query.get("limit") ? expectQueryInteger(query.get("limit"), "limit") : 20,
+        },
+      });
+      return { status: 200, body: result };
+    } catch (error) {
+      return functionRunErrorToGateway(error);
+    }
+  }
+
   if (method === "POST" && pathname === "/functions/v1/invoke") {
     try {
       const input = directInvokeInput(request.body);
@@ -1056,9 +1211,11 @@ export async function startServer(config = loadConfig()): Promise<http.Server> {
     void requestHandler(req, res, runtime);
   });
   await runtime.scheduler?.start();
+  runtime.functionRunWorker?.start();
   server.on("close", () => {
     webhookDeliveryWorker?.stop();
     runtime.scheduler?.stop();
+    runtime.functionRunWorker?.stop();
     void runtime.close?.();
   });
   await new Promise<void>((resolve) => {
@@ -2479,6 +2636,75 @@ function functionLogQuery(query: URLSearchParams): {
   };
 }
 
+function validateOptionalFunctionRunStatus(value: unknown): CoreFunctionRunStatus | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value !== "string" || !FUNCTION_RUN_STATUSES.has(value as CoreFunctionRunStatus)) {
+    throw new CoreFunctionRunError("invalid_function_run_request", 400, "status is invalid", { field: "status" });
+  }
+  return value as CoreFunctionRunStatus;
+}
+
+const FUNCTION_PARENT_RUN_ID_RE = /^fnrun_[A-Za-z0-9_-]{4,128}$/;
+const FUNCTION_PARENT_ATTEMPT_ID_RE = /^fnatt_[A-Za-z0-9_-]{4,128}$/;
+
+function sourceFromFunctionRunParentHeaders(headers: Record<string, string | undefined>): Record<string, unknown> | undefined {
+  const parentRunId = headerValueFromNormalizedHeaders(headers, "x-run402-parent-run-id");
+  if (!parentRunId) return undefined;
+  if (!FUNCTION_PARENT_RUN_ID_RE.test(parentRunId)) {
+    throw new CoreFunctionRunError("invalid_function_run_request", 400, "Invalid X-Run402-Parent-Run-Id header", {
+      field: "X-Run402-Parent-Run-Id",
+    });
+  }
+  const source: Record<string, unknown> = {
+    type: "function",
+    parent_run_id: parentRunId,
+  };
+  const parentAttemptId = headerValueFromNormalizedHeaders(headers, "x-run402-parent-attempt-id");
+  if (parentAttemptId) {
+    if (!FUNCTION_PARENT_ATTEMPT_ID_RE.test(parentAttemptId)) {
+      throw new CoreFunctionRunError("invalid_function_run_request", 400, "Invalid X-Run402-Parent-Attempt-Id header", {
+        field: "X-Run402-Parent-Attempt-Id",
+      });
+    }
+    source.parent_attempt_id = parentAttemptId;
+  }
+  return source;
+}
+
+function headerValueFromNormalizedHeaders(headers: Record<string, string | undefined>, name: string): string | undefined {
+  return headers[name.toLowerCase()];
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function functionRunErrorToGateway(error: unknown): CoreGatewayResult {
+  if (error instanceof CoreFunctionRunError) {
+    return {
+      status: error.status,
+      body: {
+        error: error.code,
+        message: error.message,
+        ...error.details,
+      },
+    };
+  }
+  if (error instanceof RangeError) {
+    return {
+      status: 400,
+      body: { error: "invalid_function_run_request", message: error.message },
+    };
+  }
+  return {
+    status: 500,
+    body: {
+      error: "function_run_internal_error",
+      message: error instanceof Error ? error.message : String(error),
+    },
+  };
+}
+
 function createDevToken(body: unknown, secret: string): {
   token: string;
   authorization: string;
@@ -3125,6 +3351,145 @@ export async function invokeScheduledFunction(
   }
 }
 
+export async function invokeCoreFunctionRun(
+  runtime: CoreGatewayRuntime,
+  claim: CoreFunctionRunClaim,
+): Promise<CoreFunctionRunWorkerResult> {
+  const requestId = claim.run.id;
+  if (!runtime.releases) {
+    return {
+      statusCode: 503,
+      error: {
+        code: "RUNTIME_KERNEL_UNAVAILABLE",
+        message: "Run402 Core runtime kernel is not fully configured.",
+        retryable: true,
+      },
+    };
+  }
+  if (!runtime.functionExecutor || !runtime.functionBundles) {
+    return {
+      statusCode: 503,
+      error: {
+        code: "DYNAMIC_RUNTIME_UNAVAILABLE",
+        message: "Run402 Core dynamic functions runtime is not configured.",
+        retryable: true,
+      },
+    };
+  }
+
+  const base = await runtime.releases.getBase(claim.run.project_id, "current");
+  if (!base.release_id) {
+    return {
+      statusCode: 404,
+      error: {
+        code: "RELEASE_NOT_FOUND",
+        message: "Project has no active release for function run execution.",
+        retryable: true,
+      },
+    };
+  }
+
+  const bundle = await runtime.functionBundles.getFunctionBundle({
+    projectId: claim.run.project_id,
+    releaseId: base.release_id,
+    functionName: claim.run.function_name,
+  });
+  if (!bundle) {
+    return {
+      statusCode: 404,
+      error: {
+        code: "FUNCTION_BUNDLE_NOT_FOUND",
+        message: "Run402 Core function bundle metadata is not available.",
+        retryable: true,
+      },
+    };
+  }
+
+  const secrets = await resolveFunctionSecrets(runtime, claim.run.project_id, bundle);
+  if (isGatewayResult(secrets)) {
+    return {
+      statusCode: secrets.status,
+      error: {
+        code: String((secrets.body as { error?: unknown }).error ?? "FUNCTION_SECRETS_UNAVAILABLE"),
+        message: String((secrets.body as { message?: unknown }).message ?? "Function secrets are not available."),
+        retryable: secrets.status >= 500,
+      },
+    };
+  }
+  const run402Env = await resolveFunctionRuntimeEnv(runtime, claim.run.project_id);
+  if (isGatewayResult(run402Env)) {
+    return {
+      statusCode: run402Env.status,
+      error: {
+        code: String((run402Env.body as { error?: unknown }).error ?? "FUNCTION_ENV_UNAVAILABLE"),
+        message: String((run402Env.body as { message?: unknown }).message ?? "Function runtime environment is not available."),
+        retryable: run402Env.status >= 500,
+      },
+    };
+  }
+
+  const publicPath = `/functions/v1/${claim.run.function_name}`;
+  const baseUrl = (runtime.functionApiBaseUrl ?? runtime.publicBaseUrl ?? "http://127.0.0.1:4020").replace(/\/+$/, "");
+  try {
+    const result = await invokeFunctionWithDiagnostics(runtime, {
+      projectId: claim.run.project_id,
+      releaseId: base.release_id,
+      functionName: claim.run.function_name,
+      invocationKind: "scheduled",
+      requestId,
+      actor: null,
+      secrets,
+      run402Env,
+      bundle,
+      request: {
+        version: "run402.routed_http.v1",
+        method: "POST",
+        url: `${baseUrl}${publicPath}`,
+        path: publicPath,
+        rawPath: publicPath,
+        rawQuery: "",
+        headers: functionRunRequestHeaders({
+          projectId: claim.run.project_id,
+          releaseId: base.release_id,
+          requestId,
+          functionName: claim.run.function_name,
+          attemptId: claim.attemptId,
+        }),
+        cookies: { raw: null },
+        body: routedBody(coreFunctionRunEnvelope(claim)),
+        context: {
+          source: "route",
+          projectId: claim.run.project_id,
+          releaseId: base.release_id,
+          deploymentId: null,
+          host: "run402-core.local",
+          proto: "http",
+          routePattern: `function_run:${claim.run.function_name}`,
+          routeKind: "exact",
+          routeTarget: { type: "function", name: claim.run.function_name },
+          requestId,
+          locale: null,
+          defaultLocale: null,
+        },
+      },
+    }, secrets, {
+      routePattern: `function_run:${claim.run.function_name}`,
+      method: "POST",
+      path: publicPath,
+    });
+    return { statusCode: result.response.status };
+  } catch (error) {
+    return {
+      statusCode: runtimeErrorStatus(error),
+      error: {
+        code: runtimeErrorCode(error).toUpperCase(),
+        message: error instanceof Error ? error.message : "Function invocation failed.",
+        retryable: true,
+      },
+    };
+  }
+}
+
 interface FunctionDiagnosticsContext {
   routePattern?: string;
   method?: string;
@@ -3605,6 +3970,26 @@ function scheduledRequestHeaders(context: {
     ["x-run402-request-id", context.requestId],
     ["x-run402-function-name", context.functionName],
     ["x-run402-route-pattern", `scheduler:${context.functionName}`],
+  ];
+}
+
+function functionRunRequestHeaders(context: {
+  projectId: string;
+  releaseId: string;
+  requestId: string;
+  functionName: string;
+  attemptId: string;
+}): Array<[string, string]> {
+  return [
+    ["content-type", "application/json"],
+    ["x-run402-trigger", "function_run"],
+    ["x-run402-project-id", context.projectId],
+    ["x-run402-release-id", context.releaseId],
+    ["x-run402-request-id", context.requestId],
+    ["x-run402-run-id", context.requestId],
+    ["x-run402-attempt-id", context.attemptId],
+    ["x-run402-function-name", context.functionName],
+    ["x-run402-route-pattern", `function_run:${context.functionName}`],
   ];
 }
 

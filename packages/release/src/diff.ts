@@ -1,4 +1,5 @@
 import { buildStaticManifestFromPortableState } from "./materialize.js";
+import { normalizeFunctionTriggers } from "./normalize.js";
 import { sortRouteEntries } from "./routes.js";
 import {
   collectLegacyImmutableRisks,
@@ -93,6 +94,7 @@ export interface FunctionsDiff {
       | "timeout_seconds"
       | "memory_mb"
       | "schedule"
+      | "triggers"
       | "deps"
     >;
   }>;
@@ -624,6 +626,9 @@ function changedFunctionFields(
   if (fromFn.timeout_seconds !== toFn.timeout_seconds) fields.push("timeout_seconds");
   if (fromFn.memory_mb !== toFn.memory_mb) fields.push("memory_mb");
   if (fromFn.schedule !== toFn.schedule) fields.push("schedule");
+  if (JSON.stringify(normalizeFunctionTriggers(fromFn.triggers ?? [])) !== JSON.stringify(normalizeFunctionTriggers(toFn.triggers ?? []))) {
+    fields.push("triggers");
+  }
   if (JSON.stringify([...(fromFn.deps ?? [])].sort()) !== JSON.stringify([...(toFn.deps ?? [])].sort())) {
     fields.push("deps");
   }

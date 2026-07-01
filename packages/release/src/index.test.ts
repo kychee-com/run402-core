@@ -451,6 +451,62 @@ describe("portable release materialization", () => {
       unknownLocalePolicy: "reject",
     });
   });
+
+  it("materializes schedule triggers with canonical defaults and diffs trigger-only changes", () => {
+    const withoutTrigger = materializeRelease({
+      spec: {
+        project: "p0001",
+        functions: {
+          replace: {
+            api: {
+              runtime: "node22",
+              source: { sha256: SHA_A, size: 10 },
+            },
+          },
+        },
+      },
+    });
+    const withTrigger = materializeRelease({
+      concreteBase: withoutTrigger,
+      spec: {
+        project: "p0001",
+        functions: {
+          patch: {
+            set: {
+              api: {
+                runtime: "node22",
+                source: { sha256: SHA_A, size: 10 },
+                triggers: [
+                  {
+                    id: "hourly",
+                    type: "schedule",
+                    cron: "0 * * * *",
+                    run: { event_type: "maintenance" },
+                  },
+                ],
+              },
+            },
+          },
+        },
+      },
+    });
+
+    assert.deepEqual(withTrigger.functions[0]?.triggers, [
+      {
+        id: "hourly",
+        type: "schedule",
+        cron: "0 * * * *",
+        timezone: "UTC",
+        misfire_policy: "skip",
+        overlap_policy: "allow",
+        run: { event_type: "maintenance", payload: {} },
+      },
+    ]);
+    const diff = computeReleaseDiff(withoutTrigger, withTrigger);
+    assert.deepEqual(diff.functions.changed, [
+      { name: "api", fields_changed: ["triggers"] },
+    ]);
+  });
 });
 
 describe("release diff, warnings, and requirements", () => {

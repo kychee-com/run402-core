@@ -89,6 +89,36 @@ export type {
   RoutedHttpResponseInit,
   RoutedHttpResponseV1,
 } from "./routed-http.js";
+export {
+  defineFunctionRuns,
+  functions,
+  isFunctionRun,
+  parseFunctionRun,
+  parseFunctionRunEnvelope,
+  permanentFunctionRunError,
+  retryableFunctionRunError,
+  Run402FunctionRunContextError,
+  Run402FunctionRunFailure,
+  Run402FunctionRunInputError,
+  Run402FunctionRunPlatformError,
+} from "./function-runs.js";
+export type {
+  FunctionRunAttemptEnvelope,
+  FunctionRunCreateOptions,
+  FunctionRunEnvelope,
+  FunctionRunErrorInfo,
+  FunctionRunHandle,
+  FunctionRunHandler,
+  FunctionRunHandlerContext,
+  FunctionRunHandlerDefinition,
+  FunctionRunHandlers,
+  FunctionRunPayloadParser,
+  FunctionRunPayloadValidator,
+  FunctionRunRetryPolicy,
+  FunctionRunSafePayloadParser,
+  FunctionRunSource,
+  FunctionRunStatus,
+} from "./function-runs.js";
 // Capability `astro-ssr-runtime` (v1.52).
 // `cache.*` — sub-second admin-edit visibility via origin-side ISR
 // cache invalidation. Server-side (function-context) only.

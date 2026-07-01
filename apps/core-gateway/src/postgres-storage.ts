@@ -1317,7 +1317,7 @@ function normalizeFunctionName(name: string | null | undefined, message: string)
 }
 
 function normalizeRequestId(requestId: string): string {
-  if (!/^req_[A-Za-z0-9_-]{6,128}$/.test(requestId)) {
+  if (!/^(?:req|fnrun|fnatt)_[A-Za-z0-9_-]{4,128}$/.test(requestId)) {
     throw new StorageValidationError("invalid_request_id", "Function log request_id is invalid.");
   }
   return requestId;

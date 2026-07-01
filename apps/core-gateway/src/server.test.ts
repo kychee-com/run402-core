@@ -52,7 +52,17 @@ import type {
   StoreInboundMessageInput,
 } from "./postgres-mailboxes.js";
 import { CoreFunctionScheduler, type CoreScheduleStorePort, type CoreScheduledFunctionRecord } from "./scheduler.js";
-import { coreGatewayResponse, invokeScheduledFunction, loadConfig } from "./server.js";
+import { coreGatewayResponse, invokeCoreFunctionRun, invokeScheduledFunction, loadConfig } from "./server.js";
+import {
+  processCoreFunctionRunOnce,
+  type CoreFunctionRunClaim,
+  type CoreFunctionRunCreateInput,
+  type CoreFunctionRunListOptions,
+  type CoreFunctionRunPublicResponse,
+  type CoreFunctionRunRow,
+  type CoreFunctionRunStorePort,
+  type CoreFunctionRunWorkerResult,
+} from "./function-runs.js";
 import { DEFAULT_WEBHOOK_DELIVERY_CONFIG, drainWebhookDeliveries } from "./webhook-delivery.js";
 
 test("loadConfig does not require Cloud environment variables", () => {
@@ -2488,6 +2498,178 @@ test("manual scheduled function trigger reports missing scheduled functions to a
   assert.equal(scheduleStore.lookupCount, 1);
 });
 
+test("durable function run routes create, list, read, log, cancel, and redrive with service-key auth", async () => {
+  const catalog = new MemoryProjectCatalog();
+  const project = await catalog.create({ name: "durable runs app" });
+  const functionRuns = new MemoryFunctionRunStore();
+  const functionLogs = new MemoryFunctionLogs();
+  functionLogs.logs.push(userLog({
+    projectId: project.project_id,
+    releaseId: "rel_test",
+    functionName: "worker",
+    invocationKind: "scheduled",
+    requestId: "fnrun_route_123",
+    bundle: functionBundle("1".repeat(64), 12),
+  }, "stdout", "processed"));
+  const runtime = {
+    projects: catalog,
+    projectKeys: catalog,
+    functionRuns,
+    functionLogs,
+  };
+
+  const created = await coreGatewayResponse({
+    method: "POST",
+    pathname: "/functions/v1/worker/runs",
+    headers: {
+      authorization: `Bearer ${project.service_key}`,
+      "idempotency-key": "reply:msg_123",
+    },
+    body: {
+      event_type: "kysigned.forward.process",
+      idempotency_key: "reply:msg_123",
+      payload: { message_id: "msg_123" },
+      delay_seconds: 60,
+    },
+  }, runtime);
+
+  assert.equal(created.status, 202);
+  assert.equal((created.body as CoreFunctionRunPublicResponse).run_id, "fnrun_route_123");
+  assert.deepEqual(functionRuns.creates[0], {
+    projectId: project.project_id,
+    functionName: "worker",
+    body: {
+      event_type: "kysigned.forward.process",
+      idempotency_key: "reply:msg_123",
+      payload: { message_id: "msg_123" },
+      delay_seconds: 60,
+    },
+    idempotencyKeyHeader: "reply:msg_123",
+    source: { type: "api" },
+  });
+
+  const listed = await coreGatewayResponse({
+    method: "GET",
+    pathname: "/functions/v1/worker/runs?status=scheduled&event_type=kysigned.forward.process&limit=5",
+    headers: { authorization: `Bearer ${project.service_key}` },
+  }, runtime);
+  assert.equal(listed.status, 200);
+  assert.equal((listed.body as { runs: CoreFunctionRunPublicResponse[] }).runs[0]?.run_id, "fnrun_route_123");
+  assert.deepEqual(functionRuns.lists[0], {
+    projectId: project.project_id,
+    functionName: "worker",
+    options: {
+      status: "scheduled",
+      eventType: "kysigned.forward.process",
+      limit: 5,
+    },
+  });
+
+  const read = await coreGatewayResponse({
+    method: "GET",
+    pathname: "/functions/v1/runs/fnrun_route_123",
+    headers: { authorization: `Bearer ${project.service_key}` },
+  }, runtime);
+  assert.equal(read.status, 200);
+  assert.equal((read.body as CoreFunctionRunPublicResponse).run_id, "fnrun_route_123");
+
+  const logs = await coreGatewayResponse({
+    method: "GET",
+    pathname: "/functions/v1/runs/fnrun_route_123/logs?tail=10",
+    headers: { authorization: `Bearer ${project.service_key}` },
+  }, runtime);
+  assert.equal(logs.status, 200);
+  assert.equal((logs.body as { logs: CoreFunctionLogEntry[] }).logs[0]?.message, "processed");
+
+  const cancelled = await coreGatewayResponse({
+    method: "POST",
+    pathname: "/functions/v1/runs/fnrun_route_123/cancel",
+    headers: { authorization: `Bearer ${project.service_key}` },
+  }, runtime);
+  assert.equal(cancelled.status, 200);
+  assert.equal((cancelled.body as CoreFunctionRunPublicResponse).status, "cancelled");
+
+  const redriven = await coreGatewayResponse({
+    method: "POST",
+    pathname: "/functions/v1/runs/fnrun_route_123/redrive",
+    headers: { authorization: `Bearer ${project.service_key}` },
+    body: { retry: { max_attempts: 2 } },
+  }, runtime);
+  assert.equal(redriven.status, 200);
+  assert.equal((redriven.body as CoreFunctionRunPublicResponse).status, "queued");
+});
+
+test("durable function run worker invokes a function-run envelope and records success", async () => {
+  const catalog = new MemoryProjectCatalog();
+  const project = await catalog.create({ name: "run worker app" });
+  const functionRuns = new MemoryFunctionRunStore();
+  functionRuns.claim = {
+    run: functionRuns.runHandle({
+      project_id: project.project_id,
+      function_name: "worker",
+      id: "fnrun_worker_123",
+      event_type: "kysigned.forward.process",
+      idempotency_key: "reply:msg_123",
+      payload: { message_id: "msg_123" },
+      source: { type: "api" },
+      status: "running",
+      current_generation_attempts: 1,
+      total_attempts: 1,
+      last_attempt_id: "fnatt_worker_123",
+      last_attempt_number: 1,
+      max_attempts: 5,
+    }),
+    attemptId: "fnatt_worker_123",
+    attemptNumber: 1,
+    leaseToken: "lease_worker_123",
+    startedAt: new Date("2026-07-01T12:00:00.000Z"),
+  };
+  const executor = new MemoryFunctionExecutor();
+  const runtime = {
+    projects: catalog,
+    releases: new MemoryReleaseState(emptyCoreReleaseState()),
+    functionBundles: new MemoryFunctionBundles({ worker: { ...functionBundle("2".repeat(64), 12), name: "worker" } }),
+    functionExecutor: executor,
+    functionRuns,
+    functionLogs: new MemoryFunctionLogs(),
+    functionApiBaseUrl: "http://core:4020",
+  };
+
+  const result = await processCoreFunctionRunOnce({
+    store: functionRuns,
+    invoker: {
+      invokeFunctionRun: async (claim) => await invokeCoreFunctionRun(runtime, claim),
+    },
+  }, {
+    now: new Date("2026-07-01T12:00:00.000Z"),
+    leaseMs: 30_000,
+  });
+
+  assert.equal(result?.status, "succeeded");
+  assert.equal(executor.last?.invocationKind, "scheduled");
+  assert.equal(executor.last?.request?.headers.some(([name, value]) => name === "x-run402-trigger" && value === "function_run"), true);
+  assert.equal(executor.last?.request?.headers.some(([name, value]) => name === "x-run402-run-id" && value === "fnrun_worker_123"), true);
+  assert.equal(executor.last?.request?.headers.some(([name, value]) => name === "x-run402-attempt-id" && value === "fnatt_worker_123"), true);
+  const envelope = JSON.parse(Buffer.from(executor.last?.request?.body?.data ?? "", "base64").toString("utf8"));
+  assert.deepEqual(envelope, {
+    trigger: "function_run",
+    run_id: "fnrun_worker_123",
+    generation: 1,
+    event_type: "kysigned.forward.process",
+    idempotency_key: "reply:msg_123",
+    run_at: "2026-07-01T12:00:00.000Z",
+    attempt: {
+      attempt_id: "fnatt_worker_123",
+      number: 1,
+      max: 5,
+    },
+    source: { type: "api" },
+    payload: { message_id: "msg_123" },
+  });
+  assert.equal(functionRuns.completed[0]?.claim.attemptId, "fnatt_worker_123");
+  assert.equal(functionRuns.completed[0]?.outcome.statusCode, 201);
+});
+
 test("routed function errors return sanitized request diagnostics and platform logs", async () => {
   const catalog = new MemoryProjectCatalog();
   const project = await catalog.create({ name: "failing routes app" });
@@ -2673,6 +2855,149 @@ class MemorySecrets {
 
   clear(): void {
     this.#values.clear();
+  }
+}
+
+class MemoryFunctionRunStore implements CoreFunctionRunStorePort {
+  readonly creates: Array<{
+    projectId: string;
+    functionName: string;
+    body: CoreFunctionRunCreateInput;
+    idempotencyKeyHeader?: string | string[];
+    source?: Record<string, unknown>;
+  }> = [];
+  readonly lists: Array<{
+    projectId: string;
+    functionName: string;
+    options?: CoreFunctionRunListOptions;
+  }> = [];
+  readonly completed: Array<{
+    claim: CoreFunctionRunClaim;
+    outcome: CoreFunctionRunWorkerResult;
+  }> = [];
+  claim: CoreFunctionRunClaim | null = null;
+  #runs = new Map<string, CoreFunctionRunPublicResponse>();
+
+  constructor() {
+    const run = publicRun(this.runHandle({ id: "fnrun_route_123" }));
+    this.#runs.set(run.run_id, run);
+  }
+
+  runHandle(overrides: Partial<CoreFunctionRunRow> = {}): CoreFunctionRunRow {
+    const now = "2026-07-01T12:00:00.000Z";
+    return {
+      id: overrides.id ?? "fnrun_route_123",
+      project_id: overrides.project_id ?? "prj_0000000000000001",
+      function_name: overrides.function_name ?? "worker",
+      event_type: overrides.event_type ?? "kysigned.forward.process",
+      idempotency_key: overrides.idempotency_key ?? "reply:msg_123",
+      payload: overrides.payload ?? { message_id: "msg_123" },
+      source: overrides.source ?? { type: "api" },
+      retry_policy: overrides.retry_policy ?? { preset: "standard", max_attempts: 5 },
+      status: overrides.status ?? "scheduled",
+      generation: overrides.generation ?? 1,
+      run_at: overrides.run_at ?? now,
+      expires_at: overrides.expires_at ?? null,
+      next_attempt_at: overrides.next_attempt_at ?? now,
+      current_generation_attempts: overrides.current_generation_attempts ?? 0,
+      max_attempts: overrides.max_attempts ?? 5,
+      total_attempts: overrides.total_attempts ?? 0,
+      lease_token: overrides.lease_token ?? null,
+      lease_expires_at: overrides.lease_expires_at ?? null,
+      locked_at: overrides.locked_at ?? null,
+      last_attempt_id: overrides.last_attempt_id ?? null,
+      last_attempt_number: overrides.last_attempt_number ?? null,
+      last_attempt_started_at: overrides.last_attempt_started_at ?? null,
+      last_attempt_completed_at: overrides.last_attempt_completed_at ?? null,
+      last_attempt_duration_ms: overrides.last_attempt_duration_ms ?? null,
+      last_attempt_response_status: overrides.last_attempt_response_status ?? null,
+      last_attempt_error: overrides.last_attempt_error ?? null,
+      last_status: overrides.last_status ?? null,
+      last_error: overrides.last_error ?? null,
+      release_id: overrides.release_id ?? "rel_test",
+      completed_at: overrides.completed_at ?? null,
+      created_at: overrides.created_at ?? now,
+      updated_at: overrides.updated_at ?? now,
+    };
+  }
+
+  async createRun(input: {
+    projectId: string;
+    functionName: string;
+    body: CoreFunctionRunCreateInput;
+    idempotencyKeyHeader?: string | string[];
+    source?: Record<string, unknown>;
+  }) {
+    this.creates.push(input);
+    const run = publicRun(this.runHandle({
+      project_id: input.projectId,
+      function_name: input.functionName,
+      event_type: input.body.event_type,
+      idempotency_key: input.body.idempotency_key ?? "reply:msg_123",
+      payload: input.body.payload,
+      source: input.source,
+      status: input.body.delay_seconds ? "scheduled" : "queued",
+    }));
+    this.#runs.set(run.run_id, run);
+    return { httpStatus: 202 as const, run };
+  }
+
+  async listRuns(input: {
+    projectId: string;
+    functionName: string;
+    options?: CoreFunctionRunListOptions;
+  }) {
+    this.lists.push(input);
+    return { runs: [...this.#runs.values()].filter((run) => run.function_name === input.functionName) };
+  }
+
+  async getRun(input: { runId: string }) {
+    const run = this.#runs.get(input.runId);
+    if (!run) throw new Error("run not found");
+    return run;
+  }
+
+  async cancelRun(input: { runId: string }) {
+    const run = await this.getRun(input);
+    const next = { ...run, status: "cancelled" as const, terminal: true };
+    this.#runs.set(next.run_id, next);
+    return next;
+  }
+
+  async redriveRun(input: { runId: string }) {
+    const run = await this.getRun(input);
+    const next = { ...run, status: "queued" as const, terminal: false, generation: run.generation + 1 };
+    this.#runs.set(next.run_id, next);
+    return next;
+  }
+
+  async claimDueRun() {
+    const claim = this.claim;
+    this.claim = null;
+    return claim;
+  }
+
+  async completeRun(input: {
+    claim: CoreFunctionRunClaim;
+    outcome: CoreFunctionRunWorkerResult;
+  }) {
+    this.completed.push(input);
+    return publicRun({
+      ...input.claim.run,
+      status: input.outcome.statusCode >= 200 && input.outcome.statusCode < 300 ? "succeeded" : "failed",
+      completed_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      last_attempt_response_status: input.outcome.statusCode,
+    });
+  }
+
+  async blockRun(input: { claim: CoreFunctionRunClaim; error: { code: string; message: string; retryable: boolean } }) {
+    return publicRun({
+      ...input.claim.run,
+      status: "blocked",
+      last_error: input.error,
+      updated_at: new Date().toISOString(),
+    });
   }
 }
 
@@ -2975,6 +3300,49 @@ function userLog(
     level: stream === "stderr" ? "error" : "info",
     message,
     redacted: false,
+  };
+}
+
+function publicRun(row: CoreFunctionRunRow): CoreFunctionRunPublicResponse {
+  const terminal = row.status === "succeeded" ||
+    row.status === "failed" ||
+    row.status === "cancelled" ||
+    row.status === "expired";
+  return {
+    run_id: row.id,
+    function_name: row.function_name,
+    event_type: row.event_type,
+    status: row.status,
+    terminal,
+    generation: Number(row.generation),
+    run_at: new Date(row.run_at).toISOString(),
+    expires_at: row.expires_at ? new Date(row.expires_at).toISOString() : undefined,
+    source: row.source ?? { type: "api" },
+    attempts: {
+      current: Number(row.current_generation_attempts ?? 0),
+      max: Number(row.max_attempts ?? 5),
+      total: Number(row.total_attempts ?? 0),
+      next_attempt_at: row.next_attempt_at ? new Date(row.next_attempt_at).toISOString() : undefined,
+    },
+    last_attempt: row.last_attempt_id
+      ? {
+          attempt_id: row.last_attempt_id,
+          number: Number(row.last_attempt_number ?? 1),
+          started_at: row.last_attempt_started_at ? new Date(row.last_attempt_started_at).toISOString() : undefined,
+          completed_at: row.last_attempt_completed_at ? new Date(row.last_attempt_completed_at).toISOString() : undefined,
+          duration_ms: row.last_attempt_duration_ms == null ? undefined : Number(row.last_attempt_duration_ms),
+          response_status: row.last_attempt_response_status == null ? undefined : Number(row.last_attempt_response_status),
+        }
+      : undefined,
+    last_error: row.last_error && typeof row.last_error === "object"
+      ? row.last_error as { code: string; message: string; retryable: boolean }
+      : undefined,
+    created_at: new Date(row.created_at).toISOString(),
+    updated_at: new Date(row.updated_at).toISOString(),
+    completed_at: row.completed_at ? new Date(row.completed_at).toISOString() : undefined,
+    next_actions: terminal
+      ? [{ type: "logs", href: `/functions/v1/runs/${row.id}/logs` }]
+      : [{ type: "cancel", href: `/functions/v1/runs/${row.id}/cancel` }],
   };
 }
 

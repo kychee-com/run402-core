@@ -64,7 +64,6 @@ export const CORE_FUNCTION_KNOWN_EXCLUSIONS = [
   "private_registries",
   "websockets",
   "streaming_to_client",
-  "background_jobs",
   "managed_jobs",
   "managed_kms",
   "cloudwatch_logs",
