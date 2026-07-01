@@ -19,7 +19,7 @@
     "@aws-sdk/client-s3": "^3.1076.0",
     "@aws-sdk/client-sesv2": "^3.1076.0",
     "@run402/functions": "3.5.6",
-    "@run402/runtime-kernel": "0.1.8",
+    "@run402/runtime-kernel": "0.1.9",
     "croner": "^10.0.1",
     "pg": "^8.13.1",
     "pg-copy-streams": "^7.0.0"
