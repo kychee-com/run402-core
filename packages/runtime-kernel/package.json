@@ -28,8 +28,8 @@
     "node": ">=22"
   },
   "dependencies": {
-    "@run402/functions": "3.5.4",
-    "@run402/release": "0.1.5",
+    "@run402/functions": "3.5.5",
+    "@run402/release": "0.2.1",
     "croner": "^10.0.1"
   },
   "repository": {
