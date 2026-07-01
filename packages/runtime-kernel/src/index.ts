@@ -3,6 +3,7 @@ export * from "./archive.js";
 export * from "./capabilities.js";
 export * from "./errors.js";
 export * from "./functions-runtime.js";
+export * from "./function-runs.js";
 export * from "./health.js";
 export * from "./ports.js";
 export * from "./projects.js";

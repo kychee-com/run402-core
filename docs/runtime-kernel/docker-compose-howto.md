@@ -49,7 +49,7 @@ This runs the supported end-to-end runtime slice:
 - static content serving
 - storage uploads, signed reads, immutable URLs, and route/static behavior
 - trusted local functions
-- single-node scheduled functions with manual trigger proof
+- durable function runs and single-node schedule triggers with manual trigger proof
 - narrow Astro SSR runtime
 - portable archive import with restart checks
 

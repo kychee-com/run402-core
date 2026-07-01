@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
+import type { FunctionTriggerSpec } from "./types.js";
 
 export type AppKitTargetPolicy = "core" | "cloud";
 export type AppKitDiagnosticSeverity = "error" | "warning" | "omitted";
@@ -38,6 +39,7 @@ export interface AppKitFunctionInput {
   runtime?: string;
   source?: string;
   config?: AppKitFunctionConfigInput;
+  triggers?: FunctionTriggerSpec[];
   schedule?: string | null;
   deps?: string[];
   entrypoint?: string;
@@ -53,6 +55,7 @@ export interface AppKitFunctionInput {
 export interface AppKitManifestFunctionSpec {
   runtime: string;
   source: { path: string };
+  triggers?: FunctionTriggerSpec[];
   schedule?: string | null;
   config?: {
     timeout_seconds?: number;
@@ -324,6 +327,7 @@ export function materializeFunctionSource(
   const spec: AppKitManifestFunctionSpec = {
     runtime: input.runtime ?? DEFAULT_RUNTIME,
     source: { path: manifestPath },
+    ...(input.triggers !== undefined ? { triggers: input.triggers.map((trigger) => ({ ...trigger })) } : {}),
     ...(input.schedule !== undefined ? { schedule: input.schedule } : {}),
     ...(config ? { config } : {}),
     ...(input.deps ? { deps: [...input.deps] } : {}),

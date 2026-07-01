@@ -99,6 +99,7 @@ interface FunctionBundleRow {
   capabilities: string[];
   schedule: string | null;
   schedule_meta: CoreFunctionScheduleMetadata | null;
+  triggers: CoreFunctionBundleMetadata["triggers"] | null;
   timeout_ms: number;
   memory_bytes: string | number;
 }
@@ -602,10 +603,11 @@ export class PostgresStorageStore implements StoragePort, SignedReadPort, Cleanu
             capabilities,
             schedule,
             schedule_meta,
+            triggers,
             timeout_ms,
             memory_bytes
           )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb, $12, $13::jsonb, $14, $15::jsonb, $16, $17::jsonb, $18, $19)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb, $12, $13::jsonb, $14, $15::jsonb, $16, $17::jsonb, $18::jsonb, $19, $20)
           ON CONFLICT (project_id, release_id, name)
           DO UPDATE SET
             runtime = EXCLUDED.runtime,
@@ -622,6 +624,7 @@ export class PostgresStorageStore implements StoragePort, SignedReadPort, Cleanu
             capabilities = EXCLUDED.capabilities,
             schedule = EXCLUDED.schedule,
             schedule_meta = EXCLUDED.schedule_meta,
+            triggers = EXCLUDED.triggers,
             timeout_ms = EXCLUDED.timeout_ms,
             memory_bytes = EXCLUDED.memory_bytes
         `,
@@ -643,6 +646,7 @@ export class PostgresStorageStore implements StoragePort, SignedReadPort, Cleanu
           JSON.stringify(bundle.capabilities),
           bundle.schedule,
           bundle.schedule_meta ? JSON.stringify(bundle.schedule_meta) : null,
+          JSON.stringify(bundle.triggers ?? []),
           bundle.timeout_ms,
           bundle.memory_bytes,
         ],
@@ -694,7 +698,7 @@ export class PostgresStorageStore implements StoragePort, SignedReadPort, Cleanu
       `
         SELECT name, runtime, entrypoint, bundle_sha256, bundle_size_bytes,
           dependency_mode, dependency_lock_digest, deps, required_secrets,
-          require_auth, require_role, class, capabilities, schedule, schedule_meta, timeout_ms, memory_bytes
+          require_auth, require_role, class, capabilities, schedule, schedule_meta, triggers, timeout_ms, memory_bytes
         FROM internal.core_function_bundles
         WHERE project_id = $1 AND release_id = $2 AND name = $3
       `,
@@ -1280,6 +1284,7 @@ function functionBundleRow(row: FunctionBundleRow): CoreFunctionBundleMetadata {
     require_role: row.require_role,
     schedule: row.schedule,
     schedule_meta: row.schedule_meta,
+    triggers: row.triggers ?? undefined,
     class: row.class,
     capabilities: row.capabilities,
     timeout_ms: row.timeout_ms,

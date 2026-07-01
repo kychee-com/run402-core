@@ -297,10 +297,10 @@ export class PostgresArchiveImporter implements PortableArchiveImporterPort {
           INSERT INTO internal.core_function_bundles (
             project_id, release_id, name, runtime, entrypoint, bundle_sha256, bundle_size_bytes,
             dependency_mode, dependency_lock_digest, deps, required_secrets, require_auth,
-            require_role, class, capabilities, schedule, schedule_meta, timeout_ms, memory_bytes
+            require_role, class, capabilities, schedule, schedule_meta, triggers, timeout_ms, memory_bytes
           )
           VALUES ($1, $2, $3, 'node22', $4, $5, $6, 'bundled', NULL, '[]'::jsonb,
-            $7::jsonb, false, NULL, $8, $9::jsonb, NULL, NULL, 10000, 134217728)
+            $7::jsonb, false, NULL, $8, $9::jsonb, NULL, NULL, '[]'::jsonb, 10000, 134217728)
         `,
         [
           projectId,

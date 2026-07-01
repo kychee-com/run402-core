@@ -6,12 +6,27 @@ import {
   type CoreFunctionScheduleLimits,
   type CoreFunctionScheduleMetadata,
 } from "@run402/runtime-kernel";
+import type {
+  CoreFunctionRunCreateInput,
+  CoreFunctionRunPublicResponse,
+  CoreFunctionRunStatus,
+  CoreFunctionRunStorePort,
+} from "./function-runs.js";
+
+export interface CoreScheduledFunctionRunSpec {
+  event_type: string;
+  payload?: Record<string, unknown>;
+  retry?: Record<string, unknown>;
+  expires_after_seconds?: number;
+}
 
 export interface CoreScheduledFunctionRecord {
   projectId: string;
   releaseId: string;
   functionName: string;
+  triggerId: string;
   schedule: string;
+  run: CoreScheduledFunctionRunSpec;
   scheduleMeta: CoreFunctionScheduleMetadata | null;
 }
 
@@ -20,15 +35,18 @@ export interface CoreScheduleStorePort {
   getActiveSchedule(input: {
     projectId: string;
     functionName: string;
+    triggerId?: string;
   }): Promise<CoreScheduledFunctionRecord | null>;
   updateScheduleMeta(input: {
     projectId: string;
     releaseId: string;
     functionName: string;
-    status: number | null;
+    triggerId: string;
+    runId: string | null;
+    status: number | CoreFunctionRunStatus | null;
     error: string | null;
     schedule: string;
-    ranAt: string;
+    enqueuedAt: string;
   }): Promise<CoreFunctionScheduleMetadata>;
 }
 
@@ -59,7 +77,8 @@ export class CoreSchedulerError extends Error {
 
 export class CoreFunctionScheduler {
   readonly #store: CoreScheduleStorePort;
-  readonly #invoker: CoreScheduleInvokerPort;
+  readonly #invoker?: CoreScheduleInvokerPort;
+  readonly #functionRuns?: CoreFunctionRunStorePort;
   readonly #limits: CoreFunctionScheduleLimits;
   readonly #jobs = new Map<string, Cron>();
   readonly #jobGenerations = new WeakMap<Cron, number>();
@@ -69,11 +88,13 @@ export class CoreFunctionScheduler {
 
   constructor(input: {
     store: CoreScheduleStorePort;
-    invoker: CoreScheduleInvokerPort;
+    invoker?: CoreScheduleInvokerPort;
+    functionRuns?: CoreFunctionRunStorePort;
     limits?: CoreFunctionScheduleLimits;
   }) {
     this.#store = input.store;
     this.#invoker = input.invoker;
+    this.#functionRuns = input.functionRuns;
     this.#limits = input.limits ?? CORE_FUNCTION_SCHEDULE_LIMIT_DEFAULTS;
   }
 
@@ -105,10 +126,12 @@ export class CoreFunctionScheduler {
   async triggerNow(input: {
     projectId: string;
     functionName: string;
+    triggerId?: string;
   }): Promise<{
     requestId: string;
     status: number;
     body: unknown;
+    run?: CoreFunctionRunPublicResponse;
     schedule_meta: CoreFunctionScheduleMetadata;
   }> {
     if (!this.#limits.enabled) {
@@ -123,6 +146,10 @@ export class CoreFunctionScheduler {
 
   __getJobForTests(projectId: string, functionName: string): Cron | undefined {
     return this.#jobs.get(`${projectId}:${functionName}`);
+  }
+
+  __getTriggerJobForTests(projectId: string, functionName: string, triggerId: string): Cron | undefined {
+    return this.#jobs.get(`${projectId}:${functionName}:${triggerId}`);
   }
 
   get size(): number {
@@ -160,19 +187,28 @@ export class CoreFunctionScheduler {
     requestId: string;
     status: number;
     body: unknown;
+    run?: CoreFunctionRunPublicResponse;
     schedule_meta: CoreFunctionScheduleMetadata;
   }> {
+    if (this.#functionRuns) {
+      return await this.#enqueueFunctionRun(record, trigger);
+    }
+    if (!this.#invoker) {
+      throw new CoreSchedulerError("scheduler_disabled", 422, "Run402 Core scheduled functions are disabled.");
+    }
     const running = this.#runningByProject.get(record.projectId) ?? 0;
     if (running >= this.#limits.maxConcurrentScheduledInvocationsPerProject) {
-      const ranAt = new Date().toISOString();
+      const enqueuedAt = new Date().toISOString();
       const scheduleMeta = await this.#store.updateScheduleMeta({
         projectId: record.projectId,
         releaseId: record.releaseId,
         functionName: record.functionName,
+        triggerId: record.triggerId,
+        runId: null,
         status: null,
         error: "scheduled invocation skipped: concurrency limit reached",
         schedule: record.schedule,
-        ranAt,
+        enqueuedAt,
       });
       return {
         requestId: "",
@@ -196,10 +232,12 @@ export class CoreFunctionScheduler {
         projectId: record.projectId,
         releaseId: record.releaseId,
         functionName: record.functionName,
+        triggerId: record.triggerId,
+        runId: result.requestId,
         status: result.status,
         error: result.status >= 400 ? `scheduled invocation returned ${result.status}` : null,
         schedule: record.schedule,
-        ranAt: scheduledAt,
+        enqueuedAt: scheduledAt,
       });
       return { ...result, schedule_meta: scheduleMeta };
     } catch (error) {
@@ -208,10 +246,12 @@ export class CoreFunctionScheduler {
         projectId: record.projectId,
         releaseId: record.releaseId,
         functionName: record.functionName,
+        triggerId: record.triggerId,
+        runId: null,
         status: 500,
         error: truncateError(message),
         schedule: record.schedule,
-        ranAt: scheduledAt,
+        enqueuedAt: scheduledAt,
       });
       throw Object.assign(error instanceof Error ? error : new Error(message), { schedule_meta: scheduleMeta });
     } finally {
@@ -219,6 +259,59 @@ export class CoreFunctionScheduler {
       if (next <= 0) this.#runningByProject.delete(record.projectId);
       else this.#runningByProject.set(record.projectId, next);
     }
+  }
+
+  async #enqueueFunctionRun(
+    record: CoreScheduledFunctionRecord,
+    trigger: "cron" | "manual",
+  ): Promise<{
+    requestId: string;
+    status: number;
+    body: unknown;
+    run: CoreFunctionRunPublicResponse;
+    schedule_meta: CoreFunctionScheduleMetadata;
+  }> {
+    const enqueuedAt = new Date().toISOString();
+    const expiresAt = record.run.expires_after_seconds === undefined
+      ? undefined
+      : new Date(Date.parse(enqueuedAt) + record.run.expires_after_seconds * 1000).toISOString();
+    const body: CoreFunctionRunCreateInput = {
+      event_type: record.run.event_type,
+      payload: record.run.payload ?? {},
+      idempotency_key: `${trigger}:${record.projectId}:${record.functionName}:${record.releaseId}:${record.triggerId}:${enqueuedAt}`,
+      ...(record.run.retry !== undefined ? { retry: record.run.retry } : {}),
+      ...(expiresAt !== undefined ? { expires_at: expiresAt } : {}),
+    };
+    const created = await this.#functionRuns!.createRun({
+      projectId: record.projectId,
+      functionName: record.functionName,
+      body,
+      source: {
+        type: "schedule",
+        mode: trigger,
+        trigger_id: record.triggerId,
+        scheduled_at: enqueuedAt,
+        release_id: record.releaseId,
+      },
+    });
+    const scheduleMeta = await this.#store.updateScheduleMeta({
+      projectId: record.projectId,
+      releaseId: record.releaseId,
+      functionName: record.functionName,
+      triggerId: record.triggerId,
+      runId: created.run.run_id,
+      status: created.run.status,
+      error: null,
+      schedule: record.schedule,
+      enqueuedAt,
+    });
+    return {
+      requestId: created.run.run_id,
+      status: created.httpStatus,
+      body: created.run,
+      run: created.run,
+      schedule_meta: scheduleMeta,
+    };
   }
 }
 
@@ -235,14 +328,22 @@ export class PostgresCoreScheduleStore implements CoreScheduleStorePort {
     if (projectId) params.push(projectId);
     const result = await this.#pool.query<ScheduleRow>(
       `
-        SELECT b.project_id, b.release_id, b.name, b.schedule, b.schedule_meta
+        SELECT
+          b.project_id,
+          b.release_id,
+          b.name,
+          trigger.value->>'id' AS trigger_id,
+          trigger.value->>'cron' AS schedule,
+          trigger.value->'run' AS run,
+          trigger.value->'schedule_meta' AS schedule_meta
         FROM internal.core_projects p
         JOIN internal.core_function_bundles b
           ON b.project_id = p.project_id
          AND b.release_id = p.active_release_id
-        WHERE b.schedule IS NOT NULL
+        CROSS JOIN LATERAL jsonb_array_elements(COALESCE(b.triggers, '[]'::jsonb)) AS trigger(value)
+        WHERE trigger.value->>'type' = 'schedule'
           ${predicate}
-        ORDER BY b.project_id, b.name
+        ORDER BY b.project_id, b.name, trigger.value->>'id'
       `,
       params,
     );
@@ -252,19 +353,31 @@ export class PostgresCoreScheduleStore implements CoreScheduleStorePort {
   async getActiveSchedule(input: {
     projectId: string;
     functionName: string;
+    triggerId?: string;
   }): Promise<CoreScheduledFunctionRecord | null> {
     const result = await this.#pool.query<ScheduleRow>(
       `
-        SELECT b.project_id, b.release_id, b.name, b.schedule, b.schedule_meta
+        SELECT
+          b.project_id,
+          b.release_id,
+          b.name,
+          trigger.value->>'id' AS trigger_id,
+          trigger.value->>'cron' AS schedule,
+          trigger.value->'run' AS run,
+          trigger.value->'schedule_meta' AS schedule_meta
         FROM internal.core_projects p
         JOIN internal.core_function_bundles b
           ON b.project_id = p.project_id
          AND b.release_id = p.active_release_id
+        CROSS JOIN LATERAL jsonb_array_elements(COALESCE(b.triggers, '[]'::jsonb)) AS trigger(value)
         WHERE b.project_id = $1
           AND b.name = $2
-          AND b.schedule IS NOT NULL
+          AND trigger.value->>'type' = 'schedule'
+          AND ($3::text IS NULL OR trigger.value->>'id' = $3)
+        ORDER BY trigger.value->>'id'
+        LIMIT 1
       `,
-      [input.projectId, input.functionName],
+      [input.projectId, input.functionName, input.triggerId ?? null],
     );
     return result.rows[0] ? scheduleRow(result.rows[0]) : null;
   }
@@ -273,44 +386,61 @@ export class PostgresCoreScheduleStore implements CoreScheduleStorePort {
     projectId: string;
     releaseId: string;
     functionName: string;
-    status: number | null;
+    triggerId: string;
+    runId: string | null;
+    status: number | CoreFunctionRunStatus | null;
     error: string | null;
     schedule: string;
-    ranAt: string;
+    enqueuedAt: string;
   }): Promise<CoreFunctionScheduleMetadata> {
     const nextRunAt = nextCoreCronRunIso(input.schedule);
-    const result = await this.#pool.query<{ schedule_meta: CoreFunctionScheduleMetadata }>(
+    const current = await this.#pool.query<{ triggers: unknown }>(
       `
-        UPDATE internal.core_function_bundles
-        SET schedule_meta = jsonb_build_object(
-              'last_run_at', $4::text,
-              'last_status', to_jsonb($5::int),
-              'run_count', COALESCE((schedule_meta->>'run_count')::int, 0) + 1,
-              'last_error', $6::text,
-              'next_run_at', $7::text
-            )
+        SELECT triggers
+        FROM internal.core_function_bundles
         WHERE project_id = $1
           AND release_id = $2
           AND name = $3
-        RETURNING schedule_meta
       `,
       [
         input.projectId,
         input.releaseId,
         input.functionName,
-        input.ranAt,
-        input.status,
-        input.error,
-        nextRunAt,
       ],
     );
-    return result.rows[0]?.schedule_meta ?? {
-      last_run_at: input.ranAt,
-      last_status: input.status,
+    const triggers = Array.isArray(current.rows[0]?.triggers)
+      ? [...current.rows[0].triggers as Array<Record<string, unknown>>]
+      : [];
+    const index = triggers.findIndex((trigger) => trigger.id === input.triggerId);
+    const previous = index >= 0 && isRecord(triggers[index].schedule_meta)
+      ? triggers[index].schedule_meta as Partial<CoreFunctionScheduleMetadata>
+      : {};
+    const meta: CoreFunctionScheduleMetadata = {
+      last_enqueued_at: input.enqueuedAt,
+      last_run_id: input.runId,
+      last_run_status: input.status === null ? null : String(input.status),
       run_count: 1,
       last_error: input.error,
+      next_tick_at: nextRunAt,
+      last_run_at: input.enqueuedAt,
+      last_status: input.status,
       next_run_at: nextRunAt,
     };
+    meta.run_count = (typeof previous.run_count === "number" ? previous.run_count : 0) + 1;
+    if (index >= 0) {
+      triggers[index] = { ...triggers[index], schedule_meta: meta };
+      await this.#pool.query(
+        `
+          UPDATE internal.core_function_bundles
+          SET triggers = $4::jsonb
+          WHERE project_id = $1
+            AND release_id = $2
+            AND name = $3
+        `,
+        [input.projectId, input.releaseId, input.functionName, JSON.stringify(triggers)],
+      );
+    }
+    return meta;
   }
 }
 
@@ -318,7 +448,9 @@ interface ScheduleRow {
   project_id: string;
   release_id: string;
   name: string;
+  trigger_id: string;
   schedule: string;
+  run: CoreScheduledFunctionRunSpec | null;
   schedule_meta: CoreFunctionScheduleMetadata | null;
 }
 
@@ -327,15 +459,33 @@ function scheduleRow(row: ScheduleRow): CoreScheduledFunctionRecord {
     projectId: row.project_id,
     releaseId: row.release_id,
     functionName: row.name,
+    triggerId: row.trigger_id,
     schedule: row.schedule,
+    run: normalizeTriggerRun(row.run, row.trigger_id),
     scheduleMeta: row.schedule_meta,
   };
 }
 
-function scheduleKey(record: Pick<CoreScheduledFunctionRecord, "projectId" | "functionName">): string {
-  return `${record.projectId}:${record.functionName}`;
+function scheduleKey(record: Pick<CoreScheduledFunctionRecord, "projectId" | "functionName" | "triggerId">): string {
+  return `${record.projectId}:${record.functionName}:${record.triggerId}`;
 }
 
 function truncateError(value: string): string {
   return value.length > 500 ? `${value.slice(0, 500)}...[truncated]` : value;
+}
+
+function normalizeTriggerRun(value: CoreScheduledFunctionRunSpec | null, triggerId: string): CoreScheduledFunctionRunSpec {
+  if (isRecord(value) && typeof value.event_type === "string" && value.event_type.length > 0) {
+    return {
+      event_type: value.event_type,
+      ...(isRecord(value.payload) ? { payload: value.payload } : {}),
+      ...(isRecord(value.retry) ? { retry: value.retry } : {}),
+      ...(typeof value.expires_after_seconds === "number" ? { expires_after_seconds: value.expires_after_seconds } : {}),
+    };
+  }
+  return { event_type: `schedule.${triggerId}`, payload: {} };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

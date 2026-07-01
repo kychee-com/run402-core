@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import test from "node:test";
 
@@ -35,6 +36,7 @@ import {
   verifyStorageReadSignature,
   runtimeKernelErrorEnvelope,
   unsupportedCapabilityEnvelope,
+  CoreFunctionRunService,
   type CoreProject,
   type CoreStorageObject,
   type CoreStorageApplyEffects,
@@ -685,25 +687,58 @@ test("function apply accepts scheduled functions and records schedule metadata",
   assert.equal(coreCronIntervalMinutes("*/5 * * * *"), 5);
 
   const spec = prebundledFunctionSpec("7".repeat(64), 12);
-  const api = spec.functions.replace.api as typeof spec.functions.replace.api & { schedule?: string };
-  api.schedule = "*/5 * * * *";
+  spec.functions.replace.api.triggers = [
+    {
+      id: "maintenance_every_5m",
+      type: "schedule",
+      cron: "*/5 * * * *",
+      run: {
+        event_type: "maintenance",
+        payload: { sweep: true },
+      },
+    },
+  ];
 
   const plan = await createApplyPlan(new MemoryRuntimePorts({ contentPresent: true }), { spec });
   const bundle = plan.function_effects?.bundles.find((entry) => entry.name === "api");
 
-  assert.equal(bundle?.schedule, "*/5 * * * *");
-  assert.equal(bundle?.schedule_meta?.last_run_at, null);
-  assert.equal(bundle?.schedule_meta?.last_status, null);
-  assert.equal(bundle?.schedule_meta?.run_count, 0);
-  assert.equal(bundle?.schedule_meta?.last_error, null);
-  assert.match(bundle?.schedule_meta?.next_run_at ?? "", /^\d{4}-\d{2}-\d{2}T/);
+  assert.equal(bundle?.schedule, null);
+  assert.equal(bundle?.schedule_meta, null);
+  assert.deepEqual(bundle?.triggers.map((trigger) => ({
+    id: trigger.id,
+    type: trigger.type,
+    cron: trigger.cron,
+    timezone: trigger.timezone,
+    event_type: trigger.run.event_type,
+    payload: trigger.run.payload,
+    run_count: trigger.schedule_meta.run_count,
+    last_run_id: trigger.schedule_meta.last_run_id,
+  })), [
+    {
+      id: "maintenance_every_5m",
+      type: "schedule",
+      cron: "*/5 * * * *",
+      timezone: "UTC",
+      event_type: "maintenance",
+      payload: { sweep: true },
+      run_count: 0,
+      last_run_id: null,
+    },
+  ]);
+  assert.match(bundle?.triggers[0]?.schedule_meta.next_tick_at ?? "", /^\d{4}-\d{2}-\d{2}T/);
 });
 
 test("function apply rejects invalid schedules and host-owned schedule limit violations", async () => {
   {
     const spec = prebundledFunctionSpec("8".repeat(64), 12);
-    const api = spec.functions.replace.api as typeof spec.functions.replace.api & { schedule?: string };
-    api.schedule = "not-a-cron";
+    spec.functions.replace.api.triggers = [
+      {
+        id: "bad",
+        type: "schedule",
+        cron: "60 * * * *",
+        run: { event_type: "maintenance" },
+      },
+    ];
 
     await assert.rejects(
       createApplyPlan(new MemoryRuntimePorts(), { spec }),
@@ -713,8 +748,14 @@ test("function apply rejects invalid schedules and host-owned schedule limit vio
 
   {
     const spec = prebundledFunctionSpec("9".repeat(64), 12);
-    const api = spec.functions.replace.api as typeof spec.functions.replace.api & { schedule?: string };
-    api.schedule = "* * * * *";
+    spec.functions.replace.api.triggers = [
+      {
+        id: "too_fast",
+        type: "schedule",
+        cron: "* * * * *",
+        run: { event_type: "maintenance" },
+      },
+    ];
 
     await assert.rejects(
       createApplyPlan(new MemoryRuntimePorts({
@@ -734,11 +775,15 @@ test("function apply rejects invalid schedules and host-owned schedule limit vio
     spec.functions.replace = {
       api: {
         ...spec.functions.replace.api,
-        schedule: "*/5 * * * *",
+        triggers: [
+          { id: "api_every_5m", type: "schedule", cron: "*/5 * * * *", run: { event_type: "api" } },
+        ],
       },
       worker: {
         ...spec.functions.replace.api,
-        schedule: "*/10 * * * *",
+        triggers: [
+          { id: "worker_every_10m", type: "schedule", cron: "*/10 * * * *", run: { event_type: "worker" } },
+        ],
       },
     };
 
@@ -754,6 +799,132 @@ test("function apply rejects invalid schedules and host-owned schedule limit vio
       (error) => error instanceof FunctionBundleValidationError && error.code === "schedule_limit_exceeded",
     );
   }
+
+  {
+    const spec = prebundledFunctionSpec("b".repeat(64), 12);
+    spec.functions.replace.api.schedule = "*/5 * * * *";
+
+    await assert.rejects(
+      createApplyPlan(new MemoryRuntimePorts(), { spec }),
+      (error) =>
+        error instanceof FunctionBundleValidationError &&
+        error.code === "invalid_function_schedule" &&
+        /triggers\[\]/.test(error.message),
+    );
+  }
+});
+
+test("Core function runs cover local durable lifecycle and schedule trigger envelope", async () => {
+  const invocationInputs: unknown[] = [];
+  let status = 204;
+  let now = new Date("2026-07-01T12:00:00.000Z");
+  const service = new CoreFunctionRunService({
+    now: () => now,
+    invoke: async (input) => {
+      invocationInputs.push(input);
+      return {
+        requestId: input.requestId,
+        response: { status },
+      };
+    },
+    listLogs: async ({ requestId }) => [
+      {
+        timestamp: now.toISOString(),
+        request_id: requestId ?? "",
+        project_id: "prj_core",
+        release_id: "rel_1",
+        function_name: "worker",
+        stream: "stdout",
+        level: "info",
+        message: "ok",
+        redacted: false,
+      },
+    ],
+  });
+
+  const delayed = service.create({
+    projectId: "prj_core",
+    functionName: "worker",
+    releaseId: "rel_1",
+    eventType: "reminder.send",
+    idempotencyKey: "reminder:1",
+    delaySeconds: 60,
+    payload: { reminder_id: "rem_1" },
+  });
+  assert.equal(delayed.status, "scheduled");
+  assert.equal(await service.processOnce(), null);
+  now = new Date("2026-07-01T12:01:00.000Z");
+  assert.equal((await service.processOnce())?.status, "succeeded");
+
+  status = 500;
+  const retrying = service.create({
+    projectId: "prj_core",
+    functionName: "worker",
+    releaseId: "rel_1",
+    eventType: "webhook.redrive",
+    idempotencyKey: "webhook:1",
+    retry: { max_attempts: 2, min_delay_seconds: 30 },
+  });
+  assert.equal(retrying.status, "queued");
+  assert.equal((await service.processOnce())?.status, "retrying");
+  now = new Date("2026-07-01T12:01:30.000Z");
+  assert.equal((await service.processOnce())?.status, "failed");
+  const redriven = service.redrive("prj_core", retrying.run_id, { max_attempts: 1 });
+  assert.equal(redriven.generation, 2);
+  assert.equal(redriven.status, "queued");
+  status = 204;
+  assert.equal((await service.processOnce())?.status, "succeeded");
+
+  const cancelled = service.create({
+    projectId: "prj_core",
+    functionName: "worker",
+    eventType: "cancel.me",
+    idempotencyKey: "cancel:1",
+    delaySeconds: 300,
+  });
+  assert.equal(service.cancel("prj_core", cancelled.run_id).status, "cancelled");
+
+  const expired = service.create({
+    projectId: "prj_core",
+    functionName: "worker",
+    eventType: "expire.me",
+    idempotencyKey: "expire:1",
+    delaySeconds: 10,
+    expiresAt: "2026-07-01T12:01:45.000Z",
+  });
+  now = new Date("2026-07-01T12:02:00.000Z");
+  await service.processOnce();
+  assert.equal(service.get("prj_core", expired.run_id)?.status, "expired");
+
+  now = new Date("2026-07-01T12:15:00.000Z");
+  const scheduled = service.createFromScheduleTrigger({
+    projectId: "prj_core",
+    functionName: "worker",
+    releaseId: "rel_1",
+    scheduledAt: "2026-07-01T12:15:00.000Z",
+    generation: 3,
+    trigger: {
+      id: "maintenance_every_15m",
+      type: "schedule",
+      cron: "*/15 * * * *",
+      run: { event_type: "maintenance", payload: { sweep: true } },
+    },
+  });
+  assert.equal(scheduled.source.trigger_id, "maintenance_every_15m");
+  const terminal = await service.processOnce();
+  assert.equal(terminal?.status, "succeeded");
+  const lastInvocation = invocationInputs.at(-1) as { invocationKind: string; request?: { headers: [string, string][]; body?: { data: string } | null } };
+  assert.equal(lastInvocation.invocationKind, "function_run");
+  assert.deepEqual(Object.fromEntries(lastInvocation.request?.headers ?? [])["x-run402-run-id"], scheduled.run_id);
+  const envelope = JSON.parse(Buffer.from(lastInvocation.request?.body?.data ?? "", "base64").toString("utf8")) as { source: { trigger_id?: string }; event_type: string };
+  assert.equal(envelope.event_type, "maintenance");
+  assert.equal(envelope.source.trigger_id, "maintenance_every_15m");
+
+  const logs = await service.logs("prj_core", scheduled.run_id);
+  assert.equal(logs[0]?.request_id, scheduled.run_id);
+  assert(service.list("prj_core", "worker").length >= 5);
+  service.start(10);
+  service.stop();
 });
 
 test("function commit rejects stale plans before staging content", async () => {

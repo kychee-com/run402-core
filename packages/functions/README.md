@@ -368,15 +368,15 @@ Runtime route failure codes to branch on: `ROUTE_MANIFEST_LOAD_FAILED` (manifest
 
 ## Scheduled functions
 
-Run402 Cloud and Run402 Core both use the existing release manifest `functions.replace.<name>.schedule` field for cron-style functions. In Run402 Core this is a single-node gateway scheduler, not a managed distributed jobs system.
+Run402 Cloud and Run402 Core both use release manifest `functions.replace.<name>.triggers[]` entries for cron-style schedule triggers. A schedule trigger creates a durable function run, so handler code can use the same `defineFunctionRuns(...)` path for delayed work, webhook redrive, and scheduled sweeps. In Run402 Core this is a single-node gateway scheduler, not a managed distributed jobs system.
 
-Scheduled functions receive the same Fetch `Request` shape as routed functions. The request is a synthetic `POST` with `X-Run402-Trigger: cron` for wall-clock ticks, or `X-Run402-Trigger: manual` when a Core agent calls the service-key testing hook. The JSON body contains `trigger` and `scheduled_at`.
+Scheduled function runs receive the same Fetch `Request` shape as other durable function runs. The request is a synthetic `POST` with `X-Run402-Trigger: function_run`; the JSON body is the standard function-run envelope and includes `run_id`, `event_type`, `attempt`, `source`, and `payload`.
 
 ```ts
 export default async function handler(req: Request): Promise<Response> {
   if (req.headers.get("x-run402-trigger")) {
-    const event = await req.json() as { trigger: string; scheduled_at: string };
-    await runReminderSweep(event.scheduled_at);
+    const event = await req.json() as { trigger: "function_run"; run_id: string; payload: { scheduled_at?: string } };
+    await runReminderSweep(event.payload.scheduled_at ?? event.run_id);
     return Response.json({ ok: true, trigger: event.trigger });
   }
 

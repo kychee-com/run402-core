@@ -24,7 +24,7 @@ Default credentials are local-development credentials. Do not expose this stack 
 - required function secrets fail closed and secret values are never returned by list APIs
 - platform diagnostics omit headers, bodies, env, provider metadata, and raw user exception text
 - user stdout/stderr is capped and best-effort redacted
-- single-node scheduled functions use the same worker, secret, log, timeout, and redaction path as routed/direct functions
+- schedule-triggered function runs use the same worker, secret, log, timeout, and redaction path as routed/direct functions
 - Astro SSR targets run through the same dynamic worker path as functions
 - SSR receives only generated `x-run402-*` metadata after inbound spoofed `x-run402-*` headers are stripped
 

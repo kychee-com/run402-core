@@ -204,14 +204,25 @@ test("postgres storage persists function schedule and mutable schedule metadata 
         memory_bytes: 128 * 1024 * 1024,
         require_auth: false,
         require_role: null,
-        schedule: "*/5 * * * *",
-        schedule_meta: {
-          last_run_at: null,
-          last_status: null,
-          run_count: 0,
-          last_error: null,
-          next_run_at: "2026-01-01T00:05:00.000Z",
-        },
+        schedule: null,
+        schedule_meta: null,
+        triggers: [{
+          id: "reminder_every_5m",
+          type: "schedule",
+          cron: "*/5 * * * *",
+          timezone: "UTC",
+          misfire_policy: "skip",
+          overlap_policy: "allow",
+          run: { event_type: "reminder.due", payload: {} },
+          schedule_meta: {
+            last_enqueued_at: null,
+            last_run_id: null,
+            last_run_status: null,
+            run_count: 0,
+            last_error: null,
+            next_tick_at: "2026-01-01T00:05:00.000Z",
+          },
+        }],
         class: "standard",
         capabilities: [],
       }],
@@ -220,14 +231,25 @@ test("postgres storage persists function schedule and mutable schedule metadata 
 
   const bundleInsert = client.queries.find((query) => query.text.includes("INSERT INTO internal.core_function_bundles"));
   assert.ok(bundleInsert);
-  assert.equal(bundleInsert.values?.[15], "*/5 * * * *");
-  assert.equal(bundleInsert.values?.[16], JSON.stringify({
-    last_run_at: null,
-    last_status: null,
-    run_count: 0,
-    last_error: null,
-    next_run_at: "2026-01-01T00:05:00.000Z",
-  }));
+  assert.equal(bundleInsert.values?.[15], null);
+  assert.equal(bundleInsert.values?.[16], null);
+  assert.equal(bundleInsert.values?.[17], JSON.stringify([{
+    id: "reminder_every_5m",
+    type: "schedule",
+    cron: "*/5 * * * *",
+    timezone: "UTC",
+    misfire_policy: "skip",
+    overlap_policy: "allow",
+    run: { event_type: "reminder.due", payload: {} },
+    schedule_meta: {
+      last_enqueued_at: null,
+      last_run_id: null,
+      last_run_status: null,
+      run_count: 0,
+      last_error: null,
+      next_tick_at: "2026-01-01T00:05:00.000Z",
+    },
+  }]));
   assert.equal(client.queries.map((query) => query.text.trim()).at(-1), "COMMIT");
 });
 

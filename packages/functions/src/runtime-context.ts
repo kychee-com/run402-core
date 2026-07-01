@@ -77,11 +77,12 @@ export interface RunRequestContext {
    *  to decoding an `Authorization: Bearer` header, so the
    *  "cookie is the only browser actor input" invariant holds. For
    *  `"direct"` (machine / mobile / CI function invocation) the Bearer
-   *  fallback is preserved. `"scheduled"` uses the same trusted server-side
-   *  context class as direct invocation, but the Run402 cron envelope does not
-   *  include an Authorization header by default. Defaults to `"direct"` when
-   *  unset so pre-existing callers keep the machine contract. */
-  invocationKind: "routed_http" | "direct" | "scheduled";
+   *  fallback is preserved. `"scheduled"` and `"function_run"` use the same
+   *  trusted server-side context class as direct invocation, but the Run402
+   *  cron/function-run envelopes do not include an Authorization header by
+   *  default. Defaults to `"direct"` when unset so pre-existing callers keep
+   *  the machine contract. */
+  invocationKind: "routed_http" | "direct" | "scheduled" | "function_run";
   /** Mutable ref: SDK functions that read request-scoped auth or invoke
    *  payment primitives set `value = true`. The SSR Lambda runtime
    *  returns the final value to the gateway in the response metadata

@@ -39,7 +39,7 @@ import {
   isAstroSsrFunction,
   nextCoreCronRunIso,
   normalizeFunctionEntrypoint,
-  validateCoreFunctionSchedule,
+  validateCoreFunctionScheduleTrigger,
   type CoreDynamicFunctionRoute,
   type CoreFunctionApplyEffects,
   type CoreFunctionBundleMetadata,
@@ -301,11 +301,11 @@ function validateFunctionSubset(spec: ReleaseSpec, ports: RuntimeKernelPorts): v
   for (const [name, fn] of Object.entries(spec.functions.replace)) {
     validateCoreFunctionSpec(name, fn, ports);
     if (fn.class === "ssr") ssrCount += 1;
-    if (fn.schedule !== undefined && fn.schedule !== null) scheduledCount += 1;
+    scheduledCount += fn.triggers?.filter((trigger) => trigger.type === "schedule").length ?? 0;
   }
   const scheduleLimits = ports.scheduleLimits ?? CORE_FUNCTION_SCHEDULE_LIMIT_DEFAULTS;
   if (scheduledCount > scheduleLimits.maxScheduledFunctionsPerProject) {
-    throw new FunctionBundleValidationError("schedule_limit_exceeded", `Core schedule limit exceeded: ${scheduledCount} scheduled function(s), maximum is ${scheduleLimits.maxScheduledFunctionsPerProject}.`, {
+    throw new FunctionBundleValidationError("schedule_limit_exceeded", `Core schedule trigger limit exceeded: ${scheduledCount} scheduled trigger(s), maximum is ${scheduleLimits.maxScheduledFunctionsPerProject}.`, {
       scheduled_count: scheduledCount,
       max_scheduled_functions_per_project: scheduleLimits.maxScheduledFunctionsPerProject,
     });
@@ -343,16 +343,21 @@ function validateCoreFunctionSpec(name: string, fn: FunctionSpec, ports: Runtime
       dependency_mode: CORE_FUNCTION_DEPENDENCY_MODE,
     });
   }
-  try {
-    validateCoreFunctionSchedule({
-      functionName: name,
+  if (fn.schedule !== undefined && fn.schedule !== null) {
+    throw new FunctionBundleValidationError("invalid_function_schedule", `Function ${name} must use functions.replace.${name}.triggers[] schedule entries; the standalone schedule field is not accepted by Run402 Core.`, {
+      function_name: name,
       schedule: fn.schedule,
-      limits: ports.scheduleLimits,
+      replacement: `functions.replace.${name}.triggers[]`,
     });
+  }
+  try {
+    for (const trigger of fn.triggers ?? []) {
+      validateCoreFunctionScheduleTrigger({ functionName: name, trigger, limits: ports.scheduleLimits });
+    }
   } catch (error) {
     throw new FunctionBundleValidationError("invalid_function_schedule", error instanceof Error ? error.message : String(error), {
       function_name: name,
-      schedule: fn.schedule ?? null,
+      triggers: fn.triggers ?? [],
     });
   }
   if (fn.class === "ssr") {
@@ -468,11 +473,15 @@ function bundleMetadataFromSpec(
     memory_bytes: functionMemoryBytes({ memory_mb: spec.config?.memoryMb ?? 128 }),
     require_auth: spec.requireAuth === true,
     require_role: requireRole,
-    schedule: spec.schedule ?? null,
-    schedule_meta: spec.schedule ? {
-      ...emptyCoreFunctionScheduleMetadata(),
-      next_run_at: nextCoreCronRunIso(spec.schedule),
-    } : null,
+    schedule: null,
+    schedule_meta: null,
+    triggers: (spec.triggers ?? []).map((trigger) => ({
+      ...validateCoreFunctionScheduleTrigger({ functionName: name, trigger }),
+      schedule_meta: {
+        ...emptyCoreFunctionScheduleMetadata(),
+        next_tick_at: nextCoreCronRunIso(trigger.cron),
+      },
+    })),
     class: spec.class ?? "standard",
     capabilities: spec.capabilities ? [...spec.capabilities].sort() : [],
   };

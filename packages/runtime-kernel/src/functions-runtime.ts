@@ -5,6 +5,7 @@ import type {
 import type {
   ContentRefHex,
   FunctionSpec,
+  FunctionTriggerSpec,
   HttpMethod,
   PortableFunctionEntry,
   RoleGateSpec,
@@ -177,11 +178,20 @@ export interface CoreFunctionScheduleLimits {
 }
 
 export interface CoreFunctionScheduleMetadata {
-  last_run_at: string | null;
-  last_status: number | null;
+  last_enqueued_at: string | null;
+  last_run_id: string | null;
+  last_run_status: string | null;
   run_count: number;
   last_error: string | null;
-  next_run_at: string | null;
+  next_tick_at: string | null;
+  /** Legacy Core gateway schedule fields retained while gateway storage migrates to trigger metadata. */
+  last_run_at?: string | null;
+  last_status?: number | string | null;
+  next_run_at?: string | null;
+}
+
+export interface CoreFunctionScheduleTriggerMetadata extends FunctionTriggerSpec {
+  schedule_meta: CoreFunctionScheduleMetadata;
 }
 
 export interface CoreAstroSsrRuntimeCapability {
@@ -230,6 +240,7 @@ export interface CoreFunctionBundleMetadata {
   require_role: RoleGateSpec | null;
   schedule: string | null;
   schedule_meta: CoreFunctionScheduleMetadata | null;
+  triggers?: CoreFunctionScheduleTriggerMetadata[];
   class: "standard" | "ssr";
   capabilities: string[];
 }
@@ -259,7 +270,7 @@ export interface CoreFunctionInvocationInput {
   projectId: string;
   releaseId: string | null;
   functionName: string;
-  invocationKind: "routed_http" | "direct" | "scheduled";
+  invocationKind: "routed_http" | "direct" | "scheduled" | "function_run";
   requestId: string;
   actor?: CoreFunctionActorContext | null;
   request?: RoutedHttpRequestV1;
@@ -390,10 +401,14 @@ export function functionMemoryBytes(entry: Pick<PortableFunctionEntry, "memory_m
 
 export function emptyCoreFunctionScheduleMetadata(): CoreFunctionScheduleMetadata {
   return {
-    last_run_at: null,
-    last_status: null,
+    last_enqueued_at: null,
+    last_run_id: null,
+    last_run_status: null,
     run_count: 0,
     last_error: null,
+    next_tick_at: null,
+    last_run_at: null,
+    last_status: null,
     next_run_at: null,
   };
 }
@@ -454,6 +469,49 @@ export function validateCoreFunctionSchedule(input: {
     throw new Error(`Function ${input.functionName} schedule runs every ${interval} minute(s), below the Core minimum of ${limits.minIntervalMinutes} minute(s).`);
   }
   return schedule;
+}
+
+export function validateCoreFunctionScheduleTrigger(input: {
+  functionName: string;
+  trigger: FunctionTriggerSpec;
+  limits?: CoreFunctionScheduleLimits;
+}): FunctionTriggerSpec {
+  const limits = input.limits ?? CORE_FUNCTION_SCHEDULE_LIMIT_DEFAULTS;
+  if (!limits.enabled) {
+    throw new Error(`Function ${input.functionName} schedules are disabled in this Core gateway.`);
+  }
+  if (!input.trigger.id) {
+    throw new Error(`Function ${input.functionName} schedule trigger id is required.`);
+  }
+  if (input.trigger.type !== "schedule") {
+    throw new Error(`Function ${input.functionName} trigger ${input.trigger.id} must use type schedule.`);
+  }
+  if (!isValidCoreCronExpression(input.trigger.cron)) {
+    throw new Error(`Function ${input.functionName} trigger ${input.trigger.id} cron must be a valid 5-field cron expression.`);
+  }
+  const interval = coreCronIntervalMinutes(input.trigger.cron);
+  if (interval < limits.minIntervalMinutes) {
+    throw new Error(`Function ${input.functionName} trigger ${input.trigger.id} runs every ${interval} minute(s), below the Core minimum of ${limits.minIntervalMinutes} minute(s).`);
+  }
+  if (!input.trigger.run?.event_type) {
+    throw new Error(`Function ${input.functionName} trigger ${input.trigger.id} run.event_type is required.`);
+  }
+  return {
+    id: input.trigger.id,
+    type: "schedule",
+    cron: input.trigger.cron,
+    timezone: input.trigger.timezone ?? "UTC",
+    misfire_policy: input.trigger.misfire_policy ?? "skip",
+    overlap_policy: input.trigger.overlap_policy ?? "allow",
+    run: {
+      event_type: input.trigger.run.event_type,
+      payload: input.trigger.run.payload ?? {},
+      ...(input.trigger.run.retry !== undefined ? { retry: input.trigger.run.retry } : {}),
+      ...(input.trigger.run.expires_after_seconds !== undefined
+        ? { expires_after_seconds: input.trigger.run.expires_after_seconds }
+        : {}),
+    },
+  };
 }
 
 function assertFiveFieldCron(expr: string): void {

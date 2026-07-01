@@ -2,7 +2,7 @@
 
 Run402 Core is the open-source server/runtime core for Run402.
 
-The current Core runtime-kernel slice is an Apache-2.0 self-hosting runtime. It can create a local project, plan and commit a supported ReleaseSpec, run inline PostgreSQL migrations, serve PostgREST/RLS behavior, serve active-release static content, handle local storage objects and route manifests, execute trusted local functions including single-node schedules, run a narrow Astro SSR target, and import verified portable project archives.
+The current Core runtime-kernel slice is an Apache-2.0 self-hosting runtime. It can create a local project, plan and commit a supported ReleaseSpec, run inline PostgreSQL migrations, serve PostgREST/RLS behavior, serve active-release static content, handle local storage objects and route manifests, execute trusted local functions including durable function runs and single-node schedule triggers, run a narrow Astro SSR target, and import verified portable project archives.
 
 ## What Is Here Today
 
@@ -93,7 +93,7 @@ Current runtime-kernel scope:
 | Exact static aliases and explicit public paths | Yes |
 | Deterministic dev JWTs | Yes |
 | Trusted local functions | Yes |
-| Single-node scheduled functions | Yes |
+| Single-node schedule triggers | Yes, backed by durable function runs |
 | Astro SSR | Yes |
 | Portable archive inspect/verify/import | Yes |
 | S3-compatible storage | No |

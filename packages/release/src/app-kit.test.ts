@@ -73,11 +73,16 @@ describe("@run402/release/app-kit function materialization", () => {
     });
   }));
 
-  it("preserves scheduled functions in Core manifests", () => withScratch((root) => {
+  it("preserves schedule triggers in Core manifests", () => withScratch((root) => {
     const result = materializeFunctionManifestMap({
       cron: {
         source: "export default () => new Response('cron');\n",
-        schedule: "*/5 * * * *",
+        triggers: [{
+          id: "cron_every_5m",
+          type: "schedule",
+          cron: "*/5 * * * *",
+          run: { event_type: "cron.tick", payload: {} },
+        }],
       },
       http: {
         source: "export default () => new Response('http');\n",
@@ -89,22 +94,37 @@ describe("@run402/release/app-kit function materialization", () => {
     });
 
     assert.deepEqual(Object.keys(result.functions), ["cron", "http"]);
-    assert.deepEqual(result.functions.cron.schedule, "*/5 * * * *");
+    assert.deepEqual(result.functions.cron.triggers, [{
+      id: "cron_every_5m",
+      type: "schedule",
+      cron: "*/5 * * * *",
+      run: { event_type: "cron.tick", payload: {} },
+    }]);
     assert.deepEqual(result.omittedFunctionNames, []);
     assert.deepEqual(result.diagnostics, []);
   }));
 
-  it("materializes a single scheduled function source", () => withScratch((root) => {
+  it("materializes a single schedule-triggered function source", () => withScratch((root) => {
     const materialized = materializeFunctionSource("cron", {
       source: "export default () => new Response('cron');\n",
-      schedule: "0 * * * *",
+      triggers: [{
+        id: "cron_hourly",
+        type: "schedule",
+        cron: "0 * * * *",
+        run: { event_type: "cron.hourly", payload: {} },
+      }],
     }, {
       rootDir: root,
       outDir: join(root, "functions"),
       targetPolicy: "core",
     });
 
-    assert.equal(materialized.spec.schedule, "0 * * * *");
+    assert.deepEqual(materialized.spec.triggers, [{
+      id: "cron_hourly",
+      type: "schedule",
+      cron: "0 * * * *",
+      run: { event_type: "cron.hourly", payload: {} },
+    }]);
   }));
 
   it("rejects paths outside the manifest root", () => withScratch((root) => {
@@ -183,7 +203,14 @@ describe("@run402/release/app-kit Core capability diagnostics", () => {
     const diagnostics = diagnoseCoreCompatibility({
       functions: {
         replace: {
-          cron: { schedule: "0 * * * *" },
+          cron: {
+            triggers: [{
+              id: "cron_hourly",
+              type: "schedule",
+              cron: "0 * * * *",
+              run: { event_type: "cron.hourly" },
+            }],
+          },
         },
       },
       subdomains: { set: [] },

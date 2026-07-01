@@ -2379,7 +2379,9 @@ test("manual scheduled function trigger uses project auth, cron envelope, metada
     projectId: project.project_id,
     releaseId: "rel_test",
     functionName: "api",
+    triggerId: "api_every_5m",
     schedule: "*/5 * * * *",
+    run: { event_type: "api.scheduled", payload: {} },
     scheduleMeta: null,
   });
   const executor = new MemoryFunctionExecutor({
@@ -2429,7 +2431,7 @@ test("manual scheduled function trigger uses project auth, cron envelope, metada
   assert.equal(executor.last?.request?.headers.some(([name, value]) => name === "x-run402-trigger" && value === "manual"), true);
   assert.deepEqual(JSON.parse(Buffer.from(executor.last?.request?.body?.data ?? "", "base64").toString("utf8")), {
     trigger: "manual",
-    scheduled_at: scheduleStore.lastUpdate?.ranAt,
+    scheduled_at: scheduleStore.lastUpdate?.enqueuedAt,
   });
 
   const logs = await coreGatewayResponse({
@@ -2646,7 +2648,7 @@ test("durable function run worker invokes a function-run envelope and records su
   });
 
   assert.equal(result?.status, "succeeded");
-  assert.equal(executor.last?.invocationKind, "scheduled");
+  assert.equal(executor.last?.invocationKind, "function_run");
   assert.equal(executor.last?.request?.headers.some(([name, value]) => name === "x-run402-trigger" && value === "function_run"), true);
   assert.equal(executor.last?.request?.headers.some(([name, value]) => name === "x-run402-run-id" && value === "fnrun_worker_123"), true);
   assert.equal(executor.last?.request?.headers.some(([name, value]) => name === "x-run402-attempt-id" && value === "fnatt_worker_123"), true);
@@ -3041,14 +3043,16 @@ class MemoryScheduleStore implements CoreScheduleStorePort {
     projectId: string;
     releaseId: string;
     functionName: string;
-    status: number | null;
+    triggerId: string;
+    runId: string | null;
+    status: number | string | null;
     error: string | null;
     schedule: string;
-    ranAt: string;
+    enqueuedAt: string;
   } | null = null;
 
   set(record: CoreScheduledFunctionRecord): void {
-    this.#records.set(scheduleStoreKey(record.projectId, record.functionName), record);
+    this.#records.set(scheduleStoreKey(record.projectId, record.functionName, record.triggerId), record);
   }
 
   async listActiveSchedules(projectId?: string): Promise<CoreScheduledFunctionRecord[]> {
@@ -3058,29 +3062,40 @@ class MemoryScheduleStore implements CoreScheduleStorePort {
   async getActiveSchedule(input: {
     projectId: string;
     functionName: string;
+    triggerId?: string;
   }): Promise<CoreScheduledFunctionRecord | null> {
     this.lookupCount += 1;
-    return this.#records.get(scheduleStoreKey(input.projectId, input.functionName)) ?? null;
+    return [...this.#records.values()].find((record) =>
+      record.projectId === input.projectId &&
+      record.functionName === input.functionName &&
+      (input.triggerId === undefined || record.triggerId === input.triggerId)
+    ) ?? null;
   }
 
   async updateScheduleMeta(input: {
     projectId: string;
     releaseId: string;
     functionName: string;
-    status: number | null;
+    triggerId: string;
+    runId: string | null;
+    status: number | string | null;
     error: string | null;
     schedule: string;
-    ranAt: string;
+    enqueuedAt: string;
   }): Promise<CoreFunctionScheduleMetadata> {
     this.lastUpdate = input;
-    const key = scheduleStoreKey(input.projectId, input.functionName);
+    const key = scheduleStoreKey(input.projectId, input.functionName, input.triggerId);
     const record = this.#records.get(key);
     const previous = record?.scheduleMeta;
     const scheduleMeta: CoreFunctionScheduleMetadata = {
-      last_run_at: input.ranAt,
+      last_enqueued_at: input.enqueuedAt,
+      last_run_id: input.runId,
+      last_run_status: input.status === null ? null : String(input.status),
+      last_run_at: input.enqueuedAt,
       last_status: input.status,
       run_count: (previous?.run_count ?? 0) + 1,
       last_error: input.error,
+      next_tick_at: "2099-01-01T00:00:00.000Z",
       next_run_at: "2099-01-01T00:00:00.000Z",
     };
     if (record) record.scheduleMeta = scheduleMeta;
@@ -3088,8 +3103,8 @@ class MemoryScheduleStore implements CoreScheduleStorePort {
   }
 }
 
-function scheduleStoreKey(projectId: string, functionName: string): string {
-  return `${projectId}:${functionName}`;
+function scheduleStoreKey(projectId: string, functionName: string, triggerId: string): string {
+  return `${projectId}:${functionName}:${triggerId}`;
 }
 
 function secretMetadata(

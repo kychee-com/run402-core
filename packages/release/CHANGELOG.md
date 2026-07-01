@@ -6,7 +6,7 @@
 - Add reviewed-plan fingerprint helpers for gateway-approved deployment plans.
 - Add `@run402/release/app-kit` for public app repos that generate CLI-compatible Run402 deploy manifests.
 - Add deterministic function source materialization, local-dir site refs, migration checksum helpers, Run402 Core diagnostics, and explicit omitted-feature reporting.
-- Allow Core app manifests to materialize scheduled functions now that Run402 Core includes a single-node scheduler.
+- Allow Core app manifests to materialize schedule triggers now that Run402 Core includes trigger-backed durable function runs.
 
 ## 0.1.1
 

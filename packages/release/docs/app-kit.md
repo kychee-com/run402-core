@@ -81,9 +81,10 @@ Use `targetPolicy: "core"` when building a manifest intended for Run402 Core. Th
 - compliance operations
 - fleet operations
 
-Scheduled functions are part of the Core manifest surface. Core runs them with
-the gateway's single-node scheduler; distributed scheduling, missed-tick replay,
-and fleet operations remain outside the Run402 Core policy.
+Schedule triggers are part of the Core manifest surface. Core runs them with
+the gateway's single-node scheduler and creates durable function runs for each
+tick; distributed scheduling, missed-tick replay, and fleet operations remain
+outside the Run402 Core policy.
 
 Apps can omit an unsupported feature intentionally and record that decision:
 

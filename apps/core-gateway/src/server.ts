@@ -335,6 +335,7 @@ export async function createGatewayRuntime(config: CoreGatewayConfig): Promise<C
   const scheduler = new CoreFunctionScheduler({
     store: scheduleStore,
     limits: config.scheduleLimits,
+    functionRuns,
     invoker: {
       invokeScheduledFunction: async (input) => await invokeScheduledFunction(runtime, input),
     },
@@ -951,6 +952,54 @@ export async function coreGatewayResponse(
     }
   }
 
+  const functionScheduleTriggerRunMatch = /^\/projects\/v1\/([^/]+)\/functions\/([^/]+)\/triggers\/([^/]+)\/run$/.exec(pathname);
+  if (method === "POST" && functionScheduleTriggerRunMatch) {
+    const projectId = functionScheduleTriggerRunMatch[1];
+    const functionName = decodePathSegment(functionScheduleTriggerRunMatch[2]);
+    const triggerId = decodePathSegment(functionScheduleTriggerRunMatch[3]);
+    if (!functionName || !triggerId) {
+      return { status: 400, body: { error: "invalid_schedule_trigger", message: "Function name or trigger id is invalid." } };
+    }
+    const auth = await requireProjectService(runtime, projectId, headers);
+    if ("status" in auth) {
+      if (auth.status === 401 && serviceTokenFromHeaders(headers)) {
+        return {
+          status: 403,
+          body: {
+            error: "forbidden",
+            message: "The supplied project service key is not authorized for this project.",
+          },
+        };
+      }
+      return auth;
+    }
+    if (!runtime.scheduler) {
+      return unavailable("scheduler_unavailable", "Run402 Core scheduled functions are not configured.");
+    }
+    try {
+      const result = await runtime.scheduler.triggerNow({
+        projectId: auth.project_id,
+        functionName,
+        triggerId,
+      });
+      return {
+        status: 202,
+        body: {
+          run: result.run ?? result.body,
+          schedule_meta: result.schedule_meta,
+        },
+      };
+    } catch (error) {
+      if (error instanceof CoreSchedulerError) {
+        return {
+          status: error.status,
+          body: { error: error.code, message: error.message },
+        };
+      }
+      return functionErrorToGateway(error, newFunctionRequestId());
+    }
+  }
+
   const functionTriggerMatch = /^\/projects\/v1\/([^/]+)\/functions\/([^/]+)\/trigger$/.exec(pathname);
   if (method === "POST" && functionTriggerMatch) {
     const projectId = functionTriggerMatch[1];
@@ -985,6 +1034,7 @@ export async function coreGatewayResponse(
           request_id: result.requestId,
           status: result.status,
           response: result.body,
+          ...(result.run ? { run: result.run } : {}),
           schedule_meta: result.schedule_meta,
         },
       };
@@ -3435,7 +3485,7 @@ export async function invokeCoreFunctionRun(
       projectId: claim.run.project_id,
       releaseId: base.release_id,
       functionName: claim.run.function_name,
-      invocationKind: "scheduled",
+      invocationKind: "function_run",
       requestId,
       actor: null,
       secrets,
