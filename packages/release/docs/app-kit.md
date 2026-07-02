@@ -74,7 +74,7 @@ Use `targetPolicy: "core"` when building a manifest intended for Run402 Core. Th
 - managed subdomains and custom domains
 - i18n routing
 - hosted OAuth
-- deploy-time email resources (Core outbound email is configured through the gateway provider and `/mailboxes/v1`; managed inbound/delivery operations remain Cloud-only)
+- deploy-time email resources (Core mailbox local parts are project-scoped and configured through the gateway provider and `/mailboxes/v1`; Cloud-managed `*.mail.run402.com` routing and managed inbound/delivery operations remain Cloud-only)
 - billing
 - monitoring
 - backups

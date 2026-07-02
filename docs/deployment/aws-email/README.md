@@ -4,6 +4,7 @@ This guide adds outbound email to a Dockerized Run402 Core gateway running on AW
 
 - apps still deploy with `run402 deploy apply --manifest`
 - app code still calls the same `/mailboxes/v1` contract and `@run402/functions.email.send`
+- mailbox local parts are project-scoped; Core providers choose their own mailbox domains rather than Cloud's managed `*.mail.run402.com` routing
 - the Core operator owns the email provider account, sender domain, DNS, reputation, sandbox status, and delivery operations
 
 This guide covers outbound transactional email and provider delivery operations: SES acceptance, Delivery/Bounce/Complaint forwarding, message-state reconciliation, suppression, delivery log, retry, and redrive. For inbound reply reception on the same Core gateway, follow `docs/deployment/aws-email-inbound/README.md` after outbound send is working. Managed sender-domain automation and Cloud abuse operations stay outside Core.
