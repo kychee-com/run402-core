@@ -1,4 +1,6 @@
 export * from "./canonical-json.js";
+export * from "./app-resource-adapters.js";
+export * from "./app-spec.js";
 export * from "./diff.js";
 export * from "./digest.js";
 export * from "./errors.js";
