@@ -378,6 +378,145 @@ describe("portable release materialization", () => {
     assert.deepEqual(materialized.static_manifest?.files["/events"]?.methods, ["GET", "HEAD"]);
   });
 
+  it("lets a root static alias override the implicit compatibility entry for / (issue kychee-com/run402-private#556)", () => {
+    // The "static home page + SPA shell" recipe verbatim: implicit-mode site
+    // shipping index.html + home.html at the root, root alias with omitted
+    // methods. `/` serves home.html via the alias; index.html keeps its own
+    // public path and stays the SPA fallback.
+    const materialized = materializeRelease({
+      spec: {
+        project: "p0001",
+        site: {
+          replace: {
+            "index.html": { sha256: SHA_A, size: 18, contentType: "text/html" },
+            "home.html": { sha256: SHA_B, size: 21, contentType: "text/html" },
+          },
+        },
+        routes: {
+          replace: [
+            { pattern: "/", target: { type: "static", file: "home.html" } },
+          ],
+        },
+      },
+    });
+
+    const root = materialized.static_manifest?.files["/"];
+    assert.equal(root?.asset_path, "home.html");
+    assert.equal(root?.sha256, SHA_B);
+    assert.equal(root?.direct, false);
+    assert.equal(root?.authority, "route_static_alias");
+    assert.equal(root?.route_id, "/:GET,HEAD");
+    assert.deepEqual(root?.methods, ["GET", "HEAD"]);
+    assert.equal(materialized.static_manifest?.files["/index.html"]?.direct, true);
+    assert.equal(materialized.static_manifest?.files["/index.html"]?.authority, "implicit_file_path");
+    assert.equal(materialized.static_manifest?.files["/home.html"]?.direct, true);
+    assert.equal(materialized.static_manifest?.spa_fallback, "/index.html");
+  });
+
+  it("lets a trailing-slash static alias override an implicit directory compatibility entry", () => {
+    const materialized = materializeRelease({
+      spec: {
+        project: "p0001",
+        site: {
+          replace: {
+            "docs/index.html": { sha256: SHA_A, size: 18, contentType: "text/html" },
+            "docs/guide.html": { sha256: SHA_B, size: 21, contentType: "text/html" },
+          },
+        },
+        routes: {
+          replace: [
+            { pattern: "/docs/", methods: ["GET"], target: { type: "static", file: "docs/guide.html" } },
+          ],
+        },
+      },
+    });
+
+    assert.equal(materialized.static_manifest?.files["/docs/"]?.asset_path, "docs/guide.html");
+    assert.equal(materialized.static_manifest?.files["/docs/"]?.authority, "route_static_alias");
+    assert.equal(materialized.static_manifest?.files["/docs/index.html"]?.direct, true);
+  });
+
+  it("materializes a same-file root alias as the route entry (identical bytes, route authority)", () => {
+    // Implicit compatibility entries carry a classified cache_class while
+    // route alias entries never declare one, so a same-file root alias is
+    // still a differing entry — the alias wins, which matches dispatch
+    // (route matching runs before static resolution either way).
+    const materialized = materializeRelease({
+      spec: {
+        project: "p0001",
+        site: {
+          replace: {
+            "index.html": { sha256: SHA_A, size: 18, contentType: "text/html" },
+          },
+        },
+        routes: {
+          replace: [
+            { pattern: "/", methods: ["GET"], target: { type: "static", file: "index.html" } },
+          ],
+        },
+      },
+    });
+
+    assert.equal(materialized.static_manifest?.files["/"]?.asset_path, "index.html");
+    assert.equal(materialized.static_manifest?.files["/"]?.sha256, SHA_A);
+    assert.equal(materialized.static_manifest?.files["/"]?.direct, false);
+    assert.equal(materialized.static_manifest?.files["/"]?.authority, "route_static_alias");
+    assert.equal(materialized.static_manifest?.files["/index.html"]?.direct, true);
+    assert.equal(materialized.static_manifest?.spa_fallback, "/index.html");
+  });
+
+  it("still rejects a static alias conflicting with an explicit public_paths declaration", () => {
+    assert.throws(
+      () => materializeRelease({
+        spec: {
+          project: "p0001",
+          site: {
+            replace: {
+              "index.html": { sha256: SHA_A, size: 18, contentType: "text/html" },
+              "home.html": { sha256: SHA_B, size: 21, contentType: "text/html" },
+            },
+            public_paths: {
+              mode: "explicit",
+              replace: {
+                "/": { asset: "index.html" },
+              },
+            },
+          },
+          routes: {
+            replace: [
+              { pattern: "/", methods: ["GET"], target: { type: "static", file: "home.html" } },
+            ],
+          },
+        },
+      }),
+      (err) => err instanceof ReleaseSpecValidationError &&
+        /conflicting direct public path and static alias for \//.test(err.message),
+    );
+  });
+
+  it("still rejects a static alias conflicting with a real implicit file path", () => {
+    assert.throws(
+      () => materializeRelease({
+        spec: {
+          project: "p0001",
+          site: {
+            replace: {
+              "about.html": { sha256: SHA_A, size: 18, contentType: "text/html" },
+              "home.html": { sha256: SHA_B, size: 21, contentType: "text/html" },
+            },
+          },
+          routes: {
+            replace: [
+              { pattern: "/about.html", methods: ["GET"], target: { type: "static", file: "home.html" } },
+            ],
+          },
+        },
+      }),
+      (err) => err instanceof ReleaseSpecValidationError &&
+        /conflicting direct public path and static alias for \/about\.html/.test(err.message),
+    );
+  });
+
   it("validates route targets against the post-state", () => {
     assert.throws(
       () => materializeRelease({
@@ -763,13 +902,14 @@ describe("route materialization", () => {
     assert.match(materialized.manifest_sha256 ?? "", /^[0-9a-f]{64}$/);
   });
 
-  it("requires static aliases to declare GET or GET plus HEAD explicitly", () => {
-    assert.throws(
-      () => materializeRoutes([
-        { pattern: "/login", target: { type: "static", file: "login.html" } },
-      ]),
-      ReleaseSpecValidationError,
-    );
+  it("defaults omitted static alias methods to GET plus HEAD", () => {
+    const materialized = materializeRoutes([
+      { pattern: "/login", target: { type: "static", file: "login.html" } },
+    ]);
+    assert.deepEqual(materialized.entries[0]?.methods, ["GET", "HEAD"]);
+  });
+
+  it("rejects static alias method sets other than GET or GET plus HEAD", () => {
     assert.throws(
       () => materializeRoutes([
         { pattern: "/login", methods: ["HEAD"], target: { type: "static", file: "login.html" } },
