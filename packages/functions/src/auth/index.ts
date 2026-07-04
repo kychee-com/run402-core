@@ -180,6 +180,7 @@ function actorFromAuthorizationHeader(
       amr?: string[];
       session_id?: string;
       authz_version?: number;
+      is_test?: boolean;
     }>(token, config.JWT_SECRET);
     if (payload.project_id !== ctx.projectId) return null;
     return {
@@ -187,6 +188,7 @@ function actorFromAuthorizationHeader(
       projectId: payload.project_id,
       sessionId: payload.session_id ?? `bearer:${payload.sub}`,
       email: payload.email ?? "",
+      is_test: payload.is_test === true ? true : undefined,
       emailVerified: false,
       authTime: payload.auth_time ?? Math.floor(Date.now() / 1000),
       amr: Array.isArray(payload.amr) ? [...payload.amr] : [],
@@ -1139,6 +1141,7 @@ function actorContextToPublicActor(
     projectId,
     sessionId: ctxActor.sessionId,
     email: ctxActor.email,
+    is_test: ctxActor.isTest === true ? true : undefined,
     emailVerified: ctxActor.emailVerified,
     authTime: ctxActor.authTime,
     amr: [...ctxActor.amr],

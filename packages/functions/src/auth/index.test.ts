@@ -59,9 +59,19 @@ describe("auth.user / auth.requireUser", () => {
     assert.ok(result);
     assert.equal(result!.id, sampleActor.id);
     assert.equal(result!.email, sampleActor.email);
+    assert.equal(result!.is_test, undefined);
     // The legacy SDK shape `userId` MUST NOT be present — matches the
     // Supabase / Clerk / Auth.js convention agents are trained on.
     assert.equal((result as unknown as { userId?: string }).userId, undefined);
+  });
+
+  it("auth.user exposes is_test for tenant test-session actors", async () => {
+    const result = await inContext(
+      { actor: { ...sampleActor, isTest: true } },
+      async () => auth.user(),
+    );
+    assert.ok(result);
+    assert.equal(result!.is_test, true);
   });
 
   it("auth.user returns null when no actor in context", async () => {
@@ -83,6 +93,7 @@ describe("auth.user / auth.requireUser", () => {
         project_id: "p_test",
         auth_time: 1779960000,
         amr: ["password"],
+        is_test: true,
       },
       "test-jwt-secret-32chars-minimum!!", // mocked config.JWT_SECRET above
     );
@@ -96,6 +107,7 @@ describe("auth.user / auth.requireUser", () => {
     assert.ok(result, "expected actor from Bearer JWT");
     assert.equal(result!.id, "bearer-user-uuid");
     assert.equal(result!.email, "bearer@example.com");
+    assert.equal(result!.is_test, true);
     assert.deepEqual(result!.amr, ["password"]);
   });
 

@@ -22,6 +22,13 @@ export interface Actor {
    *  to `internal.users` is a pending follow-up). Do NOT gate on `email` for
    *  SSR surfaces — key off `id` and resolve the email yourself if needed. */
   email: string;
+  /** True only for Run402 tenant test-session users.
+   *
+   * Invariant: real-method AMR on a real user only comes from a real ceremony
+   * or cryptographic proof; arbitrary AMR exists only on `is_test` users under
+   * test mode, audited by the gateway.
+   */
+  is_test?: true;
   emailVerified: boolean;
   /** Last any-method auth proof, seconds-since-epoch. */
   authTime: number;

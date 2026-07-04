@@ -1,5 +1,13 @@
 # `@run402/functions` changelog
 
+## Unreleased
+
+### Added
+
+- `auth.user()` / `auth.requireUser()` now expose `actor.is_test === true`
+  for Run402 tenant test-session users. The signed actor envelope and the
+  short-lived SDK-minted DB JWT preserve the same watermark.
+
 ## 3.5.1
 
 ### Changed

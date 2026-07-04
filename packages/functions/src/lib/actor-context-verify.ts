@@ -57,6 +57,8 @@ export const ACTOR_CONTEXT_HEADER = "x-run402-actor-context";
 export interface VerifiedActorPayload {
   id: string;
   email: string;
+  /** Present only for Run402 tenant test-session actors. */
+  isTest?: true;
   emailVerified: boolean;
   authTime: number;
   amr: string[];

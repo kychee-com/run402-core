@@ -310,6 +310,7 @@ describe("db() actor-context propagation (auth-aware-ssr)", () => {
         actor: {
           id: "user-uuid-1",
           email: "u@example.com",
+          isTest: true,
           emailVerified: true,
           authTime: 1779960000,
           amr: ["passkey"],
@@ -332,6 +333,7 @@ describe("db() actor-context propagation (auth-aware-ssr)", () => {
       project_id: string;
       session_id: string;
       authz_version: number;
+      is_test?: boolean;
       amr: string[];
       aal: string;
       iat: number;
@@ -343,6 +345,7 @@ describe("db() actor-context propagation (auth-aware-ssr)", () => {
     assert.equal(claims.project_id, "prj_test");
     assert.equal(claims.session_id, "sess-uuid-1");
     assert.equal(claims.authz_version, 7);
+    assert.equal(claims.is_test, true);
     assert.deepEqual(claims.amr, ["passkey"]);
     assert.equal(claims.aal, "aal2", "passkey AMR → aal2");
     // 60s TTL

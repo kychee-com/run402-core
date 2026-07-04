@@ -186,6 +186,7 @@ function extractAuthFromAls(): string | undefined {
       email: ctx.actor.email,
       project_id: ctx.projectId,
       iss: "agentdb" as const,
+      ...(ctx.actor.isTest === true ? { is_test: true as const } : {}),
       amr: ctx.actor.amr,
       auth_time: ctx.actor.authTime,
       aal: ctx.actor.amr.includes("passkey") ? ("aal2" as const) : ("aal1" as const),

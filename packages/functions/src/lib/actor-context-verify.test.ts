@@ -91,6 +91,15 @@ describe("SDK actor-context verifier — happy path", () => {
       assert.deepEqual(r.envelope.actor.amrTimes, { passkey: 1779960000 });
     }
   });
+
+  it("preserves the test-session actor watermark when present", () => {
+    const encoded = signEnvelope({ actorOverride: { isTest: true } });
+    const r = verifyActorContextEnvelope(encoded, ctxFor());
+    assert.equal(r.ok, true);
+    if (r.ok) {
+      assert.equal(r.envelope.actor.isTest, true);
+    }
+  });
 });
 
 describe("SDK actor-context verifier — failure modes (each maps to anonymous + spoof log)", () => {

@@ -199,6 +199,7 @@ function verifyEnvelopeFromRequest(
   return {
     id: outcome.envelope.actor.id,
     email: outcome.envelope.actor.email,
+    isTest: outcome.envelope.actor.isTest === true ? true : undefined,
     emailVerified: outcome.envelope.actor.emailVerified,
     authTime: outcome.envelope.actor.authTime,
     amr: outcome.envelope.actor.amr,

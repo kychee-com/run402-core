@@ -325,6 +325,7 @@ describe("runWithContext — routed_http actor from a Web Request (auth-hosted-s
     const actor = {
       id: "11111111-2222-3333-4444-555555555555",
       email: "u@example.com",
+      isTest: true,
       emailVerified: true,
       authTime: 1779960000,
       amr: ["tenant_password"],
@@ -348,12 +349,13 @@ describe("runWithContext — routed_http actor from a Web Request (auth-hosted-s
       }),
     });
 
-    let resolved: { id?: string; amr?: string[] } | null = null;
+    let resolved: { id?: string; amr?: string[]; isTest?: true } | null = null;
     await runWithContext(routedCtx(request), () => {
       resolved = (getCurrentContext()?.actor ?? null) as typeof resolved;
     });
     assert.ok(resolved, "actor MUST resolve from the signed cookie envelope");
     assert.equal(resolved!.id, "11111111-2222-3333-4444-555555555555");
+    assert.equal(resolved!.isTest, true);
     assert.deepEqual(resolved!.amr, ["tenant_password"]);
   });
 
