@@ -172,7 +172,9 @@ function validateStaticTargetFile(file: string, resource: string): void {
 function normalizeMethods(methods: unknown, resource: string, target: RouteTarget): HttpMethod[] | null {
   if (methods === undefined || methods === null) {
     if (target.type === "static") {
-      throw routeError(resource, "static route aliases require explicit methods");
+      // GET plus HEAD is the only method set a static alias can normalize
+      // to, so an omitted list is unambiguous.
+      return ["GET", "HEAD"];
     }
     return null;
   }

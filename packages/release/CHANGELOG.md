@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Default omitted static route alias `methods` to `GET` plus `HEAD` instead of rejecting the route entry (the only method set a static alias can normalize to).
+- Let a `route_static_alias` override a manufactured implicit-mode compatibility entry (`/` for a root `index.html`, or a trailing-slash directory path) instead of rejecting the release. Explicit `public_paths` declarations and real file paths keep the hard `conflicting direct public path and static alias` error. Unblocks the "static home page + SPA shell" recipe (kychee-com/run402-private#556).
 - Add pure typed-config descriptor helpers and normalization for SDK/CLI executable configs.
 - Add reviewed-plan fingerprint helpers for gateway-approved deployment plans.
 - Add `@run402/release/app-kit` for public app repos that generate CLI-compatible Run402 deploy manifests.

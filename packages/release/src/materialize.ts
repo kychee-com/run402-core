@@ -264,6 +264,19 @@ export function buildStaticManifestFromPortableState(
       resource: `routes.${route.pattern}`,
     });
     if (existingDirect) {
+      if (
+        !samePublicStaticEntry(existingDirect, routeEntry) &&
+        isImplicitCompatibilityEntry(existingDirect)
+      ) {
+        // A manufactured implicit-mode compatibility lookup (`/` for a root
+        // index.html, or a trailing-slash directory path) yields to an
+        // explicit static route alias: the alias is the operator's declared
+        // intent for that URL, and the target file's own public path stays
+        // directly reachable. Explicit public_paths declarations and real
+        // file paths keep the hard conflict.
+        entries[entries.indexOf(existingDirect)] = routeEntry;
+        continue;
+      }
       ensureCompatiblePublicEntries(existingDirect, routeEntry, route.pattern);
       continue;
     }
@@ -440,18 +453,27 @@ function entryFromAssetPath(input: {
   };
 }
 
+function samePublicStaticEntry(
+  direct: StaticManifestBuildEntry,
+  routeOnly: StaticManifestBuildEntry,
+): boolean {
+  return direct.asset_path === routeOnly.asset_path &&
+    direct.sha256 === routeOnly.sha256 &&
+    direct.size === routeOnly.size &&
+    (direct.content_type ?? null) === (routeOnly.content_type ?? null) &&
+    (direct.cache_class ?? null) === (routeOnly.cache_class ?? null);
+}
+
+function isImplicitCompatibilityEntry(entry: StaticManifestBuildEntry): boolean {
+  return entry.authority === "implicit_file_path" && entry.public_path.endsWith("/");
+}
+
 function ensureCompatiblePublicEntries(
   direct: StaticManifestBuildEntry,
   routeOnly: StaticManifestBuildEntry,
   publicPath: string,
 ): void {
-  const same =
-    direct.asset_path === routeOnly.asset_path &&
-    direct.sha256 === routeOnly.sha256 &&
-    direct.size === routeOnly.size &&
-    (direct.content_type ?? null) === (routeOnly.content_type ?? null) &&
-    (direct.cache_class ?? null) === (routeOnly.cache_class ?? null);
-  if (same) return;
+  if (samePublicStaticEntry(direct, routeOnly)) return;
   throw new ReleaseSpecValidationError(
     "site.public_paths",
     `conflicting direct public path and static alias for ${publicPath}`,
