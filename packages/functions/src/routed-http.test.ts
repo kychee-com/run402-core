@@ -3,10 +3,12 @@ import assert from "node:assert/strict";
 
 import {
   bytes,
+  getRoutedPaymentContext,
   isRequest,
   json,
   routedHttp,
   text,
+  type RoutedHttpPaymentContextV1,
   type RoutedHttpRequestV1,
   type RoutedHttpResponseV1,
 } from "./index.js";
@@ -107,12 +109,80 @@ describe("routed HTTP helpers", () => {
     assert.equal(req.context.locale, null);
     assert.equal(req.context.defaultLocale, null);
   });
+
+  it("types and reads confirmed payment context from routed envelopes", () => {
+    const payment: RoutedHttpPaymentContextV1 = {
+      scheme: "x402",
+      paymentId: "pay_tenant_123",
+      amountUsdMicros: 250000,
+      payer: "0x000000000000000000000000000000000000b0b0",
+      network: "base",
+      asset: "0x0000000000000000000000000000000000000001",
+      payTo: "0x000000000000000000000000000000000000cafe",
+      transaction: "0xabc",
+      settledAt: "2026-07-07T10:00:00.000Z",
+    };
+    const req: RoutedHttpRequestV1 = baseEnvelope({ payment });
+
+    assert.deepEqual(getRoutedPaymentContext(req), payment);
+    assert.deepEqual(routedHttp.paymentContext(req), payment);
+  });
+
+  it("reads confirmed payment context from Web Request headers", () => {
+    const request = new Request("https://example.com/api/credits", {
+      headers: {
+        "x-run402-payment-scheme": "x402",
+        "x-run402-payment-id": "pay_headers_123",
+        "x-run402-payment-amount-usd-micros": "250000",
+        "x-run402-payment-payer": "0x000000000000000000000000000000000000b0b0",
+        "x-run402-payment-network": "base",
+        "x-run402-payment-asset": "0x0000000000000000000000000000000000000001",
+        "x-run402-payment-pay-to": "0x000000000000000000000000000000000000cafe",
+        "x-run402-payment-transaction": "0xabc",
+        "x-run402-payment-settled-at": "2026-07-07T10:00:00.000Z",
+      },
+    });
+
+    assert.deepEqual(getRoutedPaymentContext(request), {
+      scheme: "x402",
+      paymentId: "pay_headers_123",
+      amountUsdMicros: 250000,
+      payer: "0x000000000000000000000000000000000000b0b0",
+      network: "base",
+      asset: "0x0000000000000000000000000000000000000001",
+      payTo: "0x000000000000000000000000000000000000cafe",
+      transaction: "0xabc",
+      settledAt: "2026-07-07T10:00:00.000Z",
+    });
+  });
+
+  it("returns null for unpriced or malformed payment context", () => {
+    assert.equal(getRoutedPaymentContext(baseEnvelope({})), null);
+    assert.equal(getRoutedPaymentContext(new Headers()), null);
+    assert.equal(getRoutedPaymentContext({
+      "x-run402-payment-scheme": "x402",
+      "x-run402-payment-id": "pay_bad",
+      "x-run402-payment-amount-usd-micros": "0.25",
+      "x-run402-payment-network": "base",
+      "x-run402-payment-pay-to": "0x000000000000000000000000000000000000cafe",
+      "x-run402-payment-settled-at": "2026-07-07T10:00:00.000Z",
+    }), null);
+    assert.equal(getRoutedPaymentContext({
+      "x-run402-payment-scheme": "allowance",
+      "x-run402-payment-id": "pay_bad",
+      "x-run402-payment-amount-usd-micros": "250000",
+      "x-run402-payment-network": "base",
+      "x-run402-payment-pay-to": "0x000000000000000000000000000000000000cafe",
+      "x-run402-payment-settled-at": "2026-07-07T10:00:00.000Z",
+    }), null);
+  });
 });
 
 /** Minimal routed envelope for ctx-locale shape tests. */
 function baseEnvelope(opts: {
   locale?: string | null;
   defaultLocale?: string | null;
+  payment?: RoutedHttpPaymentContextV1 | null;
 }): RoutedHttpRequestV1 {
   return {
     version: "run402.routed_http.v1",
@@ -137,6 +207,7 @@ function baseEnvelope(opts: {
       requestId: "req_test",
       ...(opts.locale !== undefined ? { locale: opts.locale } : {}),
       ...(opts.defaultLocale !== undefined ? { defaultLocale: opts.defaultLocale } : {}),
+      ...(opts.payment !== undefined ? { payment: opts.payment } : {}),
     },
   };
 }

@@ -29,6 +29,7 @@ This matrix defines how `@run402/release` treats the current ReleaseSpec surface
 | `site.public_paths` | Publicly interpreted | Drives logical static manifest/public path mode. |
 | `subdomains` | Publicly interpreted | Desired logical names; claiming and routing remain Cloud behavior. |
 | `routes` | Publicly interpreted | Logical route graph; provider routing records remain Cloud behavior. |
+| `routes[].pricing` | Publicly interpreted | Defines fixed x402 prices for function routes. Settlement, org payout-wallet resolution, and chain support remain Cloud behavior. |
 | `checks` | Reserved/rejected | Non-null values are rejected in v1. |
 | `assets` | Opaque/preserved plus Cloud execution | Participates in apply request digest compatibility; asset storage semantics are Cloud-only in phase 1. |
 | `i18n` | Publicly interpreted | Materializes locale policy and defaults. |

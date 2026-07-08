@@ -1,6 +1,7 @@
 import { ReleaseSpecValidationError } from "./errors.js";
 import {
   SUPPORTED_HTTP_METHODS,
+  SUPPORTED_ROUTE_PRICING_NETWORKS,
   type ContentRefHex,
   type FunctionSpec,
   type I18nSpec,
@@ -33,6 +34,7 @@ const LOCALE_TAG = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const COOKIE_DETECT = /^cookie:[A-Za-z0-9._-]{1,128}$/;
 const TOKEN = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/;
 const EMAIL_TRIGGER_EVENTS = new Set(["reply_received", "delivery", "bounced", "complained"]);
+const ROUTE_PRICING_NETWORKS = new Set<string>(SUPPORTED_ROUTE_PRICING_NETWORKS);
 
 export function parseReleaseSpec(input: unknown): ReleaseSpec {
   if (!isRecord(input)) {
@@ -381,7 +383,7 @@ function validateRoutes(routes: ReleaseSpec["routes"]): void {
 
 function validateRouteSpec(route: RouteSpec, resource: string): void {
   if (!isRecord(route)) throw invalid(resource, "route must be an object");
-  rejectUnknownKeys(route, resource, ["pattern", "methods", "target"]);
+  rejectUnknownKeys(route, resource, ["pattern", "methods", "target", "pricing"]);
   if (typeof route.pattern !== "string" || !route.pattern.startsWith("/")) {
     throw invalid(`${resource}.pattern`, "route pattern must start with /");
   }
@@ -396,11 +398,50 @@ function validateRouteSpec(route: RouteSpec, resource: string): void {
       throw invalid(`${resource}.target.name`, "function route target requires name");
     }
   } else if (route.target.type === "static") {
+    if (route.pricing !== undefined) {
+      throw invalid(`${resource}.pricing`, "route pricing is only supported on function routes");
+    }
     if (typeof route.target.file !== "string" || route.target.file.length === 0) {
       throw invalid(`${resource}.target.file`, "static route target requires file");
     }
   } else {
     throw invalid(`${resource}.target.type`, "route target type must be function or static");
+  }
+  validateRoutePricing(route.pricing, `${resource}.pricing`);
+}
+
+function validateRoutePricing(pricing: unknown, resource: string): void {
+  if (pricing === undefined) return;
+  if (!isRecord(pricing)) throw invalid(resource, "route pricing must be an object");
+  rejectUnknownKeys(pricing, resource, ["mode", "amount_usd_micros", "pay_to", "networks"]);
+  if (pricing.mode !== "always") {
+    throw invalid(`${resource}.mode`, "route pricing mode must be always");
+  }
+  if (typeof pricing.amount_usd_micros !== "number" || !Number.isSafeInteger(pricing.amount_usd_micros) || pricing.amount_usd_micros <= 0) {
+    throw invalid(`${resource}.amount_usd_micros`, "route pricing amount_usd_micros must be a positive safe integer");
+  }
+  if (pricing.pay_to !== "org_default_payout") {
+    throw invalid(`${resource}.pay_to`, "route pricing pay_to must be org_default_payout");
+  }
+  if (pricing.networks === undefined) return;
+  if (!Array.isArray(pricing.networks)) {
+    throw invalid(`${resource}.networks`, "route pricing networks must be an array");
+  }
+  if (pricing.networks.length === 0) {
+    throw invalid(`${resource}.networks`, "route pricing networks must not be empty");
+  }
+  const seen = new Set<string>();
+  for (const network of pricing.networks) {
+    if (typeof network !== "string") {
+      throw invalid(`${resource}.networks`, "route pricing network must be a string");
+    }
+    if (!ROUTE_PRICING_NETWORKS.has(network)) {
+      throw invalid(`${resource}.networks`, `unsupported route pricing network ${network}`);
+    }
+    if (seen.has(network)) {
+      throw invalid(`${resource}.networks`, `duplicate route pricing network ${network}`);
+    }
+    seen.add(network);
   }
 }
 

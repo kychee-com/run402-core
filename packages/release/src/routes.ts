@@ -3,17 +3,22 @@ import { createHash } from "node:crypto";
 import { ReleaseSpecValidationError } from "./errors.js";
 import {
   SUPPORTED_HTTP_METHODS,
+  SUPPORTED_ROUTE_PRICING_NETWORKS,
   type HttpMethod,
   type MaterializedRoutes,
   type RouteEntry,
+  type RoutePricingNetwork,
+  type RoutePricingSpec,
   type RouteSpec,
   type RouteTarget,
 } from "./types.js";
 
 export const ROUTE_TABLE_LIMIT = 100;
 export const ROUTE_PATTERN_BYTE_LIMIT = 256;
+export const DEFAULT_ROUTE_PRICING_NETWORKS: readonly RoutePricingNetwork[] = ["mainnet"];
 
 const SUPPORTED_METHOD_SET = new Set<string>(SUPPORTED_HTTP_METHODS);
+const SUPPORTED_ROUTE_PRICING_NETWORK_SET = new Set<string>(SUPPORTED_ROUTE_PRICING_NETWORKS);
 
 export function emptyRoutes(): MaterializedRoutes {
   return { manifest_sha256: null, entries: [] };
@@ -74,13 +79,15 @@ function routeEntryFromSpec(spec: RouteSpec, resource: string): RouteEntry {
   if (!spec || typeof spec !== "object" || Array.isArray(spec)) {
     throw routeError(resource, "route entry must be an object");
   }
-  const raw = spec as { pattern?: unknown; methods?: unknown; target?: unknown };
+  rejectUnknownKeys(spec as unknown as Record<string, unknown>, resource, ["pattern", "methods", "target", "pricing"]);
+  const raw = spec as { pattern?: unknown; methods?: unknown; target?: unknown; pricing?: unknown };
   if (typeof raw.pattern !== "string") {
     throw routeError(`${resource}.pattern`, "route pattern must be a string");
   }
   const pattern = validateAndNormalizePattern(raw.pattern, `${resource}.pattern`);
   const target = validateTarget(raw.target, `${resource}.target`);
   const methods = normalizeMethods(raw.methods, `${resource}.methods`, target);
+  const pricing = validateRoutePricing(raw.pricing, `${resource}.pricing`, target);
   const kind: RouteEntry["kind"] = pattern.endsWith("/*") ? "prefix" : "exact";
   if (target.type === "static" && kind !== "exact") {
     throw routeError(`${resource}.pattern`, "static route aliases must use exact path patterns; prefix /* patterns are not supported");
@@ -91,6 +98,7 @@ function routeEntryFromSpec(spec: RouteSpec, resource: string): RouteEntry {
     prefix: kind === "prefix" ? pattern.slice(0, -1) : null,
     methods,
     target,
+    ...(pricing ? { pricing } : {}),
   };
 }
 
@@ -208,6 +216,63 @@ function normalizeMethods(methods: unknown, resource: string, target: RouteTarge
   return normalized;
 }
 
+function validateRoutePricing(pricing: unknown, resource: string, target: RouteTarget): RoutePricingSpec | undefined {
+  if (pricing === undefined) return undefined;
+  if (target.type !== "function") {
+    throw routeError(resource, "route pricing is only supported on function routes");
+  }
+  if (!pricing || typeof pricing !== "object" || Array.isArray(pricing)) {
+    throw routeError(resource, "route pricing must be an object");
+  }
+  rejectUnknownKeys(pricing as Record<string, unknown>, resource, ["mode", "amount_usd_micros", "pay_to", "networks"]);
+  const raw = pricing as {
+    mode?: unknown;
+    amount_usd_micros?: unknown;
+    pay_to?: unknown;
+    networks?: unknown;
+  };
+  if (raw.mode !== "always") {
+    throw routeError(`${resource}.mode`, "route pricing mode must be 'always'");
+  }
+  const amount = raw.amount_usd_micros;
+  if (typeof amount !== "number" || !Number.isSafeInteger(amount) || amount <= 0) {
+    throw routeError(`${resource}.amount_usd_micros`, "route pricing amount_usd_micros must be a positive safe integer");
+  }
+  if (raw.pay_to !== "org_default_payout") {
+    throw routeError(`${resource}.pay_to`, "route pricing pay_to must be 'org_default_payout'");
+  }
+  return {
+    mode: "always",
+    amount_usd_micros: amount,
+    pay_to: "org_default_payout",
+    networks: normalizePricingNetworks(raw.networks, `${resource}.networks`),
+  };
+}
+
+function normalizePricingNetworks(networks: unknown, resource: string): RoutePricingNetwork[] {
+  if (networks === undefined) return [...DEFAULT_ROUTE_PRICING_NETWORKS];
+  if (!Array.isArray(networks)) {
+    throw routeError(resource, "route pricing networks must be an array");
+  }
+  if (networks.length === 0) {
+    throw routeError(resource, "route pricing networks must not be empty");
+  }
+  const out = new Set<RoutePricingNetwork>();
+  for (const network of networks) {
+    if (typeof network !== "string") {
+      throw routeError(resource, "route pricing network must be a string");
+    }
+    if (!SUPPORTED_ROUTE_PRICING_NETWORK_SET.has(network)) {
+      throw routeError(resource, `unsupported route pricing network: ${network}`);
+    }
+    if (out.has(network as RoutePricingNetwork)) {
+      throw routeError(resource, `duplicate route pricing network: ${network}`);
+    }
+    out.add(network as RoutePricingNetwork);
+  }
+  return [...out].sort(compareAscii);
+}
+
 function effectiveMethods(methods: HttpMethod[] | null): HttpMethod[] {
   if (methods === null) return [...SUPPORTED_HTTP_METHODS];
   const set = new Set<HttpMethod>(methods);
@@ -216,19 +281,30 @@ function effectiveMethods(methods: HttpMethod[] | null): HttpMethod[] {
 }
 
 function stableRouteEntryObject(entry: RouteEntry): unknown {
-  return {
+  const stable = {
     pattern: entry.pattern,
     kind: entry.kind,
     prefix: entry.prefix,
     methods: entry.methods,
     target: stableRouteTarget(entry.target),
+    pricing: entry.pricing ? stableRoutePricing(entry.pricing) : undefined,
   };
+  return stable;
 }
 
 function stableRouteTarget(target: RouteTarget): unknown {
   return target.type === "function"
     ? { type: "function", name: target.name }
     : { type: "static", file: target.file };
+}
+
+function stableRoutePricing(pricing: RoutePricingSpec): unknown {
+  return {
+    mode: pricing.mode,
+    amount_usd_micros: pricing.amount_usd_micros,
+    pay_to: pricing.pay_to,
+    networks: pricing.networks ?? [...DEFAULT_ROUTE_PRICING_NETWORKS],
+  };
 }
 
 function routePatternIdentity(entry: RouteEntry): string {
@@ -254,6 +330,15 @@ function normalizeExact(pathname: string): string {
     return pathname.slice(0, -1);
   }
   return pathname;
+}
+
+function rejectUnknownKeys(raw: Record<string, unknown>, resource: string, allowed: readonly string[]): void {
+  const allowedKeys = new Set(allowed);
+  for (const key of Object.keys(raw)) {
+    if (!allowedKeys.has(key)) {
+      throw routeError(resource ? `${resource}.${key}` : key, `unknown field ${key}`);
+    }
+  }
 }
 
 function routeError(resource: string, message: string): ReleaseSpecValidationError {

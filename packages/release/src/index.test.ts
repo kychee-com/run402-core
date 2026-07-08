@@ -963,6 +963,89 @@ describe("route materialization", () => {
       ReleaseSpecValidationError,
     );
   });
+
+  it("canonicalizes priced function routes and defaults networks to mainnet", () => {
+    const materialized = materializeRoutes([
+      {
+        pattern: "/api/credits",
+        methods: ["POST"],
+        target: { type: "function", name: "api" },
+        pricing: {
+          mode: "always",
+          amount_usd_micros: 250000,
+          pay_to: "org_default_payout",
+        },
+      },
+    ]);
+
+    assert.deepEqual(materialized.entries[0]?.pricing, {
+      mode: "always",
+      amount_usd_micros: 250000,
+      pay_to: "org_default_payout",
+      networks: ["mainnet"],
+    });
+  });
+
+  it("preserves explicit route pricing network opt-ins canonically", () => {
+    const materialized = materializeRoutes([
+      {
+        pattern: "/api/credits",
+        methods: ["POST"],
+        target: { type: "function", name: "api" },
+        pricing: {
+          mode: "always",
+          amount_usd_micros: 250000,
+          pay_to: "org_default_payout",
+          networks: ["testnet", "mainnet"],
+        },
+      },
+    ]);
+
+    assert.deepEqual(materialized.entries[0]?.pricing?.networks, ["mainnet", "testnet"]);
+  });
+
+  it("rejects malformed route pricing", () => {
+    const validRoute = {
+      pattern: "/api/credits",
+      methods: ["POST"],
+      target: { type: "function" as const, name: "api" },
+      pricing: {
+        mode: "always" as const,
+        amount_usd_micros: 250000,
+        pay_to: "org_default_payout" as const,
+      },
+    };
+
+    assert.throws(
+      () => materializeRoutes([
+        { ...validRoute, pricing: { ...validRoute.pricing, amount_usd_micros: 0 } },
+      ]),
+      /amount_usd_micros/,
+    );
+    assert.throws(
+      () => materializeRoutes([
+        { ...validRoute, pricing: { ...validRoute.pricing, pay_to: "seller_address" as unknown as "org_default_payout" } },
+      ]),
+      /pay_to/,
+    );
+    assert.throws(
+      () => materializeRoutes([
+        { ...validRoute, pricing: { ...validRoute.pricing, networks: ["testnet", "testnet"] as unknown as ["mainnet"] } },
+      ]),
+      /duplicate|network/,
+    );
+    assert.throws(
+      () => materializeRoutes([
+        {
+          pattern: "/login",
+          methods: ["GET"],
+          target: { type: "static", file: "login.html" },
+          pricing: validRoute.pricing,
+        },
+      ] as never),
+      /only supported on function routes/,
+    );
+  });
 });
 
 describe("release fact protocol", () => {

@@ -82,9 +82,11 @@ export type {
   AssetsListSort,
   ImageInfo,
 } from "./assets.js";
-export { bytes, isRequest, json, routedHttp, text } from "./routed-http.js";
+export { bytes, getRoutedPaymentContext, isRequest, json, routedHttp, text } from "./routed-http.js";
 export type {
   RoutedHttpHeaderList,
+  RoutedHttpPaymentContextSource,
+  RoutedHttpPaymentContextV1,
   RoutedHttpRequestV1,
   RoutedHttpResponseInit,
   RoutedHttpResponseV1,

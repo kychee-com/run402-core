@@ -115,11 +115,13 @@ export interface RoutesDiff {
   removed: string[];
   changed: Array<{
     pattern: string;
-    fields_changed: Array<"target" | "methods">;
+    fields_changed: Array<"target" | "methods" | "pricing">;
     target_old?: RouteEntry["target"];
     target_new?: RouteEntry["target"];
     methods_old?: RouteEntry["methods"];
     methods_new?: RouteEntry["methods"];
+    pricing_old?: RouteEntry["pricing"];
+    pricing_new?: RouteEntry["pricing"];
   }>;
 }
 
@@ -716,6 +718,11 @@ function pushRouteChange(
     change.methods_old = fromEntry.methods;
     change.methods_new = toEntry.methods;
   }
+  if (!samePricing(fromEntry.pricing, toEntry.pricing)) {
+    fields.push("pricing");
+    change.pricing_old = fromEntry.pricing;
+    change.pricing_new = toEntry.pricing;
+  }
   if (fields.length > 0) changed.push(change);
 }
 
@@ -730,6 +737,17 @@ function sameMethods(a: RouteEntry["methods"], b: RouteEntry["methods"]): boolea
   if (a === null || b === null) return a === b;
   if (a.length !== b.length) return false;
   return a.every((method, index) => method === b[index]);
+}
+
+function samePricing(a: RouteEntry["pricing"], b: RouteEntry["pricing"]): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  if (a.mode !== b.mode || a.amount_usd_micros !== b.amount_usd_micros || a.pay_to !== b.pay_to) {
+    return false;
+  }
+  const aNetworks = a.networks ?? [];
+  const bNetworks = b.networks ?? [];
+  if (aNetworks.length !== bNetworks.length) return false;
+  return aNetworks.every((network, index) => network === bNetworks[index]);
 }
 
 function groupRoutesByPattern(entries: readonly RouteEntry[]): Map<string, RouteEntry[]> {

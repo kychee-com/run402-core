@@ -111,6 +111,82 @@ test("local function executor normalizes SSR Web Request and Web Response", asyn
   }
 });
 
+test("local function executor forwards confirmed payment headers to Web Request handlers", async () => {
+  const fixture = await createExecutorFixture(`
+    export default async function handler(request) {
+      return new Response(JSON.stringify({
+        amount: Number(request.headers.get("x-run402-payment-amount-usd-micros")),
+        network: request.headers.get("x-run402-payment-network"),
+        payTo: request.headers.get("x-run402-payment-pay-to"),
+        settledAt: request.headers.get("x-run402-payment-settled-at"),
+        headerPaymentId: request.headers.get("x-run402-payment-id"),
+        contextPaymentId: request.context?.payment?.paymentId ?? null
+      }), {
+        headers: { "content-type": "application/json; charset=utf-8" }
+      });
+    }
+  `);
+  const payment = {
+    scheme: "x402" as const,
+    paymentId: "pay_executor_1",
+    amountUsdMicros: 250000,
+    payer: "0x000000000000000000000000000000000000b0b0",
+    network: "base",
+    asset: "0x0000000000000000000000000000000000000001",
+    payTo: "0x000000000000000000000000000000000000cafe",
+    transaction: "0xabc",
+    settledAt: "2026-07-07T10:00:00.000Z",
+  };
+  const request = routedRequest("req_payment_1", "/api/credits");
+  try {
+    const result = await fixture.executor.invoke({
+      projectId: PROJECT_ID,
+      releaseId: RELEASE_ID,
+      functionName: "api",
+      invocationKind: "routed_http",
+      requestId: "req_payment_1",
+      bundle: fixture.bundle,
+      request: {
+        ...request,
+        headers: [
+          ...request.headers,
+          ["x-run402-payment-scheme", "x402"],
+          ["x-run402-payment-id", payment.paymentId],
+          ["x-run402-payment-amount-usd-micros", String(payment.amountUsdMicros)],
+          ["x-run402-payment-payer", payment.payer],
+          ["x-run402-payment-network", payment.network],
+          ["x-run402-payment-asset", payment.asset],
+          ["x-run402-payment-pay-to", payment.payTo],
+          ["x-run402-payment-transaction", payment.transaction],
+          ["x-run402-payment-settled-at", payment.settledAt],
+        ],
+        context: {
+          ...request.context,
+          payment,
+        },
+      },
+    });
+
+    assert.equal(result.response.status, 200);
+    const body = decodeJsonBody(result.response.body) as {
+      amount: number;
+      network: string;
+      payTo: string;
+      settledAt: string;
+      headerPaymentId: string;
+      contextPaymentId: string;
+    };
+    assert.equal(body.amount, payment.amountUsdMicros);
+    assert.equal(body.network, payment.network);
+    assert.equal(body.payTo, payment.payTo);
+    assert.equal(body.settledAt, payment.settledAt);
+    assert.equal(body.headerPaymentId, payment.paymentId);
+    assert.equal(body.contextPaymentId, payment.paymentId);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test("local function executor rejects busy and timed-out invocations", async () => {
   const busy = await createExecutorFixture(`
     export default async function handler() {

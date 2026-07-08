@@ -350,6 +350,7 @@ Request fields:
 - `req.method` is the original browser method. `GET` routes also match `HEAD`; `HEAD` reaches the handler as `HEAD`.
 - `req.url` is the full public URL, including scheme, host, path, and query, on managed subdomains, deployment hosts, and verified custom domains. Derive OAuth callback URLs from `new URL(req.url).origin`.
 - `req.headers` is a Fetch `Headers` object. Cookie data is available through the `cookie` header.
+- Priced routes expose a confirmed x402 payment through `getRoutedPaymentContext(req)`, backed by `x-run402-payment-*` headers. The helper returns `null` for unpriced routes.
 - `await req.text()`, `await req.json()`, and `await req.arrayBuffer()` read the buffered request body, capped at 6 MiB.
 
 Response behavior:

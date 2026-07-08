@@ -137,6 +137,20 @@ export const SUPPORTED_HTTP_METHODS = [
 
 export type HttpMethod = (typeof SUPPORTED_HTTP_METHODS)[number];
 
+export const SUPPORTED_ROUTE_PRICING_NETWORKS = [
+  "mainnet",
+  "testnet",
+] as const;
+
+export type RoutePricingNetwork = (typeof SUPPORTED_ROUTE_PRICING_NETWORKS)[number];
+
+export interface RoutePricingSpec {
+  mode: "always";
+  amount_usd_micros: number;
+  pay_to: "org_default_payout";
+  networks?: RoutePricingNetwork[];
+}
+
 export interface FunctionRouteTarget {
   type: "function";
   name: string;
@@ -153,6 +167,7 @@ export interface RouteSpec {
   pattern: string;
   methods?: HttpMethod[];
   target: RouteTarget;
+  pricing?: RoutePricingSpec;
 }
 
 export type ReleaseSpecRoutes = null | {
@@ -217,6 +232,7 @@ export interface RouteEntry {
   prefix: string | null;
   methods: HttpMethod[] | null;
   target: RouteTarget;
+  pricing?: RoutePricingSpec;
 }
 
 export interface MaterializedRoutes {

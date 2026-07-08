@@ -78,7 +78,7 @@ try {
 
   step("import resolves: @run402/functions exposes db, adminDb, QueryBuilder, auth, runWithContext, email, ai, routed HTTP helpers, legacy sentinels", () => {
     const result = run(
-      `node --input-type=module -e "import * as m from '@run402/functions'; const need = ['db','adminDb','QueryBuilder','auth','runWithContext','getUser','getUserId','getRole','getSession','currentUser','getCurrentUser','getServerSession','email','ai','assets','cache','verifyWebhook','getRun402Context','routedHttp','text','json','bytes','isRequest']; const missing = need.filter(n => !(n in m)); if (missing.length) { console.error('missing:', missing); process.exit(1); } console.log('exports OK');"`,
+      `node --input-type=module -e "import * as m from '@run402/functions'; const need = ['db','adminDb','QueryBuilder','auth','runWithContext','getUser','getUserId','getRole','getSession','currentUser','getCurrentUser','getServerSession','email','ai','assets','cache','verifyWebhook','getRun402Context','routedHttp','text','json','bytes','isRequest','getRoutedPaymentContext']; const missing = need.filter(n => !(n in m)); if (missing.length) { console.error('missing:', missing); process.exit(1); } console.log('exports OK');"`,
       { cwd: installDir },
     );
     if (!result.includes("exports OK")) throw new Error("export check produced unexpected output: " + result);
