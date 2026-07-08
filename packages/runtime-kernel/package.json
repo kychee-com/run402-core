@@ -1,6 +1,6 @@
 {
   "name": "@run402/runtime-kernel",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Public Run402 Core runtime kernel contracts, capabilities, and application services.",
   "type": "module",
   "main": "dist/index.js",
