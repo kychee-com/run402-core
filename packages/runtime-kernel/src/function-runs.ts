@@ -492,6 +492,7 @@ export class CoreFunctionRunService {
           ["x-run402-run-id", run.run_id],
           ["x-run402-request-id", run.run_id],
           ["x-run402-attempt-id", attempt.attempt_id],
+          ["x-run402-idempotency-key", run.idempotency_key],
         ],
         cookies: { raw: null },
         body: { encoding: "base64", data: body.toString("base64"), size: body.byteLength },

@@ -109,7 +109,7 @@ Temp-dir byte quotas and `node_modules` byte quotas are documented resource defa
 
 Core accepts ReleaseSpec `functions.replace.<name>.triggers[]` entries with `type: "schedule"`, a stable `id`, a 5-field `cron`, and nested `run: { event_type, payload?, retry?, expires_after_seconds? }`. The first adapter is single-node and in-process in the Core Gateway: it registers active triggers on startup, refreshes timers after release activation, stops timers during shutdown, and guards stale callbacks from older registrations.
 
-Scheduled ticks create durable function runs in the local Core run store. The run worker then uses the same local worker, secrets, request IDs, logs, redaction, timeout, and body/response caps as routed functions. The function receives `X-Run402-Trigger: function_run` and the standard function-run envelope, so Cloud and Core handler code can share the same `defineFunctionRuns(...)` path.
+Scheduled ticks create durable function runs in the local Core run store. The run worker then uses the same local worker, secrets, request IDs, logs, redaction, timeout, body/response caps, and platform idempotency header as routed functions. The function receives `X-Run402-Trigger: function_run`, `X-Run402-Run-Id`, `X-Run402-Attempt-Id`, `X-Run402-Idempotency-Key`, and the standard function-run envelope, so Cloud and Core handler code can share the same `defineFunctionRuns(...)` path.
 
 Agents can test a scheduled function immediately without waiting for wall-clock cron:
 

@@ -27,6 +27,8 @@
  *   - `x-run402-host`           → `host`
  *   - `x-run402-locale`         → `locale` (null when no spec.i18n)
  *   - `x-run402-default-locale` → `defaultLocale` (null when no spec.i18n)
+ *   - `x-run402-idempotency-key` → `idempotencyKey` (null when not a paid
+ *     or durable invocation)
  *
  * If the gateway didn't set a given header (rare — would mean the request
  * bypassed the routed-http pipeline), the field is `null`. The helper
@@ -54,6 +56,9 @@ export interface Run402RequestContext {
   /** Release's default locale (`spec.i18n.defaultLocale`).
    *  `null` when the release has no i18n slice. */
   defaultLocale: string | null;
+  /** Canonical platform idempotency key for paid/durable invocations.
+   *  Use this to dedupe downstream side effects. */
+  idempotencyKey: string | null;
 }
 
 /**
@@ -98,6 +103,7 @@ export function getRun402Context(source: HeaderSource): Run402RequestContext {
     host: nonEmpty(get("x-run402-host")),
     locale: nonEmpty(get("x-run402-locale")),
     defaultLocale: nonEmpty(get("x-run402-default-locale")),
+    idempotencyKey: nonEmpty(get("x-run402-idempotency-key")),
   };
 }
 

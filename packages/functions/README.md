@@ -351,6 +351,7 @@ Request fields:
 - `req.url` is the full public URL, including scheme, host, path, and query, on managed subdomains, deployment hosts, and verified custom domains. Derive OAuth callback URLs from `new URL(req.url).origin`.
 - `req.headers` is a Fetch `Headers` object. Cookie data is available through the `cookie` header.
 - Priced routes expose a confirmed x402 payment through `getRoutedPaymentContext(req)`, backed by `x-run402-payment-*` headers. The helper returns `null` for unpriced routes.
+- Paid direct invocations and durable function runs expose the platform idempotency key on `x-run402-idempotency-key`; `getRun402Context(req).idempotencyKey` returns that value or `null`. Sellers with external side effects should also accept their own business-level dedupe token when they need guarantees beyond Run402 billing idempotency.
 - `await req.text()`, `await req.json()`, and `await req.arrayBuffer()` read the buffered request body, capped at 6 MiB.
 
 Response behavior:
@@ -371,7 +372,7 @@ Runtime route failure codes to branch on: `ROUTE_MANIFEST_LOAD_FAILED` (manifest
 
 Run402 Cloud and Run402 Core both use release manifest `functions.replace.<name>.triggers[]` entries for cron-style schedule triggers. A schedule trigger creates a durable function run, so handler code can use the same `defineFunctionRuns(...)` path for delayed work, webhook redrive, and scheduled sweeps. In Run402 Core this is a single-node gateway scheduler, not a managed distributed jobs system.
 
-Scheduled function runs receive the same Fetch `Request` shape as other durable function runs. The request is a synthetic `POST` with `X-Run402-Trigger: function_run`; the JSON body is the standard function-run envelope and includes `run_id`, `event_type`, `attempt`, `source`, and `payload`.
+Scheduled function runs receive the same Fetch `Request` shape as other durable function runs. The request is a synthetic `POST` with `X-Run402-Trigger: function_run`, `X-Run402-Run-Id`, `X-Run402-Attempt-Id`, and `X-Run402-Idempotency-Key`; the JSON body is the standard function-run envelope and includes `run_id`, `event_type`, `attempt`, `source`, and `payload`.
 
 ```ts
 export default async function handler(req: Request): Promise<Response> {

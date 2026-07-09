@@ -83,6 +83,10 @@ export interface RunRequestContext {
    *  default. Defaults to `"direct"` when unset so pre-existing callers keep
    *  the machine contract. */
   invocationKind: "routed_http" | "direct" | "scheduled" | "function_run";
+  /** Canonical platform idempotency key for this invocation when one exists.
+   *  Paid function calls and durable function runs use this key to let user
+   *  code dedupe downstream side effects. `null` for ordinary requests. */
+  idempotencyKey: string | null;
   /** Mutable ref: SDK functions that read request-scoped auth or invoke
    *  payment primitives set `value = true`. The SSR Lambda runtime
    *  returns the final value to the gateway in the response metadata
@@ -120,12 +124,12 @@ export function getCurrentContext(): RunRequestContext | undefined {
 export function runWithContext<T>(
   context: Omit<
     RunRequestContext,
-    "cacheBypassTainted" | "active" | "actor" | "invocationKind"
+    "cacheBypassTainted" | "active" | "actor" | "invocationKind" | "idempotencyKey"
   > &
     Partial<
       Pick<
         RunRequestContext,
-        "cacheBypassTainted" | "active" | "actor" | "invocationKind"
+        "cacheBypassTainted" | "active" | "actor" | "invocationKind" | "idempotencyKey"
       >
     >,
   callback: () => Promise<T> | T,
@@ -145,6 +149,7 @@ export function runWithContext<T>(
     // machine Bearer-fallback contract; the gateway's routed-HTTP path
     // sets "routed_http" explicitly.
     invocationKind: context.invocationKind ?? "direct",
+    idempotencyKey: context.idempotencyKey ?? readRequestHeader(context.request.headers, "x-run402-idempotency-key") ?? null,
     cacheBypassTainted: context.cacheBypassTainted ?? { value: false },
     active: context.active ?? { value: true },
   };

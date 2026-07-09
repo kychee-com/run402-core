@@ -4,6 +4,9 @@
 
 ### Added
 
+- Runtime request context now exposes `idempotencyKey` from
+  `x-run402-idempotency-key`. Paid function calls and durable function runs
+  can read the same platform key for downstream side-effect dedupe.
 - `getRoutedPaymentContext()` and `routedHttp.paymentContext()` read the
   confirmed x402 payment attached to priced routed function requests.
 - `auth.user()` / `auth.requireUser()` now expose `actor.is_test === true`

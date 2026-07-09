@@ -49,6 +49,7 @@ function makeCtx(over: Partial<RequestContext> = {}): RequestContext {
     releaseId: "rel_test",
     locale: "en",
     defaultLocale: "en",
+    idempotencyKey: null,
     cacheBypassTainted: { value: false },
     ...over,
   };
@@ -100,6 +101,18 @@ describe("AsyncLocalStorage propagation (task 2.29)", () => {
     await runWithContext(ctx, async () => {
       const inner = getCurrentContext();
       assert.equal(inner?.projectId, "prj_test");
+    });
+  });
+
+  it("derives idempotencyKey from the platform header when not supplied", async () => {
+    const ctx = makeCtx({
+      idempotencyKey: undefined,
+      request: new Request("https://test.run402.com/p", {
+        headers: { "x-run402-idempotency-key": "paid-call-1" },
+      }),
+    } as Partial<RequestContext>);
+    await runWithContext(ctx, async () => {
+      assert.equal(getCurrentContext()?.idempotencyKey, "paid-call-1");
     });
   });
 

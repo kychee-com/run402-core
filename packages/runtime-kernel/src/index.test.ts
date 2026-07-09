@@ -949,7 +949,9 @@ test("Core function runs cover local durable lifecycle and schedule trigger enve
   assert.equal(terminal?.status, "succeeded");
   const lastInvocation = invocationInputs.at(-1) as { invocationKind: string; request?: { headers: [string, string][]; body?: { data: string } | null } };
   assert.equal(lastInvocation.invocationKind, "function_run");
-  assert.deepEqual(Object.fromEntries(lastInvocation.request?.headers ?? [])["x-run402-run-id"], scheduled.run_id);
+  const headers = Object.fromEntries(lastInvocation.request?.headers ?? []);
+  assert.deepEqual(headers["x-run402-run-id"], scheduled.run_id);
+  assert.equal(headers["x-run402-idempotency-key"], scheduled.idempotency_key);
   const envelope = JSON.parse(Buffer.from(lastInvocation.request?.body?.data ?? "", "base64").toString("utf8")) as { source: { trigger_id?: string }; event_type: string };
   assert.equal(envelope.event_type, "maintenance");
   assert.equal(envelope.source.trigger_id, "maintenance_every_15m");
