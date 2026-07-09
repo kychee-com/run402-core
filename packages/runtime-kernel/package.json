@@ -28,7 +28,7 @@
     "node": ">=22"
   },
   "dependencies": {
-    "@run402/functions": "3.7.0",
+    "@run402/functions": "3.7.1",
     "@run402/release": "0.5.0",
     "croner": "^10.0.1"
   },
