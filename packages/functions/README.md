@@ -394,7 +394,47 @@ The bundled version lands in the deploy response's `runtime_version` field; reso
 
 ## Errors
 
-All helpers throw on non-2xx responses. The error message includes the HTTP status and the response body so you can branch on `code` / `category` / `retryable` (the v1.34+ agent-operable error envelope).
+All helpers throw on non-2xx responses.
+
+### `R402DbError` — `db()` / `adminDb()` failures
+
+The DB helpers throw a structured `R402DbError` (also exported as a type from the package). Both throw sites carry a stable SDK-level `code`:
+
+- `adminDb().sql(...)` → `code: "R402_DB_SQL_ERROR"`
+- `db(req).from(...)` / `adminDb().from(...)` (the `QueryBuilder`) → `code: "R402_DB_QUERY_ERROR"`
+
+Branch on the **properties**, not the message string:
+
+```ts
+import { R402DbError } from "@run402/functions";
+
+try {
+  await adminDb().sql("INSERT INTO items (name) VALUES ($1)", [name]);
+} catch (err) {
+  if (err instanceof R402DbError) {
+    err.code;       // "R402_DB_SQL_ERROR" | "R402_DB_QUERY_ERROR" (stable SDK code)
+    err.status;     // HTTP status number, e.g. 402
+    err.trace_id;   // gateway trace id (string) or null — for support tickets
+    err.remote_code;// the gateway/PostgREST error code that shaped the message, or null
+    err.body;       // full response body (parsed object, or raw string when unparseable)
+    if (err.status === 402 && err.remote_code === "QUOTA_EXCEEDED") { /* … */ }
+  }
+  throw err;
+}
+```
+
+**Why the message is a stable template.** `err.message` is intentionally low-cardinality so error monitors group failures by kind instead of by trace id. The high-cardinality material (a fresh `trace_id` per event, the full body) lives on properties. The message follows:
+
+| Response body | `message` | `remote_code` | `trace_id` |
+|---|---|---|---|
+| JSON object with `code` | `SQL error (402): QUOTA_EXCEEDED` | `QUOTA_EXCEEDED` | from body, else `null` |
+| JSON object with only `error` | `SQL error (401): PGRST301` | `PGRST301` | from body, else `null` |
+| JSON object, no `code`/`error` | `SQL error (500): <envelope>` | `<envelope>` | from body, else `null` |
+| non-JSON (text/HTML/empty/array) | `SQL error (502): <body verbatim>` | `null` | `null` |
+
+(`PostgREST error (…)` is the prefix for the `QueryBuilder` path; `SQL error (…)` for `adminDb().sql()`.) Don't parse `message` — read `err.code` / `err.status` / `err.trace_id` / `err.remote_code`.
+
+Other helpers still throw `Error` whose message includes the HTTP status and the response body so you can branch on `code` / `category` / `retryable` (the v1.34+ agent-operable error envelope).
 
 ## Engines
 

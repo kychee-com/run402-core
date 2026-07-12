@@ -14,7 +14,17 @@ mock.module("./config.js", {
   },
 });
 
-const { db, adminDb } = await import("./db.js");
+const { db, adminDb, R402DbError } = await import("./db.js");
+
+// Capture the error a thrown async fn produces, for multi-property assertions.
+async function catchThrown(fn: () => Promise<unknown>): Promise<unknown> {
+  try {
+    await fn();
+  } catch (err) {
+    return err;
+  }
+  throw new Error("expected the call to throw, but it resolved");
+}
 
 function makeRequest(authorization?: string): Request {
   const headers: Record<string, string> = {};
@@ -119,6 +129,169 @@ describe("adminDb().sql() — SQL bypass", () => {
     const headers = capturedOpts.headers as Record<string, string>;
     assert.equal(headers["Content-Type"], "text/plain");
     assert.equal(capturedOpts.body, "SELECT count(*) FROM users");
+  });
+});
+
+// D10 companion (release-error-rollup): non-ok DB responses throw a
+// structured R402DbError whose MESSAGE is a stable, low-cardinality
+// template (byte-compatible with the gateway's normalizeErrorMessage) and
+// whose high-cardinality material (trace_id, full body) rides on
+// PROPERTIES — so a fresh trace_id per event no longer defeats grouping.
+describe("R402DbError — structured DB errors (D10)", () => {
+  describe("adminDb().sql() — R402_DB_SQL_ERROR", () => {
+    it("envelope JSON with code + trace_id → canonical message + populated properties", async () => {
+      mock.method(globalThis, "fetch", async () =>
+        new Response(
+          JSON.stringify({
+            code: "QUOTA_EXCEEDED",
+            message: "storage quota exceeded for project prj_test",
+            trace_id: "trace-abc-123",
+          }),
+          { status: 402 },
+        ),
+      );
+      const err = (await catchThrown(() => adminDb().sql("SELECT 1"))) as InstanceType<
+        typeof R402DbError
+      >;
+      assert.ok(err instanceof R402DbError, "is R402DbError");
+      assert.ok(err instanceof Error, "is Error");
+      assert.equal(err.name, "R402DbError");
+      assert.equal(err.message, "SQL error (402): QUOTA_EXCEEDED");
+      assert.equal(err.code, "R402_DB_SQL_ERROR");
+      assert.equal(err.status, 402);
+      assert.equal(err.trace_id, "trace-abc-123");
+      assert.equal(err.remote_code, "QUOTA_EXCEEDED");
+      assert.deepEqual(err.body, {
+        code: "QUOTA_EXCEEDED",
+        message: "storage quota exceeded for project prj_test",
+        trace_id: "trace-abc-123",
+      });
+    });
+
+    it("envelope with only `error` field → remote_code falls back to it", async () => {
+      mock.method(globalThis, "fetch", async () =>
+        new Response(JSON.stringify({ error: "PGRST301", trace_id: "t-9" }), { status: 401 }),
+      );
+      const err = (await catchThrown(() => adminDb().sql("SELECT 1"))) as InstanceType<
+        typeof R402DbError
+      >;
+      assert.equal(err.message, "SQL error (401): PGRST301");
+      assert.equal(err.remote_code, "PGRST301");
+      assert.equal(err.trace_id, "t-9");
+    });
+
+    it("JSON object without code/error → `<envelope>` literal in message", async () => {
+      mock.method(globalThis, "fetch", async () =>
+        new Response(JSON.stringify({ message: "something broke", detail: "x" }), { status: 500 }),
+      );
+      const err = (await catchThrown(() => adminDb().sql("SELECT 1"))) as InstanceType<
+        typeof R402DbError
+      >;
+      assert.equal(err.message, "SQL error (500): <envelope>");
+      assert.equal(err.remote_code, "<envelope>");
+      assert.equal(err.trace_id, null, "no trace_id field → null");
+      assert.deepEqual(err.body, { message: "something broke", detail: "x" });
+    });
+
+    it("non-JSON body → legacy verbatim message shape, properties still attached", async () => {
+      mock.method(globalThis, "fetch", async () =>
+        new Response("upstream 502 Bad Gateway", { status: 502 }),
+      );
+      const err = (await catchThrown(() => adminDb().sql("SELECT 1"))) as InstanceType<
+        typeof R402DbError
+      >;
+      assert.equal(err.message, "SQL error (502): upstream 502 Bad Gateway");
+      assert.equal(err.code, "R402_DB_SQL_ERROR");
+      assert.equal(err.status, 502);
+      assert.equal(err.remote_code, null);
+      assert.equal(err.trace_id, null);
+      assert.equal(err.body, "upstream 502 Bad Gateway", "raw string body preserved");
+    });
+
+    it("JSON array body (non-object) → legacy verbatim shape", async () => {
+      mock.method(globalThis, "fetch", async () =>
+        new Response(JSON.stringify([{ code: "X" }]), { status: 400 }),
+      );
+      const err = (await catchThrown(() => adminDb().sql("SELECT 1"))) as InstanceType<
+        typeof R402DbError
+      >;
+      assert.equal(err.message, `SQL error (400): ${JSON.stringify([{ code: "X" }])}`);
+      assert.equal(err.remote_code, null);
+      assert.equal(err.trace_id, null);
+    });
+  });
+
+  describe("QueryBuilder — R402_DB_QUERY_ERROR", () => {
+    it("gateway envelope JSON with code + trace_id → canonical message + properties", async () => {
+      // 403 is NOT a schema-cache-transient status, so it throws immediately.
+      mock.method(globalThis, "fetch", async () =>
+        new Response(
+          JSON.stringify({ code: "RLS_DENIED", message: "row-level security", trace_id: "tr-77" }),
+          { status: 403 },
+        ),
+      );
+      const err = (await catchThrown(() => adminDb().from("users").select())) as InstanceType<
+        typeof R402DbError
+      >;
+      assert.ok(err instanceof R402DbError);
+      assert.equal(err.name, "R402DbError");
+      assert.equal(err.message, "PostgREST error (403): RLS_DENIED");
+      assert.equal(err.code, "R402_DB_QUERY_ERROR");
+      assert.equal(err.status, 403);
+      assert.equal(err.remote_code, "RLS_DENIED");
+      assert.equal(err.trace_id, "tr-77");
+    });
+
+    it("PostgREST-native PGRST-code body (non-transient status) → remote_code + null trace_id", async () => {
+      // 409 with a PGRST code is a genuine conflict, NOT a schema-cache
+      // reload race (which is 404/503, or 400+PGRST204/205), so it throws.
+      mock.method(globalThis, "fetch", async () =>
+        new Response(
+          JSON.stringify({ code: "PGRST116", message: "no rows", details: "0 rows" }),
+          { status: 409 },
+        ),
+      );
+      const err = (await catchThrown(() => adminDb().from("users").select())) as InstanceType<
+        typeof R402DbError
+      >;
+      assert.equal(err.message, "PostgREST error (409): PGRST116");
+      assert.equal(err.remote_code, "PGRST116");
+      assert.equal(err.trace_id, null, "PostgREST-native errors carry no trace_id");
+    });
+
+    it("non-JSON body → legacy verbatim message shape, properties still attached", async () => {
+      mock.method(globalThis, "fetch", async () =>
+        new Response("nope", { status: 500 }),
+      );
+      const err = (await catchThrown(() => adminDb().from("users").select())) as InstanceType<
+        typeof R402DbError
+      >;
+      assert.equal(err.message, "PostgREST error (500): nope");
+      assert.equal(err.code, "R402_DB_QUERY_ERROR");
+      assert.equal(err.status, 500);
+      assert.equal(err.remote_code, null);
+      assert.equal(err.trace_id, null);
+      assert.equal(err.body, "nope");
+    });
+
+    it("schema-cache retry logic is untouched — 400+PGRST204 retries then resolves", async () => {
+      // The retry gate reads the raw errBody (errBody.includes('PGRST204'))
+      // BEFORE throwing; the structured-error change must not disturb it.
+      let calls = 0;
+      mock.method(globalThis, "fetch", async () => {
+        calls++;
+        if (calls === 1) {
+          return new Response(JSON.stringify({ code: "PGRST204" }), { status: 400 });
+        }
+        return new Response(JSON.stringify([{ id: 1 }]), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      });
+      const rows = await adminDb().from("users").select();
+      assert.equal(calls, 2, "retried once before succeeding");
+      assert.deepEqual(rows, [{ id: 1 }]);
+    });
   });
 });
 

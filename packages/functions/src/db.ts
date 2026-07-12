@@ -8,6 +8,106 @@ interface QueryBuilderOpts {
   basePath: string;
 }
 
+/** Stable SDK-level codes for the two `db()` throw sites. */
+export type R402DbErrorCode = "R402_DB_QUERY_ERROR" | "R402_DB_SQL_ERROR";
+
+/**
+ * Structured error thrown by the DB helpers on a non-ok gateway/PostgREST
+ * response:
+ *   - `db()` / `adminDb().from()` (QueryBuilder) → code `R402_DB_QUERY_ERROR`
+ *   - `adminDb().sql()` → code `R402_DB_SQL_ERROR`
+ *
+ * The `message` is a stable, LOW-cardinality template so error monitors
+ * group failures by kind. High-cardinality material — a fresh `trace_id`
+ * per event, the full response body — rides on PROPERTIES, never the
+ * message (embedding it defeats fingerprint grouping). Catch-sites SHOULD
+ * branch on `err.code` / `err.status` / `err.trace_id` / `err.remote_code`
+ * instead of parsing the message string.
+ *
+ * Message template:
+ *   - Body is a JSON object → `<prefix> (<status>): <remote_code>`, where
+ *     `remote_code` is `body.code` (else `body.error`, else the literal
+ *     `<envelope>`).
+ *   - Body is NOT a JSON object (plain text, HTML, empty, JSON array/
+ *     primitive) → the legacy verbatim shape `<prefix> (<status>): <body>`,
+ *     so old-bundle and new-bundle non-JSON failures fingerprint identically.
+ *
+ * `prefix` is `PostgREST error` for the QueryBuilder path and `SQL error`
+ * for the `adminDb().sql()` path.
+ */
+export class R402DbError extends Error {
+  readonly code: R402DbErrorCode;
+  readonly status: number;
+  readonly trace_id: string | null;
+  /** The remote/gateway code that went into the message (`<envelope>` when absent). */
+  readonly remote_code: string | null;
+  /** Full response body preserved for debugging — parsed object, or raw string when unparseable. */
+  readonly body: unknown;
+  readonly docs = "https://run402.com/errors/#R402_DB_ERROR";
+
+  constructor(
+    code: R402DbErrorCode,
+    message: string,
+    fields: {
+      status: number;
+      trace_id: string | null;
+      remote_code: string | null;
+      body: unknown;
+    },
+  ) {
+    super(message);
+    this.name = "R402DbError";
+    this.code = code;
+    this.status = fields.status;
+    this.trace_id = fields.trace_id;
+    this.remote_code = fields.remote_code;
+    this.body = fields.body;
+  }
+}
+
+/**
+ * Build a {@link R402DbError} with a fingerprint-stable message and the
+ * high-cardinality material on properties. See {@link R402DbError} for the
+ * message-template contract (byte-compatible with the gateway's
+ * `normalizeErrorMessage` derivation).
+ */
+function buildDbError(
+  code: R402DbErrorCode,
+  prefix: "PostgREST error" | "SQL error",
+  status: number,
+  errBody: string,
+): R402DbError {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(errBody);
+  } catch {
+    parsed = undefined;
+  }
+  // Only a plain JSON object earns the canonical code-in-message shape; the
+  // gateway normalizer keys off a `{…}` body, so arrays/primitives/null fall
+  // through to the legacy verbatim shape below.
+  if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+    const obj = parsed as Record<string, unknown>;
+    const remoteCode: string =
+      (typeof obj.code === "string" && obj.code) ||
+      (typeof obj.error === "string" && obj.error) ||
+      "<envelope>";
+    const traceId = typeof obj.trace_id === "string" ? obj.trace_id : null;
+    return new R402DbError(code, `${prefix} (${status}): ${remoteCode}`, {
+      status,
+      trace_id: traceId,
+      remote_code: remoteCode,
+      body: obj,
+    });
+  }
+  return new R402DbError(code, `${prefix} (${status}): ${errBody}`, {
+    status,
+    trace_id: null,
+    remote_code: null,
+    body: errBody,
+  });
+}
+
 export class QueryBuilder {
   #table: string;
   #params = new URLSearchParams();
@@ -153,7 +253,7 @@ export class QueryBuilder {
         res.status === 503 ||
         (res.status === 400 && (errBody.includes("PGRST204") || errBody.includes("PGRST205")));
       if (!schemaCacheTransient || Date.now() >= deadline) {
-        throw new Error(`PostgREST error (${res.status}): ${errBody}`);
+        throw buildDbError("R402_DB_QUERY_ERROR", "PostgREST error", res.status, errBody);
       }
       await new Promise((r) => setTimeout(r, Math.min(500, 100 * (attempt + 1))));
     }
@@ -307,7 +407,7 @@ export function adminDb(): AdminDbClient {
       });
       if (!res.ok) {
         const errBody = await res.text();
-        throw new Error(`SQL error (${res.status}): ${errBody}`);
+        throw buildDbError("R402_DB_SQL_ERROR", "SQL error", res.status, errBody);
       }
       return res.json() as Promise<Record<string, unknown>[]>;
     },

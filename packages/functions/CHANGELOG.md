@@ -4,6 +4,16 @@
 
 ### Added
 
+- **`R402DbError`** — the `db()` / `adminDb()` helpers now throw a structured
+  error (exported class + `R402DbErrorCode` type) instead of a bare `Error`.
+  Stable SDK codes `R402_DB_SQL_ERROR` (`adminDb().sql()`) and
+  `R402_DB_QUERY_ERROR` (the `QueryBuilder`); `status`, `trace_id`,
+  `remote_code`, and the full `body` ride on properties. The `message` is now
+  a low-cardinality template (`SQL error (402): QUOTA_EXCEEDED` for a coded
+  envelope; legacy verbatim shape for non-JSON bodies) so error monitors group
+  DB failures by kind instead of by a per-event trace id. Catch-sites should
+  branch on `err.code` / `err.status` / `err.trace_id` rather than parsing the
+  message. (D10 companion to the gateway's release-error-rollup fingerprinting.)
 - Runtime request context now exposes `idempotencyKey` from
   `x-run402-idempotency-key`. Paid function calls and durable function runs
   can read the same platform key for downstream side-effect dedupe.
