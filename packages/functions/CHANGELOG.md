@@ -4,6 +4,24 @@
 
 ### Added
 
+- **`events` namespace** — `events.emit(type, payload?, {idempotencyKey?})`
+  writes a fact into the project's cursored event feed (the
+  `internal.project_events` outbox), readable back via
+  `GET /projects/v1/:project_id/events?source=app`, `run402 events`, and
+  every other feed consumer. Service-key context; own-project only. `type`
+  must be flat snake_case (`/^[a-z][a-z0-9_]{2,63}$/`); platform-registered
+  type names are reserved. Grammar and reservation are validated
+  **server-side only** — the client sends `type` verbatim and surfaces the
+  gateway's 400 as a thrown error rather than pre-validating or masking it.
+  `idempotencyKey` is a **durable** dedup identity (the gateway dedupes on
+  `(project_id, idempotency_key)` forever, not a short-lived retry-window
+  token) — pass it on any at-least-once code path. Non-2xx responses throw
+  the new structured `Run402EventsPlatformError` (`code`, `status`,
+  `details`, `next_actions`, `body`), mirroring the `R402DbError` /
+  `Run402FunctionRunPlatformError` passthrough pattern: the gateway owns
+  vocabulary/quota policy, this SDK never re-implements or masks it.
+  Companion to the gateway's `app-events-emit-lane` change
+  (kychee-com/run402-core#3).
 - **`R402DbError`** — the `db()` / `adminDb()` helpers now throw a structured
   error (exported class + `R402DbErrorCode` type) instead of a bare `Error`.
   Stable SDK codes `R402_DB_SQL_ERROR` (`adminDb().sql()`) and
