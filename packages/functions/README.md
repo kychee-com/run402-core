@@ -1,6 +1,6 @@
 # @run402/functions
 
-In-function helper library for [Run402](https://run402.com) serverless functions. Imported _inside_ a deployed function — gives you typed access to the caller's database (RLS-respecting) and the project's admin database, the caller's auth, the project's mailbox, AI helpers, and runtime asset uploads.
+In-function helper library for [Run402](https://run402.com) serverless functions. Imported _inside_ a deployed function — gives you typed access to the caller's database (RLS-respecting) and the project's admin database, the caller's auth, the project's mailbox, AI helpers, runtime asset uploads, and the project's cursored event feed.
 
 ```ts
 import { db, adminDb, getUser, email, ai, assets } from "@run402/functions";
@@ -303,6 +303,44 @@ export default async function handler(req: Request): Promise<Response> {
 }
 ```
 
+## `events.emit(type, payload?, opts?)` — emit into the project's event feed
+
+Write a fact into this project's cursored event feed (the `internal.project_events` outbox) from inside a deployed function. Every existing and future feed consumer — `run402 events`, the MCP `list_project_events` tool, the operator console's Activity view — reads it back for free the moment your code calls `events.emit`.
+
+```ts
+import { events } from "@run402/functions";
+
+await events.emit("signature_completed", { request_id, signer }, {
+  idempotencyKey: `sig:${requestId}`,
+});
+```
+
+Read it back with `GET /projects/v1/:project_id/events?source=app` (or `run402 events --source app`) — app events share the exact cursor/pagination/retention machinery as platform events (deploys, suspensions, transfers), just filtered to `source=app`.
+
+**Vocabulary.** `type` must be flat snake_case matching `/^[a-z][a-z0-9_]{2,63}$/` — no dots, no `app_` prefix. Platform-registered type names (`deploy_activated`, `mailbox_suspended`, ...) are **reserved**: an app cannot impersonate a platform fact. This is enforced **server-side only** — `events.emit` does not pre-validate the grammar or check the reservation list locally; it sends `type` exactly as given. A bad grammar or a reserved name comes back as a thrown `Run402EventsPlatformError` with `code: "INVALID_EVENT_TYPE"` or `code: "RESERVED_EVENT_TYPE"` (both HTTP 400) — never a silently rewritten or dropped call.
+
+**Idempotency.** Pass `idempotencyKey` on any code path that might run more than once for the same real-world fact — webhook retries, function-run retries, anything at-least-once. The gateway dedupes on `(project_id, idempotency_key)` **forever**: this is a durable identity for the fact, not a short-lived retry-window token like an HTTP `Idempotency-Key` header. Reusing a key days or years later still replays the *original* stored event (`deduplicated: true` on the response) instead of creating a new one.
+
+**Response shape** — both a fresh emit (`201`) and an idempotent replay (`200`) return this:
+
+```ts
+{
+  cursor: "evc_...",          // opaque feed position — pass to ?cursor= on a feed read
+  event_type: "signature_completed",
+  class: "app",               // always "app" for events emitted through this namespace
+  source: "app",
+  payload: { request_id: "req_123", signer: "0x..." },
+  payload_truncated: true,    // present only if payload exceeded the 8 KiB bound
+  occurred_at: "2026-07-15T12:00:00.000Z",
+  deduplicated: false,        // true on an idempotency-key replay
+  next_actions: [ /* platform-synthesized drill-downs, incl. a feed poll entry */ ],
+}
+```
+
+`payload` is a compact JSON fact — ids and verdict fields, never bodies or secrets — bounded to 8 KiB server-side (oversize payloads are truncated with `payload_truncated: true` rather than rejected). `next_actions` is always platform-synthesized; there is no way to supply your own drill-downs from the emit call (an app-supplied action would be prompt-injection-by-schema for agents that treat `next_actions` as trusted).
+
+**Errors.** Non-2xx responses throw `Run402EventsPlatformError` — see [Errors](#errors) below. In practice the two you're most likely to see are `code: "QUOTA_EXCEEDED"` (403, the organization's pooled daily quota is exhausted; `details: {resource: "events_per_day", scope, used, limit}`) and cross-project denials (`code: "FORBIDDEN"`, 403), alongside the two vocabulary errors above.
+
 ## Static-site generation (build-time use)
 
 The same library works at build time for static-site generation if you set `RUN402_SERVICE_KEY` and `RUN402_PROJECT_ID` in your `.env`:
@@ -434,7 +472,29 @@ try {
 
 (`PostgREST error (…)` is the prefix for the `QueryBuilder` path; `SQL error (…)` for `adminDb().sql()`.) Don't parse `message` — read `err.code` / `err.status` / `err.trace_id` / `err.remote_code`.
 
-Other helpers still throw `Error` whose message includes the HTTP status and the response body so you can branch on `code` / `category` / `retryable` (the v1.34+ agent-operable error envelope).
+### `Run402EventsPlatformError` — `events.emit()` failures
+
+`events.emit()` throws a structured `Run402EventsPlatformError` (also exported from the package) on any non-2xx gateway response. The gateway owns event-type grammar, platform-vocabulary reservation, and the per-organization daily quota — this error is a faithful passthrough of whatever canonical envelope the gateway returned, never a client-fabricated message.
+
+```ts
+import { events, Run402EventsPlatformError } from "@run402/functions";
+
+try {
+  await events.emit("signature_completed", { request_id });
+} catch (err) {
+  if (err instanceof Run402EventsPlatformError) {
+    err.code;    // "QUOTA_EXCEEDED" | "INVALID_EVENT_TYPE" | "RESERVED_EVENT_TYPE" | "FORBIDDEN" | ...
+    err.status;  // HTTP status, e.g. 403
+    err.details; // e.g. {resource: "events_per_day", scope: "organization", used: 1000, limit: 1000}
+    err.next_actions; // platform-synthesized drill-downs (e.g. renew_tier, check_usage)
+    err.body;    // full response body (parsed object, or raw string when unparseable)
+    if (err.code === "QUOTA_EXCEEDED") { /* … */ }
+  }
+  throw err;
+}
+```
+
+Other helpers still throw plain `Error` whose message includes the HTTP status and the response body so you can branch on `code` / `category` / `retryable` (the v1.34+ agent-operable error envelope).
 
 ## Engines
 
