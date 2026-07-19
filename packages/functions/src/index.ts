@@ -1,5 +1,5 @@
 export { db, adminDb, QueryBuilder, R402DbError } from "./db.js";
-export type { R402DbErrorCode } from "./db.js";
+export type { R402DbErrorCode, AdminSqlResult } from "./db.js";
 export { getUser, getUserId, getRole } from "./auth.js";
 export type { User } from "./auth.js";
 

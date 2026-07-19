@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Fixed
+
+- **`adminDb().sql()` return type corrected** — the declaration claimed
+  `Promise<Record<string, unknown>[]>` (a bare row array) but the runtime has
+  always returned the gateway envelope
+  `{ status, schema, rows, row_count, fields }` verbatim. The type now
+  matches reality via the new exported `AdminSqlResult` interface
+  (snake_case `row_count` — the wire contract; the previously documented
+  camelCase `rowCount` never existed at runtime). Code written against the
+  old array type was already broken at runtime; code that (correctly) read
+  `.rows` is unaffected.
+
 ### Added
 
 - **`events` namespace** — `events.emit(type, payload?, {idempotencyKey?})`

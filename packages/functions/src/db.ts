@@ -367,9 +367,28 @@ export function db(req?: Request): CallerDbClient {
   };
 }
 
+/**
+ * The gateway's SQL endpoint envelope, returned verbatim by `adminDb().sql()`.
+ * NOTE the snake_case `row_count` — this shape is the wire contract
+ * (docs/style.md snake_case), not a camelCase SDK projection. The type was
+ * previously declared as a bare row array, which did not match runtime and
+ * cost real deploy cycles (2026-07-19 review finding).
+ */
+export interface AdminSqlResult {
+  status: string;
+  /** The project's backing schema slot (e.g. "p0005"). */
+  schema: string;
+  /** SELECT rows — and RETURNING rows for INSERT/UPDATE/DELETE .. RETURNING. */
+  rows: Record<string, unknown>[];
+  /** Matched/affected row count (snake_case on the wire). */
+  row_count: number;
+  /** Column metadata for the returned rows. */
+  fields: { name: string; type: string }[];
+}
+
 interface AdminDbClient {
   from(table: string): QueryBuilder;
-  sql(query: string, params?: unknown[]): Promise<Record<string, unknown>[]>;
+  sql(query: string, params?: unknown[]): Promise<AdminSqlResult>;
 }
 
 /**
@@ -394,7 +413,7 @@ export function adminDb(): AdminDbClient {
         basePath: "/admin/v1/rest",
       });
     },
-    async sql(query: string, params?: unknown[]): Promise<Record<string, unknown>[]> {
+    async sql(query: string, params?: unknown[]): Promise<AdminSqlResult> {
       const url = `${config.API_BASE}/projects/v1/admin/${config.PROJECT_ID}/sql`;
       const hasParams = Array.isArray(params) && params.length > 0;
       const res = await fetch(url, {
@@ -409,7 +428,7 @@ export function adminDb(): AdminDbClient {
         const errBody = await res.text();
         throw buildDbError("R402_DB_SQL_ERROR", "SQL error", res.status, errBody);
       }
-      return res.json() as Promise<Record<string, unknown>[]>;
+      return res.json() as Promise<AdminSqlResult>;
     },
   };
 }

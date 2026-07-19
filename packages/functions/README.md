@@ -77,14 +77,15 @@ await adminDb()
 ### `adminDb().sql(query, params?)` — raw SQL, always BYPASSRLS
 
 ```ts
-const { rows, rowCount } = await adminDb().sql(
+const { rows, row_count } = await adminDb().sql(
   "SELECT count(*)::int AS n FROM items WHERE user_id = $1",
   [userId],
 );
-// { status: "ok", schema: "p0001", rows: [{ n: 42 }], rowCount: 1 }
+// { status: "ok", schema: "p0001", rows: [{ n: 42 }], row_count: 1,
+//   fields: [{ name: "n", type: "int4" }] }
 ```
 
-For SELECT, `rows` is the result set and `rowCount` is the row count. For INSERT/UPDATE/DELETE, `rows` is `[]` and `rowCount` is the affected count.
+Returns `AdminSqlResult` (exported type): `{ status, schema, rows, row_count, fields }` — snake_case on the wire. For SELECT, `rows` is the result set and `row_count` is the row count. For INSERT/UPDATE/DELETE, `rows` is `[]` and `row_count` is the affected count — unless the statement uses `RETURNING`, in which case `rows` carries the returned rows. `fields` lists the result columns (`{ name, type }`) so even an empty SELECT conveys its shape.
 
 ## `getUser(req)` — caller identity
 
