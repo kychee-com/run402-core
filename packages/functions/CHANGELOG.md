@@ -2,8 +2,48 @@
 
 ## Unreleased
 
+### Fixed
+
+- **`adminDb().sql()` return type corrected** — the declaration claimed
+  `Promise<Record<string, unknown>[]>` (a bare row array) but the runtime has
+  always returned the gateway envelope
+  `{ status, schema, rows, row_count, fields }` verbatim. The type now
+  matches reality via the new exported `AdminSqlResult` interface
+  (snake_case `row_count` — the wire contract; the previously documented
+  camelCase `rowCount` never existed at runtime). Code written against the
+  old array type was already broken at runtime; code that (correctly) read
+  `.rows` is unaffected.
+
 ### Added
 
+- **`events` namespace** — `events.emit(type, payload?, {idempotencyKey?})`
+  writes a fact into the project's cursored event feed (the
+  `internal.project_events` outbox), readable back via
+  `GET /projects/v1/:project_id/events?source=app`, `run402 events`, and
+  every other feed consumer. Service-key context; own-project only. `type`
+  must be flat snake_case (`/^[a-z][a-z0-9_]{2,63}$/`); platform-registered
+  type names are reserved. Grammar and reservation are validated
+  **server-side only** — the client sends `type` verbatim and surfaces the
+  gateway's 400 as a thrown error rather than pre-validating or masking it.
+  `idempotencyKey` is a **durable** dedup identity (the gateway dedupes on
+  `(project_id, idempotency_key)` forever, not a short-lived retry-window
+  token) — pass it on any at-least-once code path. Non-2xx responses throw
+  the new structured `Run402EventsPlatformError` (`code`, `status`,
+  `details`, `next_actions`, `body`), mirroring the `R402DbError` /
+  `Run402FunctionRunPlatformError` passthrough pattern: the gateway owns
+  vocabulary/quota policy, this SDK never re-implements or masks it.
+  Companion to the gateway's `app-events-emit-lane` change
+  (kychee-com/run402-core#3).
+- **`R402DbError`** — the `db()` / `adminDb()` helpers now throw a structured
+  error (exported class + `R402DbErrorCode` type) instead of a bare `Error`.
+  Stable SDK codes `R402_DB_SQL_ERROR` (`adminDb().sql()`) and
+  `R402_DB_QUERY_ERROR` (the `QueryBuilder`); `status`, `trace_id`,
+  `remote_code`, and the full `body` ride on properties. The `message` is now
+  a low-cardinality template (`SQL error (402): QUOTA_EXCEEDED` for a coded
+  envelope; legacy verbatim shape for non-JSON bodies) so error monitors group
+  DB failures by kind instead of by a per-event trace id. Catch-sites should
+  branch on `err.code` / `err.status` / `err.trace_id` rather than parsing the
+  message. (D10 companion to the gateway's release-error-rollup fingerprinting.)
 - Runtime request context now exposes `idempotencyKey` from
   `x-run402-idempotency-key`. Paid function calls and durable function runs
   can read the same platform key for downstream side-effect dedupe.
