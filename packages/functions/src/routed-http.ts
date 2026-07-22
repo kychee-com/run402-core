@@ -5,6 +5,12 @@ export type RoutedHttpHeaderList = Array<[string, string]>;
 export interface RoutedHttpPaymentContextV1 {
   scheme: "x402";
   paymentId: string;
+  /** Caller-owned business key accepted by Run402, or null for proof-keyed requests. */
+  idempotencyKey: string | null;
+  /** True when this request reused a payment identity admitted by an earlier request. */
+  deduplicated: boolean;
+  /** Whether this is the first tenant invocation for the payment or a safe replay. */
+  delivery: "first" | "replay";
   amountUsdMicros: number;
   payer: string | null;
   network: string;
@@ -187,12 +193,18 @@ function normalizePaymentContext(value: unknown): RoutedHttpPaymentContextV1 | n
   if (!isRecord(value)) return null;
   if (value.scheme !== "x402") return null;
   const paymentId = nonEmptyString(value.paymentId);
+  const idempotencyKey = nullableString(value.idempotencyKey);
+  const deduplicated = value.deduplicated;
+  const delivery = value.delivery;
   const amountUsdMicros = value.amountUsdMicros;
   const network = nonEmptyString(value.network);
   const payTo = nonEmptyString(value.payTo);
   const settledAt = nonEmptyString(value.settledAt);
   if (
     paymentId === null ||
+    (value.idempotencyKey !== null && idempotencyKey === null) ||
+    typeof deduplicated !== "boolean" ||
+    (delivery !== "first" && delivery !== "replay") ||
     typeof amountUsdMicros !== "number" ||
     !Number.isSafeInteger(amountUsdMicros) ||
     amountUsdMicros <= 0 ||
@@ -205,6 +217,9 @@ function normalizePaymentContext(value: unknown): RoutedHttpPaymentContextV1 | n
   return {
     scheme: "x402",
     paymentId,
+    idempotencyKey,
+    deduplicated,
+    delivery,
     amountUsdMicros,
     payer: nullableString(value.payer),
     network,
@@ -222,12 +237,19 @@ function paymentContextFromHeaders(
   if (!get) return null;
   if (nonEmpty(get("x-run402-payment-scheme")) !== "x402") return null;
   const paymentId = nonEmpty(get("x-run402-payment-id"));
+  const idempotencyKeyRaw = get("x-run402-payment-idempotency-key");
+  const idempotencyKey = nonEmpty(idempotencyKeyRaw);
+  const deduplicatedRaw = nonEmpty(get("x-run402-payment-deduplicated"));
+  const delivery = nonEmpty(get("x-run402-payment-delivery"));
   const amountRaw = nonEmpty(get("x-run402-payment-amount-usd-micros"));
   const network = nonEmpty(get("x-run402-payment-network"));
   const payTo = nonEmpty(get("x-run402-payment-pay-to"));
   const settledAt = nonEmpty(get("x-run402-payment-settled-at"));
   if (
     paymentId === null ||
+    (idempotencyKeyRaw !== null && idempotencyKey === null) ||
+    (deduplicatedRaw !== "true" && deduplicatedRaw !== "false") ||
+    (delivery !== "first" && delivery !== "replay") ||
     amountRaw === null ||
     network === null ||
     payTo === null ||
@@ -242,6 +264,9 @@ function paymentContextFromHeaders(
   return {
     scheme: "x402",
     paymentId,
+    idempotencyKey,
+    deduplicated: deduplicatedRaw === "true",
+    delivery,
     amountUsdMicros,
     payer: nonEmpty(get("x-run402-payment-payer")),
     network,

@@ -350,7 +350,8 @@ Request fields:
 - `req.method` is the original browser method. `GET` routes also match `HEAD`; `HEAD` reaches the handler as `HEAD`.
 - `req.url` is the full public URL, including scheme, host, path, and query, on managed subdomains, deployment hosts, and verified custom domains. Derive OAuth callback URLs from `new URL(req.url).origin`.
 - `req.headers` is a Fetch `Headers` object. Cookie data is available through the `cookie` header.
-- Priced routes expose a confirmed x402 payment through `getRoutedPaymentContext(req)`, backed by `x-run402-payment-*` headers. The helper returns `null` for unpriced routes.
+- Run402 Cloud priced routes expose a confirmed x402 payment through `getRoutedPaymentContext(req)`, backed by platform-owned `x-run402-payment-*` headers. The helper returns `null` for unpriced routes. Run402 Core does not populate payment context because tenant x402 settlement is a Cloud control-plane feature.
+- The returned payment keeps `paymentId` as the canonical tenant-side dedupe identity and also reports `idempotencyKey` (`null` for proof-keyed requests), `deduplicated`, and `delivery` (`first` or `replay`). Use `paymentId` to make application side effects idempotent; tenant execution remains at-least-once.
 - Paid direct invocations and durable function runs expose the platform idempotency key on `x-run402-idempotency-key`; `getRun402Context(req).idempotencyKey` returns that value or `null`. Sellers with external side effects should also accept their own business-level dedupe token when they need guarantees beyond Run402 billing idempotency.
 - `await req.text()`, `await req.json()`, and `await req.arrayBuffer()` read the buffered request body, capped at 6 MiB.
 

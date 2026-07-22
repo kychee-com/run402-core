@@ -114,6 +114,9 @@ describe("routed HTTP helpers", () => {
     const payment: RoutedHttpPaymentContextV1 = {
       scheme: "x402",
       paymentId: "pay_tenant_123",
+      idempotencyKey: "ancestor:khufu",
+      deduplicated: false,
+      delivery: "first",
       amountUsdMicros: 250000,
       payer: "0x000000000000000000000000000000000000b0b0",
       network: "base",
@@ -133,6 +136,9 @@ describe("routed HTTP helpers", () => {
       headers: {
         "x-run402-payment-scheme": "x402",
         "x-run402-payment-id": "pay_headers_123",
+        "x-run402-payment-idempotency-key": "ancestor:khufu",
+        "x-run402-payment-deduplicated": "true",
+        "x-run402-payment-delivery": "replay",
         "x-run402-payment-amount-usd-micros": "250000",
         "x-run402-payment-payer": "0x000000000000000000000000000000000000b0b0",
         "x-run402-payment-network": "base",
@@ -146,6 +152,9 @@ describe("routed HTTP helpers", () => {
     assert.deepEqual(getRoutedPaymentContext(request), {
       scheme: "x402",
       paymentId: "pay_headers_123",
+      idempotencyKey: "ancestor:khufu",
+      deduplicated: true,
+      delivery: "replay",
       amountUsdMicros: 250000,
       payer: "0x000000000000000000000000000000000000b0b0",
       network: "base",
@@ -162,6 +171,8 @@ describe("routed HTTP helpers", () => {
     assert.equal(getRoutedPaymentContext({
       "x-run402-payment-scheme": "x402",
       "x-run402-payment-id": "pay_bad",
+      "x-run402-payment-deduplicated": "false",
+      "x-run402-payment-delivery": "first",
       "x-run402-payment-amount-usd-micros": "0.25",
       "x-run402-payment-network": "base",
       "x-run402-payment-pay-to": "0x000000000000000000000000000000000000cafe",
@@ -170,6 +181,8 @@ describe("routed HTTP helpers", () => {
     assert.equal(getRoutedPaymentContext({
       "x-run402-payment-scheme": "allowance",
       "x-run402-payment-id": "pay_bad",
+      "x-run402-payment-deduplicated": "false",
+      "x-run402-payment-delivery": "first",
       "x-run402-payment-amount-usd-micros": "250000",
       "x-run402-payment-network": "base",
       "x-run402-payment-pay-to": "0x000000000000000000000000000000000000cafe",

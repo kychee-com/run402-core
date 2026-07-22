@@ -111,6 +111,35 @@ test("local function executor normalizes SSR Web Request and Web Response", asyn
   }
 });
 
+test("Core routed requests omit Cloud tenant payment context", async () => {
+  const fixture = await createExecutorFixture(`
+    export default async function handler(request) {
+      return Response.json({
+        contextPayment: request.context?.payment ?? null,
+        headerPaymentId: request.headers.get("x-run402-payment-id")
+      });
+    }
+  `);
+  try {
+    const result = await fixture.executor.invoke({
+      projectId: PROJECT_ID,
+      releaseId: RELEASE_ID,
+      functionName: "api",
+      invocationKind: "routed_http",
+      requestId: "req_core_unpriced_1",
+      bundle: fixture.bundle,
+      request: routedRequest("req_core_unpriced_1", "/api/free"),
+    });
+
+    assert.deepEqual(decodeJsonBody(result.response.body), {
+      contextPayment: null,
+      headerPaymentId: null,
+    });
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test("local function executor forwards confirmed payment headers to Web Request handlers", async () => {
   const fixture = await createExecutorFixture(`
     export default async function handler(request) {
@@ -120,7 +149,11 @@ test("local function executor forwards confirmed payment headers to Web Request 
         payTo: request.headers.get("x-run402-payment-pay-to"),
         settledAt: request.headers.get("x-run402-payment-settled-at"),
         headerPaymentId: request.headers.get("x-run402-payment-id"),
-        contextPaymentId: request.context?.payment?.paymentId ?? null
+        headerIdempotencyKey: request.headers.get("x-run402-payment-idempotency-key"),
+        headerDeduplicated: request.headers.get("x-run402-payment-deduplicated"),
+        headerDelivery: request.headers.get("x-run402-payment-delivery"),
+        contextPaymentId: request.context?.payment?.paymentId ?? null,
+        contextIdempotencyKey: request.context?.payment?.idempotencyKey ?? null
       }), {
         headers: { "content-type": "application/json; charset=utf-8" }
       });
@@ -129,6 +162,9 @@ test("local function executor forwards confirmed payment headers to Web Request 
   const payment = {
     scheme: "x402" as const,
     paymentId: "pay_executor_1",
+    idempotencyKey: "order:executor:1",
+    deduplicated: true,
+    delivery: "replay" as const,
     amountUsdMicros: 250000,
     payer: "0x000000000000000000000000000000000000b0b0",
     network: "base",
@@ -152,6 +188,9 @@ test("local function executor forwards confirmed payment headers to Web Request 
           ...request.headers,
           ["x-run402-payment-scheme", "x402"],
           ["x-run402-payment-id", payment.paymentId],
+          ["x-run402-payment-idempotency-key", payment.idempotencyKey],
+          ["x-run402-payment-deduplicated", String(payment.deduplicated)],
+          ["x-run402-payment-delivery", payment.delivery],
           ["x-run402-payment-amount-usd-micros", String(payment.amountUsdMicros)],
           ["x-run402-payment-payer", payment.payer],
           ["x-run402-payment-network", payment.network],
@@ -174,14 +213,22 @@ test("local function executor forwards confirmed payment headers to Web Request 
       payTo: string;
       settledAt: string;
       headerPaymentId: string;
+      headerIdempotencyKey: string;
+      headerDeduplicated: string;
+      headerDelivery: string;
       contextPaymentId: string;
+      contextIdempotencyKey: string;
     };
     assert.equal(body.amount, payment.amountUsdMicros);
     assert.equal(body.network, payment.network);
     assert.equal(body.payTo, payment.payTo);
     assert.equal(body.settledAt, payment.settledAt);
     assert.equal(body.headerPaymentId, payment.paymentId);
+    assert.equal(body.headerIdempotencyKey, payment.idempotencyKey);
+    assert.equal(body.headerDeduplicated, "true");
+    assert.equal(body.headerDelivery, "replay");
     assert.equal(body.contextPaymentId, payment.paymentId);
+    assert.equal(body.contextIdempotencyKey, payment.idempotencyKey);
   } finally {
     await fixture.cleanup();
   }

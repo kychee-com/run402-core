@@ -8,7 +8,10 @@
   `x-run402-idempotency-key`. Paid function calls and durable function runs
   can read the same platform key for downstream side-effect dedupe.
 - `getRoutedPaymentContext()` and `routedHttp.paymentContext()` read the
-  confirmed x402 payment attached to priced routed function requests.
+  confirmed x402 payment attached to Run402 Cloud priced routed function requests,
+  including the additive `idempotencyKey`, `deduplicated`, and `delivery` fields.
+  `paymentId` remains the canonical tenant-side dedupe identity. Run402 Core itself
+  continues to omit payment context.
 - `auth.user()` / `auth.requireUser()` now expose `actor.is_test === true`
   for Run402 tenant test-session users. The signed actor envelope and the
   short-lived SDK-minted DB JWT preserve the same watermark.
