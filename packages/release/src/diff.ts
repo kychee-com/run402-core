@@ -741,7 +741,12 @@ function sameMethods(a: RouteEntry["methods"], b: RouteEntry["methods"]): boolea
 
 function samePricing(a: RouteEntry["pricing"], b: RouteEntry["pricing"]): boolean {
   if (a === undefined || b === undefined) return a === b;
-  if (a.mode !== b.mode || a.amount_usd_micros !== b.amount_usd_micros || a.pay_to !== b.pay_to) {
+  if (
+    a.mode !== b.mode ||
+    a.amount_usd_micros !== b.amount_usd_micros ||
+    a.pay_to !== b.pay_to ||
+    a.receipt !== b.receipt
+  ) {
     return false;
   }
   const aNetworks = a.networks ?? [];

@@ -335,9 +335,7 @@ export function taintCacheBypass(): void {
  * @see openspec/changes/astro-ssr-runtime/specs/functions-sdk-auth-model/spec.md
  */
 export const PAYMENT_PRIMITIVES: ReadonlySet<string> = new Set([
-  // None implemented yet — the registry exists so the contract is
-  // explicit and discoverable. Payment-primitive SDK functions added
-  // in future changes (per Run402 x402/MPP roadmap) will register here
+  "payment.fulfilled",
   // as they land.
   // Example future entries (commented to keep the set actually empty
   // until the helpers ship):

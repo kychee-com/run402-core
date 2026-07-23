@@ -149,6 +149,7 @@ export interface RoutePricingSpec {
   amount_usd_micros: number;
   pay_to: "org_default_payout";
   networks?: RoutePricingNetwork[];
+  receipt?: "on_fulfillment";
 }
 
 export interface FunctionRouteTarget {

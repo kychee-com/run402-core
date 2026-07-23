@@ -224,12 +224,13 @@ function validateRoutePricing(pricing: unknown, resource: string, target: RouteT
   if (!pricing || typeof pricing !== "object" || Array.isArray(pricing)) {
     throw routeError(resource, "route pricing must be an object");
   }
-  rejectUnknownKeys(pricing as Record<string, unknown>, resource, ["mode", "amount_usd_micros", "pay_to", "networks"]);
+  rejectUnknownKeys(pricing as Record<string, unknown>, resource, ["mode", "amount_usd_micros", "pay_to", "networks", "receipt"]);
   const raw = pricing as {
     mode?: unknown;
     amount_usd_micros?: unknown;
     pay_to?: unknown;
     networks?: unknown;
+    receipt?: unknown;
   };
   if (raw.mode !== "always") {
     throw routeError(`${resource}.mode`, "route pricing mode must be 'always'");
@@ -241,11 +242,15 @@ function validateRoutePricing(pricing: unknown, resource: string, target: RouteT
   if (raw.pay_to !== "org_default_payout") {
     throw routeError(`${resource}.pay_to`, "route pricing pay_to must be 'org_default_payout'");
   }
+  if (raw.receipt !== undefined && raw.receipt !== "on_fulfillment") {
+    throw routeError(`${resource}.receipt`, "route pricing receipt must be 'on_fulfillment'");
+  }
   return {
     mode: "always",
     amount_usd_micros: amount,
     pay_to: "org_default_payout",
     networks: normalizePricingNetworks(raw.networks, `${resource}.networks`),
+    ...(raw.receipt === "on_fulfillment" ? { receipt: raw.receipt } : {}),
   };
 }
 
@@ -304,6 +309,7 @@ function stableRoutePricing(pricing: RoutePricingSpec): unknown {
     amount_usd_micros: pricing.amount_usd_micros,
     pay_to: pricing.pay_to,
     networks: pricing.networks ?? [...DEFAULT_ROUTE_PRICING_NETWORKS],
+    ...(pricing.receipt ? { receipt: pricing.receipt } : {}),
   };
 }
 

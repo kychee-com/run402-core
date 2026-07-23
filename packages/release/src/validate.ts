@@ -413,7 +413,7 @@ function validateRouteSpec(route: RouteSpec, resource: string): void {
 function validateRoutePricing(pricing: unknown, resource: string): void {
   if (pricing === undefined) return;
   if (!isRecord(pricing)) throw invalid(resource, "route pricing must be an object");
-  rejectUnknownKeys(pricing, resource, ["mode", "amount_usd_micros", "pay_to", "networks"]);
+  rejectUnknownKeys(pricing, resource, ["mode", "amount_usd_micros", "pay_to", "networks", "receipt"]);
   if (pricing.mode !== "always") {
     throw invalid(`${resource}.mode`, "route pricing mode must be always");
   }
@@ -422,6 +422,9 @@ function validateRoutePricing(pricing: unknown, resource: string): void {
   }
   if (pricing.pay_to !== "org_default_payout") {
     throw invalid(`${resource}.pay_to`, "route pricing pay_to must be org_default_payout");
+  }
+  if (pricing.receipt !== undefined && pricing.receipt !== "on_fulfillment") {
+    throw invalid(`${resource}.receipt`, "route pricing receipt must be on_fulfillment");
   }
   if (pricing.networks === undefined) return;
   if (!Array.isArray(pricing.networks)) {

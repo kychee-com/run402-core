@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 import { pathToFileURL } from "node:url";
 import {
+  consumeMerchantFulfillmentDirective,
   runWithContext,
   type RoutedHttpHeaderList,
   type RoutedHttpRequestV1,
@@ -66,7 +67,9 @@ async function main(): Promise<void> {
   const value = await runWithContext(contextFromInvocation(currentPayload.invocation), async () => {
     return await handler(handlerInput(currentPayload));
   });
-  const response = await normalizeResponse(value);
+  const response = consumeMerchantFulfillmentDirective(
+    await normalizeResponse(value),
+  );
   writeControl({
     ok: true,
     response,

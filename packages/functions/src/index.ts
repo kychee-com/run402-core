@@ -86,12 +86,22 @@ export type {
 export { bytes, getRoutedPaymentContext, isRequest, json, routedHttp, text } from "./routed-http.js";
 export type {
   RoutedHttpHeaderList,
+  RoutedHttpFulfillmentDirectiveV1,
   RoutedHttpPaymentContextSource,
   RoutedHttpPaymentContextV1,
   RoutedHttpRequestV1,
   RoutedHttpResponseInit,
   RoutedHttpResponseV1,
 } from "./routed-http.js";
+export {
+  consumeMerchantFulfillmentDirective,
+  decodeMerchantFulfillmentDirective,
+  MERCHANT_FULFILLMENT_DIRECTIVE_HEADER,
+  MERCHANT_RECEIPT_MODE_HEADER,
+  payment,
+  Run402PaymentFulfillmentError,
+} from "./payment.js";
+export type { Run402PaymentFulfillmentErrorCode } from "./payment.js";
 export {
   defineFunctionRuns,
   functions,

@@ -60,3 +60,9 @@ Reviewed plans use the same split. `digestReviewedPlanFingerprint` binds the sem
 Run402 Cloud should be the easiest place to start, not the only place the application can run. This package is one of the portability ratchets that makes that promise inspectable.
 
 Open source reduces vendor-lock-in risk. Run402 Cloud allowances and spend caps reduce financial-risk exposure. These are separate trust claims.
+
+Priced function routes may opt into portable merchant-evidence intent with
+`pricing.receipt: "on_fulfillment"`. This field declares that the function will
+use `payment.fulfilled(response)` after its business mutation commits. Omission
+preserves the existing payment behavior. Static and unpriced routes reject
+receipt configuration.

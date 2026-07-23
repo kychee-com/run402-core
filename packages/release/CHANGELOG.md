@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add opt-in `routes[].pricing.receipt: "on_fulfillment"` for priced
+  function routes, including strict validation, canonicalization, schemas,
+  and diffing.
 - Add `routes[].pricing` for fixed-price x402 function routes in ReleaseSpec
   validation, materialization, schemas, and diffing.
 - Default omitted static route alias `methods` to `GET` plus `HEAD` instead of rejecting the route entry (the only method set a static alias can normalize to).

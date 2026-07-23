@@ -18,6 +18,14 @@ export interface RoutedHttpPaymentContextV1 {
   payTo: string;
   transaction: string | null;
   settledAt: string;
+  /** Short-lived gateway assertion lifetime for fulfillment declaration. */
+  contextExpiresAt?: string;
+}
+
+export interface RoutedHttpFulfillmentDirectiveV1 {
+  version: "run402.merchant_fulfillment.v1";
+  claim: "service_delivered";
+  payment: RoutedHttpPaymentContextV1;
 }
 
 export interface RoutedHttpRequestV1 {
@@ -98,6 +106,8 @@ export interface RoutedHttpResponseV1 {
     data: string;
     size: number;
   };
+  /** Internal gateway transport. Never forwarded as a tenant response field. */
+  fulfillment?: RoutedHttpFulfillmentDirectiveV1;
 }
 
 export interface RoutedHttpResponseInit {
@@ -200,6 +210,7 @@ function normalizePaymentContext(value: unknown): RoutedHttpPaymentContextV1 | n
   const network = nonEmptyString(value.network);
   const payTo = nonEmptyString(value.payTo);
   const settledAt = nonEmptyString(value.settledAt);
+  const contextExpiresAt = nullableString(value.contextExpiresAt);
   if (
     paymentId === null ||
     (value.idempotencyKey !== null && idempotencyKey === null) ||
@@ -210,7 +221,8 @@ function normalizePaymentContext(value: unknown): RoutedHttpPaymentContextV1 | n
     amountUsdMicros <= 0 ||
     network === null ||
     payTo === null ||
-    settledAt === null
+    settledAt === null ||
+    (value.contextExpiresAt !== undefined && contextExpiresAt === null)
   ) {
     return null;
   }
@@ -227,6 +239,7 @@ function normalizePaymentContext(value: unknown): RoutedHttpPaymentContextV1 | n
     payTo,
     transaction: nullableString(value.transaction),
     settledAt,
+    ...(contextExpiresAt ? { contextExpiresAt } : {}),
   };
 }
 
@@ -245,6 +258,9 @@ function paymentContextFromHeaders(
   const network = nonEmpty(get("x-run402-payment-network"));
   const payTo = nonEmpty(get("x-run402-payment-pay-to"));
   const settledAt = nonEmpty(get("x-run402-payment-settled-at"));
+  const contextExpiresAt = nonEmpty(
+    get("x-run402-payment-context-expires-at"),
+  );
   if (
     paymentId === null ||
     (idempotencyKeyRaw !== null && idempotencyKey === null) ||
@@ -274,6 +290,7 @@ function paymentContextFromHeaders(
     payTo,
     transaction: nonEmpty(get("x-run402-payment-transaction")),
     settledAt,
+    ...(contextExpiresAt ? { contextExpiresAt } : {}),
   };
 }
 

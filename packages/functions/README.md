@@ -396,6 +396,25 @@ Request fields:
 
 Response behavior:
 - Return a Web `Response` with status 200 through 599 except `101 Switching Protocols`.
+- On a priced function route configured with
+  `pricing.receipt: "on_fulfillment"`, call
+  `payment.fulfilled(response)` only after the application mutation commits:
+
+  ```ts
+  import { payment } from "@run402/functions";
+
+  export default async function handler(req: Request): Promise<Response> {
+    const order = await createOrder(await req.json());
+    return payment.fulfilled(
+      Response.json({ order_id: order.id }, { status: 201 }),
+    );
+  }
+  ```
+
+  It returns the same status, body, and public headers while adding a private
+  gateway directive. It throws when the invocation is not a fresh, settled,
+  receipt-enabled routed request; it never turns an unconfirmed response into
+  a merchant claim.
 - Append each cookie with `headers.append("Set-Cookie", value)`; Run402 preserves multiple `Set-Cookie` values as separate browser headers.
 - Redirects are ordinary 3xx responses with a `Location` header. `HEAD` responses send headers without body bytes.
 - Request and response bodies are capped at 6 MiB. WebSockets, `101 Switching Protocols`, streaming, and SSE are not supported in Phase 1.

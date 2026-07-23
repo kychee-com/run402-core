@@ -1004,6 +1004,27 @@ describe("route materialization", () => {
     assert.deepEqual(materialized.entries[0]?.pricing?.networks, ["mainnet", "testnet"]);
   });
 
+  it("preserves receipt-enabled priced function routes canonically", () => {
+    const materialized = materializeRoutes([
+      {
+        pattern: "/api/orders",
+        methods: ["POST"],
+        target: { type: "function", name: "orders" },
+        pricing: {
+          mode: "always",
+          amount_usd_micros: 100_000,
+          pay_to: "org_default_payout",
+          receipt: "on_fulfillment",
+        },
+      },
+    ]);
+
+    assert.equal(
+      materialized.entries[0]?.pricing?.receipt,
+      "on_fulfillment",
+    );
+  });
+
   it("rejects malformed route pricing", () => {
     const validRoute = {
       pattern: "/api/credits",
@@ -1037,6 +1058,20 @@ describe("route materialization", () => {
     assert.throws(
       () => materializeRoutes([
         {
+          ...validRoute,
+          pricing: {
+            ...validRoute.pricing,
+            receipt: "after_request" as unknown as "on_fulfillment",
+          },
+        },
+      ]),
+      (error: unknown) =>
+        error instanceof ReleaseSpecValidationError &&
+        error.resource === "routes.replace.0.pricing.receipt",
+    );
+    assert.throws(
+      () => materializeRoutes([
+        {
           pattern: "/login",
           methods: ["GET"],
           target: { type: "static", file: "login.html" },
@@ -1044,6 +1079,19 @@ describe("route materialization", () => {
         },
       ] as never),
       /only supported on function routes/,
+    );
+    assert.throws(
+      () => materializeRoutes([
+        {
+          pattern: "/login",
+          methods: ["GET"],
+          target: { type: "static", file: "login.html" },
+          receipt: "on_fulfillment",
+        },
+      ] as never),
+      (error: unknown) =>
+        error instanceof ReleaseSpecValidationError &&
+        error.resource === "routes.replace.0.receipt",
     );
   });
 });

@@ -12,3 +12,4 @@ export * from "./typed-config.js";
 export type * from "./types.js";
 export * from "./validate.js";
 export * from "./versions.js";
+export * from "./x402-commerce-result.js";

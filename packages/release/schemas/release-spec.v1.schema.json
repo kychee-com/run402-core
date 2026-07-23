@@ -484,6 +484,7 @@
           "maximum": 9007199254740991
         },
         "pay_to": { "const": "org_default_payout" },
+        "receipt": { "const": "on_fulfillment" },
         "networks": {
           "type": "array",
           "minItems": 1,

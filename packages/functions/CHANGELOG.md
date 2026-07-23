@@ -16,6 +16,11 @@
 
 ### Added
 
+- **`payment.fulfilled(response)`** — declare that a receipt-enabled priced
+  routed function committed its business result. The helper requires a fresh,
+  platform-confirmed x402 context, emits only the private fixed
+  `service_delivered` directive, and fails closed for unpriced, unsettled,
+  expired, or direct invocations.
 - **`events` namespace** — `events.emit(type, payload?, {idempotencyKey?})`
   writes a fact into the project's cursored event feed (the
   `internal.project_events` outbox), readable back via
