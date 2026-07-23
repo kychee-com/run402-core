@@ -625,3 +625,66 @@ describe("db() actor-context propagation (auth-aware-ssr)", () => {
     assert.equal(claims.session_id, "verified-sess");
   });
 });
+
+describe("single() / maybeSingle() row modes", () => {
+  function mockRows(rows: unknown[]) {
+    mock.method(globalThis, "fetch", async () => {
+      return new Response(JSON.stringify(rows), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+  }
+
+  it("maybeSingle resolves the row object on exactly one match", async () => {
+    mockRows([{ id: 7, name: "only" }]);
+    const row = await adminDb().from("users").select().eq("id", 7).maybeSingle();
+    assert.deepEqual(row, { id: 7, name: "only" });
+  });
+
+  it("maybeSingle resolves null on zero rows", async () => {
+    mockRows([]);
+    const row = await adminDb().from("users").select().eq("id", 404).maybeSingle();
+    assert.equal(row, null);
+  });
+
+  it("maybeSingle throws a 406 R402DbError on multiple rows", async () => {
+    mockRows([{ id: 1 }, { id: 2 }]);
+    const err = (await catchThrown(() =>
+      adminDb().from("users").select().maybeSingle() as unknown as Promise<unknown>,
+    )) as InstanceType<typeof R402DbError>;
+    assert.equal(err.name, "R402DbError");
+    assert.equal(err.status, 406);
+    assert.equal(err.message, "PostgREST error (406): maybeSingle() got multiple rows");
+  });
+
+  it("single resolves the row object on exactly one match", async () => {
+    mockRows([{ id: 7 }]);
+    const row = await adminDb().from("users").select().eq("id", 7).single();
+    assert.deepEqual(row, { id: 7 });
+  });
+
+  it("single throws a 406 R402DbError on zero rows", async () => {
+    mockRows([]);
+    const err = (await catchThrown(() =>
+      adminDb().from("users").select().eq("id", 404).single() as unknown as Promise<unknown>,
+    )) as InstanceType<typeof R402DbError>;
+    assert.equal(err.status, 406);
+    assert.equal(err.message, "PostgREST error (406): single() got 0 rows");
+  });
+
+  it("single throws a 406 R402DbError on multiple rows", async () => {
+    mockRows([{ id: 1 }, { id: 2 }]);
+    const err = (await catchThrown(() =>
+      adminDb().from("users").select().single() as unknown as Promise<unknown>,
+    )) as InstanceType<typeof R402DbError>;
+    assert.equal(err.status, 406);
+    assert.equal(err.message, "PostgREST error (406): single() got multiple rows");
+  });
+
+  it("default many mode still resolves the raw array", async () => {
+    mockRows([{ id: 1 }, { id: 2 }]);
+    const rows = await adminDb().from("users").select();
+    assert.deepEqual(rows, [{ id: 1 }, { id: 2 }]);
+  });
+});

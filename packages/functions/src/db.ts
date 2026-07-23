@@ -116,6 +116,7 @@ export class QueryBuilder {
   #apikey: string;
   #authorization: string | undefined;
   #basePath: string;
+  #rowMode: "many" | "single" | "maybeSingle" = "many";
 
   constructor(table: string, opts: QueryBuilderOpts) {
     this.#table = table;
@@ -189,6 +190,27 @@ export class QueryBuilder {
     return this;
   }
 
+  /**
+   * Resolve with exactly one row (the object, not a one-element array).
+   * 0 rows or >1 rows throw an {@link R402DbError} with `status: 406`
+   * (PostgREST's single-object convention) and a fingerprint-stable message.
+   * Terminal — call it last in the chain.
+   */
+  single(): PromiseLike<Record<string, unknown>> {
+    this.#rowMode = "single";
+    return this as unknown as PromiseLike<Record<string, unknown>>;
+  }
+
+  /**
+   * Resolve with one row or `null` when no row matches. More than one row
+   * throws an {@link R402DbError} with `status: 406` — narrow the filter.
+   * Terminal — call it last in the chain.
+   */
+  maybeSingle(): PromiseLike<Record<string, unknown> | null> {
+    this.#rowMode = "maybeSingle";
+    return this as unknown as PromiseLike<Record<string, unknown> | null>;
+  }
+
   insert(data: Record<string, unknown> | Record<string, unknown>[]): this {
     this.#method = "POST";
     this.#body = Array.isArray(data) ? data : [data];
@@ -210,7 +232,30 @@ export class QueryBuilder {
     resolve: (value: Record<string, unknown>[]) => void,
     reject: (reason: Error) => void,
   ): void {
-    this.#execute().then(resolve, reject);
+    // Runtime value matches the row mode: array by default, object/null after
+    // single()/maybeSingle() — whose return types re-narrow the PromiseLike.
+    this.#run().then(resolve as (value: unknown) => void, reject);
+  }
+
+  async #run(): Promise<Record<string, unknown>[] | Record<string, unknown> | null> {
+    const rows = await this.#execute();
+    if (this.#rowMode === "many") return rows;
+    if (rows.length > 1) {
+      throw new R402DbError(
+        "R402_DB_QUERY_ERROR",
+        `PostgREST error (406): ${this.#rowMode}() got multiple rows`,
+        { status: 406, trace_id: null, remote_code: null, body: { rows: rows.length } },
+      );
+    }
+    if (rows.length === 0) {
+      if (this.#rowMode === "maybeSingle") return null;
+      throw new R402DbError(
+        "R402_DB_QUERY_ERROR",
+        "PostgREST error (406): single() got 0 rows",
+        { status: 406, trace_id: null, remote_code: null, body: { rows: 0 } },
+      );
+    }
+    return rows[0];
   }
 
   // Execute the request, retrying on a PostgREST schema-cache reload race.
