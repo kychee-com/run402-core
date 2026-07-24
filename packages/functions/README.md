@@ -65,6 +65,10 @@ await adminDb()
 .order(col, { ascending? })
 .limit(n) / .offset(n)
 
+// Terminal row modes (3.12.0+) — call last in the chain:
+.single()           // resolves the row OBJECT; 0 or >1 rows → R402DbError (status 406)
+.maybeSingle()      // resolves the row object or null; >1 rows → R402DbError (status 406)
+
 // Writes return arrays of affected rows.
 .insert(obj | obj[])
 .update(obj)        // chain with .eq() to scope
@@ -73,6 +77,18 @@ await adminDb()
 // Column narrowing on writes:
 .insert({ title: "x" }).select("id, title")
 ```
+
+```ts
+// Fetch-one idiom — no more [row] destructuring or length checks:
+const item = await db(req).from("items").select("*").eq("id", id).maybeSingle();
+if (!item) return new Response("not found", { status: 404 });
+```
+
+Row-count violations throw the same `R402DbError` as other builder failures
+(`code: "R402_DB_QUERY_ERROR"`, `status: 406`, fingerprint-stable messages
+like `PostgREST error (406): single() got 0 rows`) — branch on the
+properties, not the message. Note the builder **throws** on errors; it never
+returns a supabase-style `{ data, error }` envelope.
 
 ### `adminDb().sql(query, params?)` — raw SQL, always BYPASSRLS
 

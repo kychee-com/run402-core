@@ -61,6 +61,21 @@
   for Run402 tenant test-session users. The signed actor envelope and the
   short-lived SDK-minted DB JWT preserve the same watermark.
 
+## 3.12.0 (2026-07-23)
+
+### Added
+
+- **`single()` and `maybeSingle()` terminal row modes on the query builder**
+  (both `db(req).from()` and `adminDb().from()`). `single()` resolves the row
+  object and throws on 0 or >1 rows; `maybeSingle()` resolves the row object
+  or `null` and throws only on >1 rows. Violations throw `R402DbError` with
+  `code: "R402_DB_QUERY_ERROR"`, `status: 406`, and fingerprint-stable
+  messages (`single() got 0 rows` / `single() got multiple rows` /
+  `maybeSingle() got multiple rows`). Terminal — call last in the chain; the
+  return type narrows to `PromiseLike<Record<string, unknown>>` (or `| null`).
+  Default array-returning behavior of un-moded chains is unchanged.
+  (kychee-com/run402#508)
+
 ## 3.5.1
 
 ### Changed
