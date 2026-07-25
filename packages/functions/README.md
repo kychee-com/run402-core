@@ -358,6 +358,8 @@ Read it back with `GET /projects/v1/:project_id/events?source=app` (or `run402 e
 
 **Errors.** Non-2xx responses throw `Run402EventsPlatformError` — see [Errors](#errors) below. In practice the two you're most likely to see are `code: "QUOTA_EXCEEDED"` (403, the organization's pooled daily quota is exhausted; `details: {resource: "events_per_day", scope, used, limit}`) and cross-project denials (`code: "FORBIDDEN"`, 403), alongside the two vocabulary errors above.
 
+**Always `await` it (and every other side-channel call).** The function's sandbox freezes the moment your handler's response is returned — a fire-and-forget `void events.emit(...)` (or any un-awaited `fetch` to a webhook, analytics endpoint, etc.) is silently killed mid-flight and the event never lands. There is no error, no log, nothing: the request just evaporates with the freeze. If you don't want the caller's latency to include the emit, bound it instead of detaching it — `await` with a short `AbortSignal.timeout(...)` on hand-rolled calls — but never let the handler return before the side effect settles. (Observed in production 2026-07-25: an instrumentation emit that "worked in testing" recorded zero events until it was awaited.)
+
 ## Static-site generation (build-time use)
 
 The same library works at build time for static-site generation if you set `RUN402_SERVICE_KEY` and `RUN402_PROJECT_ID` in your `.env`:
