@@ -66,9 +66,16 @@ jobs:
 
       - name: Verify
         run: |
-          npm run lint
-          npm run build
-          npm test
+          # Functions is the dependency-first release in Core's publish DAG.
+          # A full-monorepo verify here can resolve runtime-kernel's exact
+          # *previous* @run402/functions dependency beside this workspace and
+          # fail on intentionally-new exports before Functions can be
+          # published. Verify the package being released; the full suite runs
+          # on main, and runtime-kernel's own publish verifies the exact newly
+          # published dependency after its dependency bump lands.
+          npm run lint:functions
+          npm run build:functions
+          npm run test:functions
 
       - name: Bump version
         id: bump
