@@ -418,6 +418,27 @@ describe("auth.requireFresh (per-AMR semantics)", () => {
     );
   });
 
+  it("preserves email_code AMR provenance without treating it as passkey freshness", async () => {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const actor: ActorContext = {
+      ...sampleActor,
+      authTime: nowSec - 15,
+      amr: ["email_code"],
+      amrTimes: { email_code: nowSec - 15 },
+    };
+
+    await inContext({ actor }, async () => {
+      const observed = await auth.requireUser();
+      assert.deepEqual(observed.amr, ["email_code"]);
+      assert.deepEqual(observed.amrTimes, { email_code: nowSec - 15 });
+      await auth.requireFresh({ maxAge: "10m", amr: ["email_code"] });
+      await assert.rejects(
+        auth.requireFresh({ maxAge: "10m", amr: ["passkey"] }),
+        FreshnessRequiredError,
+      );
+    });
+  });
+
   it("uses flat authTime when amr filter omitted", async () => {
     const nowSec = Math.floor(Date.now() / 1000);
     const actor: ActorContext = { ...sampleActor, authTime: nowSec - 30 };

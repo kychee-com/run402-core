@@ -32,8 +32,12 @@ export interface Actor {
   emailVerified: boolean;
   /** Last any-method auth proof, seconds-since-epoch. */
   authTime: number;
+  /** Authentication-method references such as `password`, `magic_link`,
+   * `email_code`, or `passkey`. This is intentionally open-ended. Email code
+   * is AAL1 and does not imply passkey freshness. */
   amr: string[];
-  /** Per-AMR last-verified UNIX seconds. */
+  /** Per-AMR last-verified UNIX seconds, including `email_code` when that
+   * ceremony established or refreshed the session. */
   amrTimes: Record<string, number>;
 }
 

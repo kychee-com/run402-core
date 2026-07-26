@@ -16,6 +16,10 @@
 
 ### Added
 
+- `Actor.amr` / `Actor.amrTimes` now document and regression-test the
+  `email_code` authentication-method reference. The value passes through
+  unchanged and remains distinct from `passkey` freshness. The `magic_link`
+  email-template docs now cover link-only, code-only, and both-mode variables.
 - **`payment.fulfilled(response)`** — declare that a receipt-enabled priced
   routed function committed its business result. The helper requires a fresh,
   platform-confirmed x402 context, emits only the private fixed

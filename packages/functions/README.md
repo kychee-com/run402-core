@@ -245,7 +245,18 @@ await email.send({
 });
 ```
 
-Templates: `project_invite` (`project_name`, `invite_url`), `magic_link` (`project_name`, `link_url`, `expires_in`), `notification` (`project_name`, `message` ≤ 500 chars). Throws on rate limit, suppression, or no-mailbox.
+Templates: `project_invite` (`project_name`, `invite_url`), `magic_link`
+(`project_name`, `expires_in`, plus `link_url`, `code`, or both according to
+the selected email-auth delivery mode), `notification` (`project_name`,
+`message` ≤ 500 chars). For `magic_link`, at least one of `link_url` or `code`
+is required; code-only rendering never synthesizes or exposes a link. Throws
+on rate limit, suppression, or no-mailbox.
+
+`auth.user()` preserves gateway authentication provenance in the open-ended
+`Actor.amr` and `Actor.amrTimes` fields. An email-code session contains
+`email_code` and its UNIX timestamp. It is an AAL1 email proof: it can satisfy
+`auth.requireFresh({ maxAge: "10m", amr: ["email_code"] })`, but it never
+satisfies a check for `amr: ["passkey"]`.
 
 ## `ai.translate` / `ai.moderate` / `ai.generateImage`
 
