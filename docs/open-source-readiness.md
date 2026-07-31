@@ -2,6 +2,8 @@
 
 Run402 Core is the public home for public-safe Run402 runtime code. The repo is intentionally narrower than Run402 Cloud: it exists to make the supported application runtime inspectable, buildable, testable, and progressively portable.
 
+Run402's first-class human/agent principal model remains a managed control-plane capability in the current boundary. Core makes the supported application runtime sovereign and inspectable; it does not yet reproduce Cloud principal/authenticator lifecycle, organization authority, Buzz links, or complete attribution history.
+
 ## Current Boundary
 
 Included:
@@ -33,6 +35,9 @@ Excluded:
 - HA/TLS/custom-domain automation
 - hostile multi-tenant code isolation
 - Cloud import back into managed Run402
+- Cloud human/agent principal and authenticator lifecycle
+- organization membership, grants, delegates, and Buzz control-plane state
+- complete Cloud action-time attribution history
 
 ## Validation
 
@@ -57,7 +62,7 @@ docker compose down -v
 
 ## Trust Claims
 
-Open source reduces vendor-lock-in risk: the supported runtime slice can be inspected, built, tested, and imported into Core after export.
+Open source reduces vendor-lock-in risk: the supported runtime slice can be inspected, built, tested, and imported into Core after export. It is not a claim of full Cloud control-plane portability.
 
 Run402 allowances and spend caps reduce financial-risk exposure.
 

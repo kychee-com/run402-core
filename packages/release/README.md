@@ -4,6 +4,8 @@
 
 This package defines the production-used, deterministic behavior for parsing, validating, canonicalizing, materializing, and diffing a Run402 release manifest. It is a prerequisite for portable execution, not a self-hosted Run402 control plane.
 
+The semantics are participant-neutral: the same reviewed application intent can be authored by a person or agent. The package deliberately does not authenticate that participant or decide its authority; Run402 Cloud or a Core host performs those control-plane checks before invoking these pure release operations.
+
 ## Included In This Phase
 
 - Version identifiers for release specs, portable release state, canonicalization, and planner semantics.
@@ -57,7 +59,7 @@ That means Core does not execute TypeScript, walk directories, read files, inspe
 
 Reviewed plans use the same split. `digestReviewedPlanFingerprint` binds the semantic approval set -- release spec digest, concrete base identity, planner version, warnings, destructive actions, and policy/cost/quota facts -- while ignoring display-only fields such as wording, timestamps, and command examples.
 
-Run402 Cloud should be the easiest place to start, not the only place the application can run. This package is one of the portability ratchets that makes that promise inspectable.
+Run402 Cloud should be the easiest place to start, not the only place the supported application can run. This package is one of the portability ratchets that makes that bounded promise inspectable.
 
 Open source reduces vendor-lock-in risk. Run402 Cloud allowances and spend caps reduce financial-risk exposure. These are separate trust claims.
 

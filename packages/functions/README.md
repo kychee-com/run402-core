@@ -2,6 +2,8 @@
 
 In-function helper library for [Run402](https://run402.com) serverless functions. Imported _inside_ a deployed function — gives you typed access to the caller's database (RLS-respecting) and the project's admin database, the caller's auth, the project's mailbox, AI helpers, runtime asset uploads, and the project's cursored event feed.
 
+Run402's first-class people/agent **control-plane principals** are distinct from the deployed app's tenant callers described in this package. Here, `getUser(req)`, JWT roles, and RLS identify an end user of the application; they do not expose or replace the Run402 organization membership, grant, delegate, or Buzz identity model.
+
 ```ts
 import { db, adminDb, getUser, email, ai, assets } from "@run402/functions";
 

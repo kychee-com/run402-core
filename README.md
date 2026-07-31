@@ -4,6 +4,8 @@ Run402 Core is the open-source server/runtime core for Run402.
 
 The current Core runtime-kernel slice is an Apache-2.0 self-hosting runtime. It can create a local project, plan and commit a supported ReleaseSpec, run inline PostgreSQL migrations, serve PostgREST/RLS behavior, serve active-release static content, handle local storage objects and route manifests, execute trusted local functions including durable function runs and single-node schedule triggers, run a narrow Astro SSR target, and import verified portable project archives.
 
+Run402's wider product model treats people and agents as first-class participants: each acts through its own principal and authenticator, while explicit authority determines what it may do. Core supports the sovereignty side of that model by making a concrete application-runtime slice inspectable and portable. It does **not** currently reproduce the managed Cloud control plane, its human/agent principal graph, or its complete attribution history.
+
 ## What Is Here Today
 
 - `packages/functions` - `@run402/functions`, the helper library for deployed Run402 functions.
@@ -17,7 +19,7 @@ The current Core runtime-kernel slice is an Apache-2.0 self-hosting runtime. It 
 
 ## What Is Not Here Yet
 
-This repo is not a complete production self-hosted Run402 distribution. It does not include Cloud fleet scheduling, Aurora operations, global routing, Cloud billing operations, managed abuse controls, managed backups, monitoring, compliance automation, TLS automation, HA, custom domains, arbitrary dependency installation, hostile multi-tenant code isolation, or Cloud import back into managed Run402.
+This repo is not a complete production self-hosted Run402 distribution. It does not include Cloud's principal and organization authority graph, human control-plane login, grants/delegates, Buzz control-plane lifecycle, complete action-time attribution history, fleet scheduling, Aurora operations, global routing, Cloud billing operations, managed abuse controls, managed backups, monitoring, compliance automation, TLS automation, HA, custom domains, arbitrary dependency installation, hostile multi-tenant code isolation, or Cloud import back into managed Run402.
 
 The promise of this slice is smaller and concrete: the supported Core runtime path is public, buildable, testable, and suitable for Run402 Cloud to consume or verify directly.
 
@@ -36,7 +38,7 @@ Run402 Core is an open-source ratchet. Public-safe, production-used runtime code
 | Astro SSR runtime | Supported narrow output contract |
 | Portable archives | Cloud export to Core import for the supported runtime slice |
 
-Run402 Cloud remains the managed service. Core reduces vendor-lock-in risk; it does not open-source fleet operations.
+Run402 Cloud remains the managed service and the authority for its participant, organization, grant, deploy, lease, billing, and runtime records. Core reduces vendor-lock-in risk for the supported application-runtime slice; it does not open-source the full control plane or fleet operations.
 
 ## Packages
 
@@ -128,7 +130,7 @@ For the first generic AWS target, see [docs/deployment/aws-ec2/README.md](./docs
 
 Run402 Cloud is the managed service. Run402 Core is the public runtime and release-semantics code that can move toward self-hosting and portability over time.
 
-Run402 Cloud should be the easiest place to start, not the only place an application can run.
+Run402 Cloud should be the easiest place to start, not the only place the supported application can run. This is a bounded portability promise, not a claim that Core already reproduces every Cloud identity, authority, billing, or operations capability.
 
 See [CLOUD_VS_CORE.md](./CLOUD_VS_CORE.md).
 

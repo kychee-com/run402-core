@@ -84,4 +84,4 @@ Open source reduces vendor-lock-in risk: the supported runtime behavior is publi
 
 Allowances and pricing controls reduce financial-risk exposure: users can cap spend when starting on Run402 Cloud.
 
-Run402 Cloud should be the easiest place to start, not the only place the application can run.
+Run402 Cloud should be the easiest place to start, not the only place the supported storage/routing slice can run.
