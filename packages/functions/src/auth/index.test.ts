@@ -29,7 +29,41 @@ function inContext<T>(opts: {
   url?: string;
   method?: string;
   invocationKind?: "routed_http" | "direct" | "scheduled" | "function_run";
+  /** Opt out of the auto-attached gateway actor token (see below). */
+  noActorToken?: boolean;
 }, fn: () => T | Promise<T>): T | Promise<T> {
+  // functions-runtime-key-decoupling: in production the gateway mints the
+  // actor token in the SAME block that signs the actor-context envelope, so
+  // "an actor is present" implies "a forwarded token is present". The fixture
+  // mirrors that invariant rather than making every account test restate it;
+  // `noActorToken` exists for the tests that deliberately probe the gap.
+  const actorForCtx = opts.actor === undefined ? sampleActor : opts.actor;
+  // A WELL-FORMED stand-in for what the gateway mints, so tests that inspect
+  // the forwarded token (e.g. the freshness gate's `auth_time`) still exercise
+  // pass-through. The runtime never verifies or re-signs this — it forwards it
+  // verbatim; the guarantee that these claims are present now belongs to the
+  // gateway, and is tested there (data-plane-actor-token.test.ts).
+  const gatewayActorToken = actorForCtx
+    ? [
+        Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url"),
+        Buffer.from(
+          JSON.stringify({
+            sub: actorForCtx.id,
+            role: "authenticated",
+            project_id: "p_test",
+            auth_time: actorForCtx.authTime,
+            amr: actorForCtx.amr,
+            aal: actorForCtx.amr?.includes("passkey") ? "aal2" : "aal1",
+          }),
+        ).toString("base64url"),
+        "signature-not-checked-by-the-runtime",
+      ].join(".")
+    : "";
+  const baseHeaders = opts.headers ?? {};
+  const headers =
+    actorForCtx && !opts.noActorToken && baseHeaders["x-run402-actor-token"] === undefined
+      ? { ...baseHeaders, "x-run402-actor-token": gatewayActorToken }
+      : baseHeaders;
   return runWithContext(
     {
       requestId: "trc_test",
@@ -41,9 +75,9 @@ function inContext<T>(opts: {
       request: {
         method: opts.method ?? "GET",
         url: opts.url ?? "/some/path",
-        headers: opts.headers ?? {},
+        headers,
       },
-      actor: opts.actor === undefined ? sampleActor : opts.actor,
+      actor: actorForCtx,
       ...(opts.invocationKind ? { invocationKind: opts.invocationKind } : {}),
     },
     fn,

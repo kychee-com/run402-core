@@ -166,6 +166,7 @@ export type { RunRequestContext } from "./runtime-context.js";
 // actor-context verify key once at cold start (the key is never in the
 // tenant Lambda env). No-op in local dev / in-process gateway (key in env).
 export { ensureActorContextKeysLoaded } from "./lib/actor-context-verify.js";
+export { ensureProjectJwtKeysLoaded } from "./lib/project-jwt-keys.js";
 // `events.emit(type, payload?, opts?)` — emit a fact into this project's
 // cursored event feed (gateway change `app-events-emit-lane`). Service-key
 // context inside deployed functions; the gateway owns vocabulary/quota

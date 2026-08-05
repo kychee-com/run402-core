@@ -1,6 +1,6 @@
 import { config } from "./config.js";
+import { forwardedActorAuthorization } from "./lib/project-jwt-keys.js";
 import { getCurrentContext } from "./runtime-context.js";
-import jwt from "./lib/jwt.js";
 
 interface QueryBuilderOpts {
   apikey: string;
@@ -314,42 +314,35 @@ function extractAuthFromAls(): string | undefined {
   const ctx = getCurrentContext();
   if (ctx === undefined) return undefined;
 
-  // v3.0 (auth-aware-ssr): if a verified actor is present on the runtime
-  // context, mint a short-lived JWT carrying the actor's claims so the
-  // gateway's PostgREST proxy → pre_request hook → RLS pipeline sees the
-  // browser-cookie actor identically to a Bearer-JWT call. The mint is
-  // SDK-side because the cookie itself is `__Host-` scoped to the
-  // browser origin and never forwarded server-to-server (D13 forbids
-  // cookie forwarding). The pepper-isolated session secret stays in the
-  // DB; the JWT carries only the actor's already-validated claims, signed
-  // with the same JWT_SECRET PostgREST verifies against.
-  if (ctx.actor && config.JWT_SECRET) {
-    const nowSec = Math.floor(Date.now() / 1000);
-    const claims = {
-      sub: ctx.actor.id,
-      role: "authenticated" as const,
-      email: ctx.actor.email,
-      project_id: ctx.projectId,
-      iss: "agentdb" as const,
-      ...(ctx.actor.isTest === true ? { is_test: true as const } : {}),
-      amr: ctx.actor.amr,
-      auth_time: ctx.actor.authTime,
-      aal: ctx.actor.amr.includes("passkey") ? ("aal2" as const) : ("aal1" as const),
-      session_id: ctx.actor.sessionId,
-      authz_version: ctx.actor.authzVersion,
-      iat: nowSec,
-      // 60-second TTL — long enough for the request + retry budget,
-      // short enough that exfiltration provides no value.
-      exp: nowSec + 60,
-    };
-    try {
-      return `Bearer ${jwt.sign(claims, config.JWT_SECRET)}`;
-    } catch {
-      // Fall through to header forwarding below. JWT signing should not
-      // realistically fail with a present secret; if it does, we want
-      // the request to proceed anonymously rather than 500.
-    }
-  }
+  // v3.0 (auth-aware-ssr) → functions-runtime-key-decoupling.
+  //
+  // When a verified actor is present, the data-plane call must carry that
+  // actor's claims so the gateway's PostgREST proxy → pre_request → RLS
+  // pipeline sees the browser-cookie actor identically to a Bearer-JWT call.
+  // The cookie itself is `__Host-` scoped and never forwarded server-to-server
+  // (D13 forbids cookie forwarding), so something has to carry the identity.
+  //
+  // That used to be a JWT this runtime SIGNED with `config.JWT_SECRET` — the
+  // platform key. Signing required holding a key that mints credentials for
+  // EVERY project on the platform, in every tenant Lambda. Now the GATEWAY
+  // mints it and we forward it: we carry a short-lived token for ONE identity
+  // instead of a key that forges ANY identity forever.
+  const forwarded = forwardedActorAuthorization(ctx.request.headers);
+  if (forwarded) return forwarded;
+
+  // DEFENSE IN DEPTH, PRESERVED. `ctx.actor` is the runtime's VERIFIED state —
+  // an envelope the gateway signed and this SDK checked before exposing it. If
+  // a verified actor is present but no gateway-minted token came with it, we
+  // return NOTHING rather than falling through to the inbound Authorization
+  // header: forwarding an unverified header there would let a caller-supplied
+  // credential overwrite the verified identity downstream, which is exactly
+  // what the previous mint-from-actor behaviour existed to prevent.
+  //
+  // In practice this branch is near-unreachable: the gateway mints the token
+  // in the same block that signs the envelope, so actor-present implies
+  // token-present unless the gateway's keyring itself failed. Degrading to an
+  // anonymous call there is the intended failure mode.
+  if (ctx.actor) return undefined;
 
   // Fallback: forward whatever Authorization the inbound request carried.
   // This is the v2.x behavior — preserved for explicit Bearer flows

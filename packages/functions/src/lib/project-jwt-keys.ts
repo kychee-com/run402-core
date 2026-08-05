@@ -142,3 +142,44 @@ export function _setProjectJwtKeysForTest(keys: VerificationKey[] | null): void 
   cached = keys;
   fetchInFlight = null;
 }
+
+/**
+ * The header carrying the gateway-minted actor token.
+ *
+ * The runtime FORWARDS this rather than minting its own. Kept here beside the
+ * keyset because the two are halves of one contract: the gateway signs both
+ * the tokens this runtime verifies and the one it forwards, and the runtime
+ * holds nothing that can produce either.
+ */
+export const DATA_PLANE_ACTOR_TOKEN_HEADER = "x-run402-actor-token";
+
+/** Headers as the runtime context exposes them — a `Headers` instance when the
+ *  entry wrapper passed a `Request`, otherwise a plain object. */
+type HeadersLike =
+  | { get(name: string): string | null }
+  | Record<string, string | string[] | undefined>;
+
+/** Read a header from either shape, case-insensitively. */
+export function readHeader(headers: unknown, name: string): string | undefined {
+  if (!headers) return undefined;
+  const h = headers as HeadersLike;
+  if (typeof (h as { get?: unknown }).get === "function") {
+    return (h as { get(n: string): string | null }).get(name) ?? undefined;
+  }
+  const rec = h as Record<string, string | string[] | undefined>;
+  const raw = rec[name] ?? rec[name.toLowerCase()] ?? rec[name.toUpperCase()];
+  return Array.isArray(raw) ? raw[0] : raw;
+}
+
+/**
+ * The gateway-minted actor bearer for this request, if present.
+ *
+ * Returns the `Authorization`-ready value. Absent for anonymous requests, and
+ * absent on older gateways — callers must fall through to their previous
+ * behaviour rather than failing, so a new runtime on an old gateway degrades
+ * instead of breaking.
+ */
+export function forwardedActorAuthorization(headers: unknown): string | undefined {
+  const token = readHeader(headers, DATA_PLANE_ACTOR_TOKEN_HEADER);
+  return token ? `Bearer ${token}` : undefined;
+}

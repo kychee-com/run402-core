@@ -98,6 +98,11 @@ import type {
 import { validateAuthFetchInput } from "./url-validation.js";
 import crypto from "node:crypto";
 
+import {
+  forwardedActorAuthorization,
+  projectJwtVerificationKeys,
+  ensureProjectJwtKeysLoaded,
+} from "../lib/project-jwt-keys.js";
 // ---------------------------------------------------------------------------
 // Identity & authorization helpers
 // ---------------------------------------------------------------------------
@@ -136,12 +141,19 @@ async function user(): Promise<Actor | null> {
   // signed JWT in the Authorization header, the function reads it.
   // The gateway has already routed the request to this function and
   // injected the Authorization header per the apikey/wallet-auth
-  // pipeline, so we can trust JWT_SECRET-signed claims here.
+  // pipeline, so we can trust claims the project keyset verifies here.
+  // Ensure the fetched keyset is available before the SYNCHRONOUS verify below.
+  // `user()` is already async, so this needs no change to the gateway's entry
+  // wrapper — unlike the actor-context keys, which the wrapper must await.
+  // Single-flight and cached, so a warm environment pays nothing.
+  await ensureProjectJwtKeysLoaded();
   return actorFromAuthorizationHeader(ctx);
 }
 
 /** Read `Authorization: Bearer <jwt>` from the runtime context's
- *  request headers and decode it via JWT_SECRET. Returns an `Actor`
+ *  request headers and verify it against the project keyset fetched from
+ *  the gateway (public keys; the env key remains only as transition
+ *  scaffolding). Returns an `Actor`
  *  populated from the JWT claims on success, `null` on absence /
  *  malformed / wrong-project / verify-fail.
  *
@@ -154,7 +166,13 @@ async function user(): Promise<Actor | null> {
 function actorFromAuthorizationHeader(
   ctx: NonNullable<ReturnType<typeof getCurrentContext>>,
 ): Actor | null {
-  if (!config.JWT_SECRET) return null;
+  // functions-runtime-key-decoupling: verify against the keyset FETCHED from
+  // the gateway (public keys — nothing here can sign), with the env-injected
+  // key retained behind it as transition scaffolding until the gateway's
+  // signing key is asymmetric. Empty means no key at all: fail CLOSED by
+  // returning null, never treat the caller as authenticated.
+  const keys = projectJwtVerificationKeys();
+  if (keys.length === 0) return null;
   const headers = ctx.request.headers;
   // The runtime-context wrapper accepts either a `Headers` instance
   // (when the gateway's buildEntryWrapper passes a Request) or a plain
@@ -181,7 +199,7 @@ function actorFromAuthorizationHeader(
       session_id?: string;
       authz_version?: number;
       is_test?: boolean;
-    }>(token, config.JWT_SECRET);
+    }>(token, keys, { algorithms: ["HS256", "HS512", "ES256"] });
     if (payload.project_id !== ctx.projectId) return null;
     return {
       id: payload.sub,
@@ -641,25 +659,13 @@ async function getSecurity(): Promise<AccountSecurity | null> {
   if (!ctx) return null;
   const actor = await user();
   if (!actor) return null;
-  if (!config.JWT_SECRET) return null;
-  const nowSec = Math.floor(Date.now() / 1000);
-  let token: string;
-  try {
-    token = jwt.sign(
-      {
-        sub: actor.id,
-        role: "authenticated" as const,
-        email: actor.email,
-        project_id: actor.projectId,
-        iss: "agentdb" as const,
-        iat: nowSec,
-        exp: nowSec + 60,
-      },
-      config.JWT_SECRET,
-    );
-  } catch {
-    return null;
-  }
+  // functions-runtime-key-decoupling: FORWARD the gateway-minted actor token
+  // rather than signing one here. Minting required this Lambda to hold the
+  // platform signing key, which mints credentials for every project on the
+  // platform. Absent token → no call, rather than a silent downgrade.
+  const forwarded = forwardedActorAuthorization(ctx.request.headers);
+  if (!forwarded) return null;
+  const token = forwarded.slice(7);
   // Fetch the gateway (config.API_BASE = RUN402_API_BASE) directly — NOT the
   // public tenant subdomain (ctx.host). The /auth/v1/account/* routes live on
   // the gateway; a Lambda-to-subdomain round-trip via CloudFront does not reach
@@ -705,29 +711,23 @@ async function requireSecurity(): Promise<AccountSecurity> {
 // the everyday docs; the everyday path is the <AccountSecurity> component.
 // ---------------------------------------------------------------------------
 
-/** Mint a short-lived actor JWT for an advanced-tier account call. Includes
- *  `auth_time` (the actor's last-auth from the verified browser-session
- *  envelope) so the gateway's sensitive-mutation freshness gate can read it. */
-function mintAdvancedActorToken(actor: Actor): string | null {
-  if (!config.JWT_SECRET) return null;
-  const nowSec = Math.floor(Date.now() / 1000);
-  try {
-    return jwt.sign(
-      {
-        sub: actor.id,
-        role: "authenticated" as const,
-        email: actor.email,
-        project_id: actor.projectId,
-        iss: "agentdb" as const,
-        iat: nowSec,
-        exp: nowSec + 60,
-        auth_time: actor.authTime,
-      },
-      config.JWT_SECRET,
-    );
-  } catch {
-    return null;
-  }
+/**
+ * The actor token for an advanced-tier account call.
+ *
+ * functions-runtime-key-decoupling: this used to MINT a JWT with the platform
+ * signing key. It now returns the gateway-minted token forwarded on the
+ * request. The gateway includes `auth_time`, which the sensitive-mutation
+ * freshness gate reads — so the claim the gate depends on still arrives, it is
+ * simply issued by the party that can be trusted to assert it.
+ *
+ * Returns null when no token was forwarded (anonymous, or a gateway that
+ * predates the header); callers already treat null as "cannot make this call".
+ */
+function advancedActorToken(): string | null {
+  const ctx = getCurrentContext();
+  if (!ctx) return null;
+  const forwarded = forwardedActorAuthorization(ctx.request.headers);
+  return forwarded ? forwarded.slice(7) : null;
 }
 
 /** Call a Bearer-authed /auth/v1/account/* route with the context actor's
@@ -740,7 +740,7 @@ async function accountAdvancedFetch(
   const ctx = getCurrentContext();
   const actor = ctx ? await user() : null;
   if (!ctx || !actor) throw new AuthRequiredError();
-  const token = mintAdvancedActorToken(actor);
+  const token = advancedActorToken();
   if (!token) throw new AuthRequiredError();
   // Gateway directly (config.API_BASE), NOT the tenant subdomain (ctx.host) —
   // the /auth/v1/account/* routes live on the gateway and a Lambda-to-subdomain

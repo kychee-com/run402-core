@@ -463,10 +463,11 @@ describe("db() actor-context propagation (auth-aware-ssr)", () => {
     });
   });
 
-  it("mints a short-lived JWT from the verified actor when no inbound Authorization", async () => {
+  it("FORWARDS the gateway-minted actor token rather than signing one", async () => {
+    // functions-runtime-key-decoupling: the runtime used to mint this itself
+    // with the platform signing key. It now forwards what the gateway minted,
+    // so a tenant Lambda no longer holds anything that can sign.
     const { runWithContext } = await import("./runtime-context.js");
-    const jwt = (await import("./lib/jwt.js")).default;
-
     await runWithContext(
       {
         requestId: "req_test",
@@ -478,7 +479,7 @@ describe("db() actor-context propagation (auth-aware-ssr)", () => {
         request: {
           method: "GET",
           url: "/forum",
-          headers: {}, // no Authorization
+          headers: { "x-run402-actor-token": "GATEWAY_MINTED_TOKEN" },
         },
         actor: {
           id: "user-uuid-1",
@@ -498,36 +499,13 @@ describe("db() actor-context propagation (auth-aware-ssr)", () => {
     );
 
     const headers = lastFetchOpts.headers as Record<string, string>;
-    assert.match(headers.Authorization!, /^Bearer ey/, "minted JWT present");
-
-    const claims = jwt.verify<{
-      sub: string;
-      role: string;
-      project_id: string;
-      session_id: string;
-      authz_version: number;
-      is_test?: boolean;
-      amr: string[];
-      aal: string;
-      iat: number;
-      exp: number;
-    }>(headers.Authorization!.slice(7), "secret");
-
-    assert.equal(claims.sub, "user-uuid-1");
-    assert.equal(claims.role, "authenticated");
-    assert.equal(claims.project_id, "prj_test");
-    assert.equal(claims.session_id, "sess-uuid-1");
-    assert.equal(claims.authz_version, 7);
-    assert.equal(claims.is_test, true);
-    assert.deepEqual(claims.amr, ["passkey"]);
-    assert.equal(claims.aal, "aal2", "passkey AMR → aal2");
-    // 60s TTL
-    assert.equal(claims.exp - claims.iat, 60, "JWT lifetime is exactly 60s");
+    assert.equal(headers.Authorization, "Bearer GATEWAY_MINTED_TOKEN");
   });
 
-  it("password-only actor minted JWT uses aal1", async () => {
+  it("reads the forwarded token from a Headers instance too", async () => {
+    // The entry wrapper passes a real `Request`, so headers arrive as a
+    // `Headers` instance rather than a plain object. Both shapes must work.
     const { runWithContext } = await import("./runtime-context.js");
-    const jwt = (await import("./lib/jwt.js")).default;
     await runWithContext(
       {
         requestId: "req_test",
@@ -536,7 +514,11 @@ describe("db() actor-context propagation (auth-aware-ssr)", () => {
         locale: null,
         defaultLocale: null,
         host: "test.run402.com",
-        request: { method: "GET", url: "/forum", headers: {} },
+        request: {
+          method: "GET",
+          url: "/forum",
+          headers: new Headers({ "x-run402-actor-token": "FROM_HEADERS_OBJ" }),
+        },
         actor: {
           id: "user-uuid-1",
           email: "u@example.com",
@@ -544,7 +526,7 @@ describe("db() actor-context propagation (auth-aware-ssr)", () => {
           authTime: 1779960000,
           amr: ["password"],
           amrTimes: { password: 1779960000 },
-          authzVersion: 0,
+          authzVersion: 1,
           sessionId: "sess-uuid-1",
         },
       },
@@ -553,8 +535,52 @@ describe("db() actor-context propagation (auth-aware-ssr)", () => {
       },
     );
     const headers = lastFetchOpts.headers as Record<string, string>;
-    const claims = jwt.verify<{ aal: string }>(headers.Authorization!.slice(7), "secret");
-    assert.equal(claims.aal, "aal1");
+    assert.equal(headers.Authorization, "Bearer FROM_HEADERS_OBJ");
+  });
+
+  it("a verified actor with NO forwarded token goes anonymous, never to the inbound header", async () => {
+    // The defense-in-depth property this replaces: the actor is VERIFIED state
+    // (gateway-signed envelope, checked by this SDK). Falling through to a
+    // caller-supplied Authorization would let an unverified header overwrite
+    // the verified identity downstream. Near-unreachable in practice — the
+    // gateway mints the token in the same block that signs the envelope — but
+    // the safe answer when it happens is anonymous, not "trust the caller".
+    const { runWithContext } = await import("./runtime-context.js");
+    await runWithContext(
+      {
+        requestId: "req_test",
+        projectId: "prj_test",
+        releaseId: "rel_test",
+        locale: null,
+        defaultLocale: null,
+        host: "test.run402.com",
+        request: {
+          method: "GET",
+          url: "/forum",
+          headers: { authorization: "Bearer SOMEONE_ELSE" },
+        },
+        actor: {
+          id: "verified-user-uuid",
+          email: "v@example.com",
+          emailVerified: true,
+          authTime: 1779960000,
+          amr: ["password"],
+          amrTimes: { password: 1779960000 },
+          authzVersion: 1,
+          sessionId: "sess-verified",
+        },
+      },
+      async () => {
+        await db().from("topics").select();
+      },
+    );
+
+    const headers = lastFetchOpts.headers as Record<string, string>;
+    assert.notEqual(
+      headers.Authorization,
+      "Bearer SOMEONE_ELSE",
+      "an unverified inbound header must never win over a verified actor",
+    );
   });
 
   it("does NOT mint a JWT when actor is null (anonymous request)", async () => {
@@ -579,14 +605,11 @@ describe("db() actor-context propagation (auth-aware-ssr)", () => {
     assert.equal(headers.apikey, "anon_test", "apikey is the anon key");
   });
 
-  it("verified actor wins over inbound Authorization header (defense in depth)", async () => {
-    // The actor is the runtime's VERIFIED state (envelope signed by the
-    // gateway, verified by the SDK before exposing). If an inbound
-    // Authorization header somehow disagrees, we mint from the actor —
-    // forwarding an unverified header would let upstream confusion
-    // overwrite the verified identity downstream.
+  it("the forwarded actor token wins over an inbound Authorization header", async () => {
+    // The direct successor to the mint-from-actor rule: an unverified inbound
+    // header must never displace the identity the gateway established. It is
+    // now the FORWARDED token that wins rather than a locally minted one.
     const { runWithContext } = await import("./runtime-context.js");
-    const jwt = (await import("./lib/jwt.js")).default;
     await runWithContext(
       {
         requestId: "req_test",
@@ -598,11 +621,14 @@ describe("db() actor-context propagation (auth-aware-ssr)", () => {
         request: {
           method: "GET",
           url: "/forum",
-          headers: { authorization: "Bearer SOMEONE_ELSE" },
+          headers: {
+            authorization: "Bearer SOMEONE_ELSE",
+            "x-run402-actor-token": "GATEWAY_TOKEN_FOR_VERIFIED_USER",
+          },
         },
         actor: {
           id: "verified-user-uuid",
-          email: "u@example.com",
+          email: "v@example.com",
           emailVerified: true,
           authTime: 1779960000,
           amr: ["passkey"],
@@ -616,13 +642,7 @@ describe("db() actor-context propagation (auth-aware-ssr)", () => {
       },
     );
     const headers = lastFetchOpts.headers as Record<string, string>;
-    assert.match(headers.Authorization!, /^Bearer ey/, "minted JWT, NOT the inbound header");
-    const claims = jwt.verify<{ sub: string; session_id: string }>(
-      headers.Authorization!.slice(7),
-      "secret",
-    );
-    assert.equal(claims.sub, "verified-user-uuid");
-    assert.equal(claims.session_id, "verified-sess");
+    assert.equal(headers.Authorization, "Bearer GATEWAY_TOKEN_FOR_VERIFIED_USER");
   });
 });
 
