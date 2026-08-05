@@ -605,6 +605,75 @@ describe("db() actor-context propagation (auth-aware-ssr)", () => {
     assert.equal(headers.apikey, "anon_test", "apikey is the anon key");
   });
 
+  it("db(REQ) — the explicit form — also honours the forwarded token", async () => {
+    // The two overloads must resolve the SAME identity. db(req) takes a
+    // different auth path (extractAuth) from db() (extractAuthFromAls), and
+    // only the latter originally learned about the forwarded token — so a
+    // cookie-authenticated visitor ran ANONYMOUS through db(req) and as
+    // themselves through db(). Same page, same user, two identities depending
+    // on which overload the author used. Found by the live e2e, not by unit
+    // tests: both forms were only ever exercised with an explicit Bearer.
+    const { runWithContext } = await import("./runtime-context.js");
+    const request = new Request("https://test.run402.com/forum", {
+      headers: { "x-run402-actor-token": "GATEWAY_TOKEN" },
+    });
+    await runWithContext(
+      {
+        requestId: "req_test",
+        projectId: "prj_test",
+        releaseId: "rel_test",
+        locale: null,
+        defaultLocale: null,
+        host: "test.run402.com",
+        request: { method: "GET", url: "/forum", headers: request.headers },
+        actor: {
+          id: "user-uuid-1",
+          email: "u@example.com",
+          emailVerified: true,
+          authTime: 1779960000,
+          amr: ["password"],
+          amrTimes: { password: 1779960000 },
+          authzVersion: 1,
+          sessionId: "sess-uuid-1",
+        },
+      },
+      async () => {
+        await db(request).from("topics").select();
+      },
+    );
+    const headers = lastFetchOpts.headers as Record<string, string>;
+    assert.equal(headers.Authorization, "Bearer GATEWAY_TOKEN");
+  });
+
+  it("an explicit inbound Authorization still WINS over the forwarded token in db(req)", async () => {
+    // The fallback must not become an override: explicit Bearer flows
+    // (mobile, server-to-server) pass their own credential and must keep it.
+    const { runWithContext } = await import("./runtime-context.js");
+    const request = new Request("https://test.run402.com/forum", {
+      headers: {
+        authorization: "Bearer EXPLICIT_CALLER_TOKEN",
+        "x-run402-actor-token": "GATEWAY_TOKEN",
+      },
+    });
+    await runWithContext(
+      {
+        requestId: "req_test",
+        projectId: "prj_test",
+        releaseId: "rel_test",
+        locale: null,
+        defaultLocale: null,
+        host: "test.run402.com",
+        request: { method: "GET", url: "/forum", headers: request.headers },
+        actor: null,
+      },
+      async () => {
+        await db(request).from("topics").select();
+      },
+    );
+    const headers = lastFetchOpts.headers as Record<string, string>;
+    assert.equal(headers.Authorization, "Bearer EXPLICIT_CALLER_TOKEN");
+  });
+
   it("the forwarded actor token wins over an inbound Authorization header", async () => {
     // The direct successor to the mint-from-actor rule: an unverified inbound
     // header must never displace the identity the gateway established. It is

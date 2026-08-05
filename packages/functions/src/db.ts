@@ -307,7 +307,19 @@ export class QueryBuilder {
 
 function extractAuth(req: Request): string | undefined {
   const auth = req.headers.get("authorization") ?? req.headers.get("Authorization");
-  return auth ?? undefined;
+  if (auth) return auth;
+  // `db(req)` is the documented, idiomatic form — and a browser request carries
+  // a session COOKIE, never an Authorization header. Without this fallback the
+  // explicit-request form silently runs ANONYMOUS for a cookie-authenticated
+  // visitor while the no-arg `db()` form runs as the actor: same page, same
+  // user, two different identities depending on which overload the author
+  // happened to use. Caught by the live e2e (a 42501 on an INSERT whose RLS
+  // policy was correct); unit tests could not see it because both forms were
+  // only ever exercised with an explicit Bearer.
+  //
+  // An inbound Authorization still WINS — this is a fallback, not an override,
+  // so explicit Bearer flows (mobile, server-to-server) are unchanged.
+  return forwardedActorAuthorization(req.headers);
 }
 
 function extractAuthFromAls(): string | undefined {
