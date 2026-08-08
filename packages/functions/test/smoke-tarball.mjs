@@ -106,12 +106,39 @@ try {
     }
   });
 
-  step("auth.user() round-trips a signed JWT inside runWithContext (vendored jwt bundling check)", () => {
+  step("auth.user() round-trips an ES256 JWT verified against the FETCHED keyset", () => {
+    // Exercises the real production mechanism from the packaged tarball: the
+    // runtime fetches a PUBLIC EC keyset from the gateway at cold start and
+    // verifies against that. It used to sign HS256 with `RUN402_JWT_SECRET`
+    // and rely on the env fallback; that fallback is gone, and the env var is
+    // no longer injected into any function, so testing it would have been
+    // testing a path production cannot take.
+    //
+    // `fetch` is stubbed to stand in for the gateway. That is the only fake —
+    // the keyset parsing, the single-flight cold-start load, the `kid`
+    // selection and the ES256 verification are all the shipped code.
     const result = run(
-      `RUN402_PROJECT_ID=prj_smoke RUN402_JWT_SECRET=smoke-secret-32chars-min!!1234567 node --input-type=module -e "
+      `RUN402_PROJECT_ID=prj_smoke RUN402_API_BASE=https://gateway.invalid RUN402_SERVICE_KEY=smoke-service-key node --input-type=module -e "
+        import { generateKeyPairSync } from 'node:crypto';
         import jwt from 'jsonwebtoken';
         import { auth, runWithContext } from '@run402/functions';
-        const token = jwt.sign({ sub: 'user_smoke', role: 'authenticated', email: 's@x.com', project_id: 'prj_smoke' }, 'smoke-secret-32chars-min!!1234567');
+
+        const { publicKey, privateKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+        const jwk = publicKey.export({ format: 'jwk' });
+
+        let served = 0;
+        globalThis.fetch = async (url, init) => {
+          if (!String(url).endsWith('/internal/v1/project-jwt-keys')) throw new Error('unexpected fetch: ' + url);
+          if (init?.headers?.Authorization !== 'Bearer smoke-service-key') throw new Error('keyset fetch must carry the service key');
+          served++;
+          return { ok: true, json: async () => ({ keys: [{ kty: 'EC', crv: 'P-256', alg: 'ES256', x: jwk.x, y: jwk.y, kid: 'smoke-p1' }] }) };
+        };
+
+        const token = jwt.sign(
+          { sub: 'user_smoke', role: 'authenticated', email: 's@x.com', project_id: 'prj_smoke' },
+          privateKey.export({ type: 'pkcs8', format: 'pem' }),
+          { algorithm: 'ES256', keyid: 'smoke-p1' },
+        );
         const ctx = {
           requestId: 'req_smoke',
           projectId: 'prj_smoke',
@@ -128,11 +155,36 @@ try {
         };
         const u = await runWithContext(ctx, () => auth.user());
         if (!u || u.id !== 'user_smoke') { console.error('auth.user returned', u); process.exit(1); }
+        if (served === 0) { console.error('the keyset was never fetched — verification took some other path'); process.exit(1); }
         console.log('auth.user OK:', u.id);
       "`,
       { cwd: installDir },
     );
     if (!result.includes("auth.user OK")) throw new Error("auth.user smoke produced unexpected output: " + result);
+  });
+
+  step("auth.user() does NOT accept a token signed with RUN402_JWT_SECRET", () => {
+    // The security half of removing the fallback: a project that sets that env
+    // var in its own environment must not thereby be able to mint identities
+    // its own auth.user() will accept.
+    const result = run(
+      `RUN402_PROJECT_ID=prj_smoke RUN402_JWT_SECRET=smoke-secret-32chars-min!!1234567 node --input-type=module -e "
+        import jwt from 'jsonwebtoken';
+        import { auth, runWithContext } from '@run402/functions';
+        const token = jwt.sign({ sub: 'user_smoke', role: 'authenticated', project_id: 'prj_smoke' }, 'smoke-secret-32chars-min!!1234567');
+        const ctx = {
+          requestId: 'req_smoke', projectId: 'prj_smoke', releaseId: 'rel_smoke',
+          locale: null, defaultLocale: null, host: 'x',
+          request: { method: 'GET', url: 'https://x', headers: { authorization: 'Bearer ' + token } },
+          actor: null,
+        };
+        const u = await runWithContext(ctx, () => auth.user());
+        if (u !== null) { console.error('env-key token resolved an actor:', u); process.exit(1); }
+        console.log('env-key token correctly rejected');
+      "`,
+      { cwd: installDir },
+    );
+    if (!result.includes("correctly rejected")) throw new Error("fallback-removal smoke produced unexpected output: " + result);
   });
 
   console.log("\n✓ All smoke checks passed");
