@@ -17,13 +17,21 @@
  * pattern for the actor-context key — same lazy single-flight fetch, same
  * service-key auth, same "failures are non-fatal, the next request retries".
  *
- * TRANSITION FALLBACK. While `RUN402_JWT_SECRET` is still injected, it is kept
- * as a SECOND verification key, tried after the fetched keyset. This is
- * temporary scaffolding with a defined removal point, and it is load-bearing
- * for exactly one window: after the fleet carries this runtime but BEFORE the
- * gateway's signing key becomes asymmetric, the gateway is still minting HS256
- * tokens that the (asymmetric-only) fetched keyset cannot verify. Removing the
- * fallback before then would break `getUser()` on every project at once.
+ * FETCH-ONLY. There was a transition fallback here: while `RUN402_JWT_SECRET`
+ * was still injected, it was kept as a second, kid-less verification key tried
+ * after the fetched keyset. It was load-bearing for exactly one window — after
+ * the fleet carried this runtime but BEFORE the gateway's signing key became
+ * asymmetric, the gateway was still minting HS256 tokens that an
+ * asymmetric-only keyset cannot verify.
+ *
+ * That window closed. The gateway signs ES256 (`kid=p1-2026-08`), and §8 both
+ * stopped injecting the env key and swept it out of the fleet, so the fallback
+ * had already stopped firing in production before this removed it — it read an
+ * env var that is no longer set on any live function.
+ *
+ * The consequence is deliberate and is the whole point: with no fallback, a
+ * failed keyset fetch leaves NO keys, and `getUser()` fails closed rather than
+ * silently falling back to material the tenant's own environment could supply.
  * See `openspec/changes/functions-runtime-key-decoupling/design.md`.
  */
 
@@ -43,31 +51,14 @@ let cached: VerificationKey[] | null = null;
 let fetchInFlight: Promise<void> | null = null;
 
 /**
- * The keys `getUser()` should verify against, most-trusted first.
+ * The keys `getUser()` should verify against.
  *
- * Returns the fetched public keyset followed by the env-injected legacy key
- * when one is present. Order matters only for which key is TRIED first — a
- * token verifies against exactly one key either way, since `verifyWithKey`
- * selects on `kid` and refuses to fall back on a signature mismatch.
+ * The fetched public keyset, and nothing else. An empty array is a legitimate
+ * result — it means the fetch has not succeeded yet — and callers must treat it
+ * as "cannot verify", never as "no verification needed".
  */
 export function projectJwtVerificationKeys(): VerificationKey[] {
-  const keys: VerificationKey[] = cached ? [...cached] : [];
-  const legacy = legacyEnvKey();
-  if (legacy) keys.push(legacy);
-  return keys;
-}
-
-/**
- * The env-injected key, as a kid-less LEGACY verification key.
- *
- * `legacy: true` is what lets it verify the kid-less tokens the gateway signs
- * today; once the gateway signs with a `kid`, its tokens select the fetched
- * key by id and never reach this one.
- */
-function legacyEnvKey(): VerificationKey | null {
-  const raw = process.env.RUN402_JWT_SECRET;
-  if (!raw) return null;
-  return { key: Buffer.from(raw, "utf8"), alg: "HS256", legacy: true };
+  return cached ? [...cached] : [];
 }
 
 /**
@@ -76,7 +67,7 @@ function legacyEnvKey(): VerificationKey | null {
  * Single-flight: concurrent invocations in the same execution environment
  * share one fetch. Cached for the life of the environment, so a warm Lambda
  * pays nothing. Never throws — a failed fetch leaves whatever keys are
- * available (possibly just the env fallback) and the next request retries.
+ * available (possibly none at all) and the next request retries.
  */
 export async function ensureProjectJwtKeysLoaded(): Promise<void> {
   if (cached && cached.length > 0) return;

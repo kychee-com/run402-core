@@ -1,16 +1,28 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 
-// auth.* Bearer-fallback path reads `config.JWT_SECRET` (which lazy-reads
-// `process.env.RUN402_JWT_SECRET`). Set it before the SDK imports so the
-// fallback tests can mint + decode JWTs.
-process.env.RUN402_JWT_SECRET ??= "test-jwt-secret-32chars-minimum!!";
+// The Bearer path verifies against the keyset the runtime FETCHES from the
+// gateway — there is no env-key fallback any more (§8 removed it, after §8's
+// fleet sweep had already emptied `RUN402_JWT_SECRET` from every live
+// function). These tests therefore seed the fetched keyset directly via
+// `_setProjectJwtKeysForTest` and mint tokens against it, which is what
+// production actually does. The CONTRACTS below are unchanged; only the way a
+// token is signed and the key reaches the runtime has moved.
 process.env.RUN402_PROJECT_ID ??= "p_test";
 process.env.RUN402_ANON_KEY ??= "test-anon-key";
 process.env.RUN402_SERVICE_KEY ??= "test-service-key";
 
 import { auth, AuthRequiredError, FetchAbsoluteUrlError, FreshnessRequiredError, InsufficientRoleError, RoleGateNotConfiguredError, MembershipGateNotWiredError, UnknownExportError, InvalidCredentialsError, TenantSubjectInvalidError, RenamedExportError, MINT_DIRECTIVE_HEADER } from "./index.js";
 import { runWithContext, type ActorContext } from "../runtime-context.js";
+import { _setProjectJwtKeysForTest } from "../lib/project-jwt-keys.js";
+
+// A symmetric key standing in for the fetched keyset. `kid` matters: the
+// gateway stamps one on every token it signs, and `verifyWithKey` selects on
+// it, so a fixture without a kid would exercise the legacy-key path instead of
+// the one production takes.
+const TEST_KID = "test-kid-1";
+const TEST_KEY = Buffer.from("test-jwt-secret-32chars-minimum!!", "utf8");
+_setProjectJwtKeysForTest([{ key: TEST_KEY, alg: "HS256", kid: TEST_KID }]);
 
 const sampleActor: ActorContext = {
   id: "11111111-2222-3333-4444-555555555555",
@@ -129,7 +141,8 @@ describe("auth.user / auth.requireUser", () => {
         amr: ["password"],
         is_test: true,
       },
-      "test-jwt-secret-32chars-minimum!!", // mocked config.JWT_SECRET above
+      TEST_KEY,
+      { kid: TEST_KID },
     );
     const result = await inContext(
       {
@@ -153,7 +166,8 @@ describe("auth.user / auth.requireUser", () => {
         role: "authenticated",
         project_id: "p_other", // wrong project
       },
-      "test-jwt-secret-32chars-minimum!!",
+      TEST_KEY,
+      { kid: TEST_KID },
     );
     const result = await inContext(
       {
@@ -177,7 +191,8 @@ describe("auth.user / auth.requireUser", () => {
     const jwt = (await import("../lib/jwt.js")).default;
     const token = jwt.sign(
       { sub: "bearer-user", role: "authenticated", project_id: "p_test" },
-      "test-jwt-secret-32chars-minimum!!",
+      TEST_KEY,
+      { kid: TEST_KID },
     );
     const result = await inContext(
       { headers: { authorization: `Bearer ${token}` } }, // ctx.actor defaults to sampleActor
@@ -195,7 +210,8 @@ describe("auth.user / auth.requireUser", () => {
     const jwt = (await import("../lib/jwt.js")).default;
     const token = jwt.sign(
       { sub: "bearer-user", role: "authenticated", project_id: "p_test" },
-      "test-jwt-secret-32chars-minimum!!",
+      TEST_KEY,
+      { kid: TEST_KID },
     );
     const result = await inContext(
       {
@@ -212,7 +228,8 @@ describe("auth.user / auth.requireUser", () => {
     const jwt = (await import("../lib/jwt.js")).default;
     const token = jwt.sign(
       { sub: "bearer-user", role: "authenticated", project_id: "p_test" },
-      "test-jwt-secret-32chars-minimum!!",
+      TEST_KEY,
+      { kid: TEST_KID },
     );
     const result = await inContext(
       {

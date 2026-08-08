@@ -163,26 +163,32 @@ describe("project JWT keyset — fail closed, and the transition fallback", () =
     assert.equal(projectJwtKeysUnavailable(), true);
   });
 
-  it("keeps the env-injected key as a LEGACY verifier while it exists", async () => {
-    // Load-bearing for exactly one window: after the fleet carries this
-    // runtime but before the gateway's signing key is asymmetric, the gateway
-    // is still minting HS256 tokens the fetched (asymmetric-only) keyset
-    // cannot verify. Removing this earlier breaks getUser() everywhere.
+  it("IGNORES the env-injected key entirely — the fallback is gone", async () => {
+    // REVERSAL, and deliberate. This used to assert the opposite: that
+    // `RUN402_JWT_SECRET` was kept as a kid-less legacy verifier. That was
+    // load-bearing for exactly one window — after the fleet carried this
+    // runtime but before the gateway's signing key was asymmetric, the gateway
+    // was still minting HS256 tokens an asymmetric-only keyset cannot verify.
+    //
+    // The window closed: the gateway signs ES256/p1-2026-08, and §8 stopped
+    // injecting the env key AND swept it out of the fleet, so this code path
+    // had already stopped firing in production before it was deleted.
     const legacySecret = "legacy-env-secret-at-least-32-bytes-long!!";
     process.env.RUN402_JWT_SECRET = legacySecret;
     responseOk = false;
     await ensureProjectJwtKeysLoaded();
 
-    const keys = projectJwtVerificationKeys();
-    assert.equal(keys.length, 1);
-    assert.equal(keys[0].legacy, true, "must verify kid-less legacy tokens");
-    assert.equal(projectJwtKeysUnavailable(), false);
-
-    const legacyToken = sign({ sub: "u1" }, Buffer.from(legacySecret, "utf8"));
-    assert.equal((verifyWithKey(legacyToken, keys).payload as { sub?: string }).sub, "u1");
+    // The env var is set and still contributes NOTHING.
+    assert.deepEqual(projectJwtVerificationKeys(), []);
+    assert.equal(
+      projectJwtKeysUnavailable(),
+      true,
+      "with no fetched keyset there is nothing to verify against; getUser() must fail closed " +
+        "rather than fall back to material the tenant's own environment can supply",
+    );
   });
 
-  it("prefers the fetched keyset while still accepting legacy tokens", async () => {
+  it("verifies ONLY against the fetched keyset, even when the env key would match", async () => {
     const { jwk, privateKey } = ecPair();
     const legacySecret = "legacy-env-secret-at-least-32-bytes-long!!";
     process.env.RUN402_JWT_SECRET = legacySecret;
@@ -190,17 +196,21 @@ describe("project JWT keyset — fail closed, and the transition fallback", () =
     await ensureProjectJwtKeysLoaded();
 
     const keys = projectJwtVerificationKeys();
-    assert.equal(keys[0].kid, "p1", "fetched keys come first");
-    assert.equal(keys[1].legacy, true);
+    assert.equal(keys.length, 1, "the fetched keyset is the entire set");
+    assert.equal(keys[0].kid, "p1");
 
-    // Both eras verify during the overlap — that is the whole point.
+    // A token the gateway signs today still verifies.
     const modern = sign({ sub: "new" }, privateKey, { algorithm: "ES256", kid: "p1" });
-    const legacy = sign({ sub: "old" }, Buffer.from(legacySecret, "utf8"));
     assert.equal(
       (verifyWithKey(modern, keys, { algorithms: ["ES256"] }).payload as { sub?: string }).sub,
       "new",
     );
-    assert.equal((verifyWithKey(legacy, keys).payload as { sub?: string }).sub, "old");
+
+    // A token signed with the env secret does NOT. This is the security half:
+    // a tenant that sets RUN402_JWT_SECRET in its own project cannot thereby
+    // mint identities its own `auth.user()` will accept.
+    const forged = sign({ sub: "old" }, Buffer.from(legacySecret, "utf8"));
+    assert.throws(() => verifyWithKey(forged, keys));
   });
 
   it("rejects a token whose kid is in neither set", async () => {

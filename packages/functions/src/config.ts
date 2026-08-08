@@ -6,5 +6,4 @@ export const config = {
   get PROJECT_ID() { return process.env.RUN402_PROJECT_ID || ""; },
   get SERVICE_KEY() { return process.env.RUN402_SERVICE_KEY || ""; },
   get ANON_KEY() { return process.env.RUN402_ANON_KEY || ""; },
-  get JWT_SECRET() { return process.env.RUN402_JWT_SECRET || ""; },
 };
