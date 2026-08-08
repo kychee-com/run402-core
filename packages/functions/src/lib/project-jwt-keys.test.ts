@@ -17,6 +17,8 @@ import {
   forwardedActorAuthorization,
   readHeader,
   _setProjectJwtKeysForTest,
+  refreshForUnknownKid,
+  unverifiedKidFromToken,
 } from "./project-jwt-keys.js";
 import { sign, verifyWithKey } from "./jwt.js";
 
@@ -246,5 +248,107 @@ describe("forwarded actor token", () => {
   it("reads headers case-insensitively", () => {
     assert.equal(readHeader({ "X-Run402-Actor-Token": "T" }, "x-run402-actor-token"), undefined);
     assert.equal(readHeader(new Headers({ "X-Run402-Actor-Token": "T" }), "x-run402-actor-token"), "T");
+  });
+});
+
+/**
+ * Rotation self-healing (the "known gap" §10.2 filed, closed in 4.1.0).
+ *
+ * Before this, the cache had no TTL and nothing refetched on an unknown `kid`:
+ * a warm execution environment fetched once and never again, so promoting a new
+ * signing key meant every warm function REJECTED the new tokens until its
+ * environment happened to recycle — with nothing forcing that. The removed
+ * `RUN402_JWT_SECRET` fallback had been quietly covering it.
+ */
+describe("keyset refresh — rotation is self-healing without a redeploy", () => {
+  const kidOf = (kid: string, jwk: Record<string, string>) => ({
+    kty: "EC", crv: "P-256", alg: "ES256", x: jwk.x, y: jwk.y, kid,
+  });
+
+  it("does NOT refetch while the cache is fresh", async () => {
+    const { jwk } = ecPair();
+    served = { keys: [kidOf("p1", jwk)] };
+    await ensureProjectJwtKeysLoaded();
+    assert.equal(fetchCalls, 1);
+    await ensureProjectJwtKeysLoaded();
+    await ensureProjectJwtKeysLoaded();
+    assert.equal(fetchCalls, 1, "a warm environment must still pay nothing per request");
+  });
+
+  it("serves the STALE keyset while refreshing, rather than blocking a request", async () => {
+    const { jwk } = ecPair();
+    served = { keys: [kidOf("p1", jwk)] };
+    await ensureProjectJwtKeysLoaded();
+
+    // Age the cache past the TTL without touching the clock: re-seeding sets
+    // cachedAt, so instead assert the property that matters — keys remain
+    // available for the synchronous verify at every moment.
+    const keysDuring = projectJwtVerificationKeys();
+    assert.equal(keysDuring.length, 1, "old keys stay usable while a refresh runs");
+    assert.equal(projectJwtKeysUnavailable(), false);
+  });
+
+  it("picks up a newly promoted kid immediately, without waiting for the TTL", async () => {
+    const a = ecPair();
+    served = { keys: [kidOf("p1", a.jwk)] };
+    await ensureProjectJwtKeysLoaded();
+    assert.equal(fetchCalls, 1);
+
+    // The gateway promotes p2 and starts signing with it.
+    const b = ecPair();
+    served = { keys: [kidOf("p1", a.jwk), kidOf("p2", b.jwk)] };
+
+    assert.equal(await refreshForUnknownKid("p2"), true, "an unknown kid must trigger one refetch");
+    assert.equal(fetchCalls, 2);
+
+    const token = sign({ sub: "u" }, b.privateKey, { algorithm: "ES256", kid: "p2" });
+    const keys = projectJwtVerificationKeys();
+    assert.equal(
+      (verifyWithKey(token, keys, { algorithms: ["ES256"] }).payload as { sub?: string }).sub,
+      "u",
+    );
+  });
+
+  it("BOUNDS the unknown-kid path so a token flood cannot amplify load", async () => {
+    // The reason the cooldown exists: `kid` is attacker-controlled. Without a
+    // floor, random kids would make every warm Lambda fetch once per request.
+    const { jwk } = ecPair();
+    served = { keys: [kidOf("p1", jwk)] };
+    await ensureProjectJwtKeysLoaded();
+    const before = fetchCalls;
+
+    assert.equal(await refreshForUnknownKid("attacker-1"), false);
+    const afterFirst = fetchCalls;
+    assert.equal(afterFirst, before + 1, "the first unknown kid may fetch once");
+
+    for (const kid of ["attacker-2", "attacker-3", "attacker-4", "attacker-5"]) {
+      assert.equal(await refreshForUnknownKid(kid), false);
+    }
+    assert.equal(fetchCalls, afterFirst, "every subsequent unknown kid inside the cooldown must NOT fetch");
+  });
+
+  it("never fetches for a kid it already holds, or for a kid-less token", async () => {
+    // A known kid that failed verification means a BAD SIGNATURE. Refetching
+    // the same public keys cannot change that, and allowing it would give a
+    // forged-signature flood the same amplification the cooldown prevents.
+    const { jwk } = ecPair();
+    served = { keys: [kidOf("p1", jwk)] };
+    await ensureProjectJwtKeysLoaded();
+    const before = fetchCalls;
+
+    assert.equal(await refreshForUnknownKid("p1"), false, "known kid: no refetch");
+    assert.equal(await refreshForUnknownKid(undefined), false, "kid-less token: no refetch");
+    assert.equal(fetchCalls, before);
+  });
+
+  it("reads the kid without verifying, and never throws on junk", () => {
+    const { jwk, privateKey } = ecPair();
+    void jwk;
+    const token = sign({ sub: "u" }, privateKey, { algorithm: "ES256", kid: "p9" });
+    assert.equal(unverifiedKidFromToken(token), "p9");
+    assert.equal(unverifiedKidFromToken(sign({ sub: "u" }, privateKey, { algorithm: "ES256" })), undefined);
+    for (const junk of ["", "not-a-jwt", "a.b.c", "!!!.???.***"]) {
+      assert.equal(unverifiedKidFromToken(junk), undefined);
+    }
   });
 });

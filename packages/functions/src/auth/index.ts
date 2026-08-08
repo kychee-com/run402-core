@@ -102,6 +102,8 @@ import {
   forwardedActorAuthorization,
   projectJwtVerificationKeys,
   ensureProjectJwtKeysLoaded,
+  refreshForUnknownKid,
+  unverifiedKidFromToken,
 } from "../lib/project-jwt-keys.js";
 // ---------------------------------------------------------------------------
 // Identity & authorization helpers
@@ -147,6 +149,21 @@ async function user(): Promise<Actor | null> {
   // wrapper — unlike the actor-context keys, which the wrapper must await.
   // Single-flight and cached, so a warm environment pays nothing.
   await ensureProjectJwtKeysLoaded();
+  const actor = actorFromAuthorizationHeader(ctx);
+  if (actor) return actor;
+
+  // ONE rescue attempt, for the rotation window only. A token signed by a key
+  // this environment has never fetched fails here for a reason a refetch fixes:
+  // the gateway promoted a new signing key after we cached. Without this the
+  // environment stays wrong until its TTL elapses, and before the TTL existed,
+  // until the environment was recycled by hand.
+  //
+  // `refreshForUnknownKid` returns false — without fetching — for a kid we
+  // already hold, for a kid-less token, and inside its cooldown, so a flood of
+  // bad tokens cannot turn this into amplified load on the keyset route.
+  const bearer = bearerTokenFromContext(ctx);
+  if (!bearer) return null;
+  if (!(await refreshForUnknownKid(unverifiedKidFromToken(bearer)))) return null;
   return actorFromAuthorizationHeader(ctx);
 }
 
@@ -163,6 +180,28 @@ async function user(): Promise<Actor | null> {
  *  rely on. The cookie-session SSR path doesn't go through here (it
  *  populates ctx.actor at runWithContext entry via the verified
  *  envelope). */
+/** The Bearer token from the runtime context, or undefined.
+ *
+ *  Extracted so the verify path and the unknown-kid rescue in `user()` read the
+ *  header exactly one way. The runtime-context wrapper passes either a `Headers`
+ *  instance (when the gateway's buildEntryWrapper passes a Request) or a plain
+ *  header object, so both shapes are handled here rather than at each caller. */
+function bearerTokenFromContext(
+  ctx: NonNullable<ReturnType<typeof getCurrentContext>>,
+): string | undefined {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const h = ctx.request.headers as any;
+  let authHeader: string | undefined;
+  if (typeof h?.get === "function") {
+    authHeader = h.get("authorization") ?? h.get("Authorization") ?? undefined;
+  } else {
+    const raw = h?.["authorization"] ?? h?.["Authorization"];
+    authHeader = Array.isArray(raw) ? raw[0] : raw;
+  }
+  if (!authHeader || !authHeader.startsWith("Bearer ")) return undefined;
+  return authHeader.slice(7);
+}
+
 function actorFromAuthorizationHeader(
   ctx: NonNullable<ReturnType<typeof getCurrentContext>>,
 ): Actor | null {
@@ -173,21 +212,8 @@ function actorFromAuthorizationHeader(
   // returning null, never treat the caller as authenticated.
   const keys = projectJwtVerificationKeys();
   if (keys.length === 0) return null;
-  const headers = ctx.request.headers;
-  // The runtime-context wrapper accepts either a `Headers` instance
-  // (when the gateway's buildEntryWrapper passes a Request) or a plain
-  // header object. Handle both.
-  let authHeader: string | undefined;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const h = headers as any;
-  if (typeof h?.get === "function") {
-    authHeader = h.get("authorization") ?? h.get("Authorization") ?? undefined;
-  } else {
-    const raw = h?.["authorization"] ?? h?.["Authorization"];
-    authHeader = Array.isArray(raw) ? raw[0] : raw;
-  }
-  if (!authHeader || !authHeader.startsWith("Bearer ")) return null;
-  const token = authHeader.slice(7);
+  const token = bearerTokenFromContext(ctx);
+  if (!token) return null;
   try {
     const payload = jwt.verify<{
       sub: string;

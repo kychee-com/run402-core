@@ -49,6 +49,67 @@ interface ServedJwk {
 
 let cached: VerificationKey[] | null = null;
 let fetchInFlight: Promise<void> | null = null;
+let cachedAt = 0;
+let lastUnknownKidRefetchAt = 0;
+
+/**
+ * How stale a keyset may get before it is refreshed in the background.
+ *
+ * This is what makes a key rotation self-healing. Before it existed the cache
+ * had no TTL at all: a warm execution environment fetched once and NEVER
+ * refetched, so promoting a new signing key meant every warm function rejected
+ * the new tokens until its environment happened to recycle — with nothing in
+ * the system forcing that. The operator's only lever was a fleet-wide config
+ * touch to retire the environments.
+ */
+const KEYSET_MAX_AGE_MS = 5 * 60_000;
+
+/**
+ * Floor on how often an unknown `kid` may force an immediate refetch.
+ *
+ * THE REASON THIS NUMBER EXISTS, and why the unknown-kid path is not simply
+ * "refetch whenever we see one": a `kid` is attacker-controlled. Without a
+ * floor, a flood of tokens carrying random kids would make every warm Lambda in
+ * the fleet fetch the keyset once per request — turning an unauthenticated
+ * request into amplified load on the gateway. With it, an attacker gets one
+ * fetch per environment per interval no matter what they send, which is the
+ * same rate the TTL already permits.
+ *
+ * It is its OWN budget, not "time since the last fetch of any kind". Sharing
+ * the routine-fetch timestamp would starve the legitimate case it exists to
+ * serve: an environment that cold-started moments before a promotion would sit
+ * out the cooldown and reject valid tokens, which is the exact failure this
+ * whole mechanism was added to remove.
+ */
+const MIN_REFETCH_INTERVAL_MS = 30_000;
+
+function startFetch(): Promise<void> {
+  if (!fetchInFlight) {
+    fetchInFlight = fetchKeysFromGateway()
+      .then((fetched) => {
+        // Only REPLACE on a non-empty result. A gateway blip must not empty a
+        // working keyset and fail every request until it recovers.
+        if (fetched.length > 0) {
+          cached = fetched;
+          cachedAt = Date.now();
+        }
+      })
+      .catch(() => {
+        /* keep whatever we have; the next request retries */
+      })
+      .finally(() => {
+        fetchInFlight = null;
+      });
+  }
+  return fetchInFlight;
+}
+
+/** The `kid`s currently verifiable, for the unknown-kid check. */
+function knownKids(): Set<string> {
+  const out = new Set<string>();
+  for (const k of cached ?? []) if (k.kid) out.add(k.kid);
+  return out;
+}
 
 /**
  * The keys `getUser()` should verify against.
@@ -64,26 +125,67 @@ export function projectJwtVerificationKeys(): VerificationKey[] {
 /**
  * Ensure the keyset is loaded before a synchronous verify.
  *
- * Single-flight: concurrent invocations in the same execution environment
- * share one fetch. Cached for the life of the environment, so a warm Lambda
- * pays nothing. Never throws — a failed fetch leaves whatever keys are
- * available (possibly none at all) and the next request retries.
+ * Single-flight: concurrent invocations in the same execution environment share
+ * one fetch. Never throws — a failed fetch leaves whatever keys are available
+ * (possibly none at all) and the next request retries.
+ *
+ * AWAITS ONLY WHEN THERE IS NOTHING TO SERVE. With no keys we must block; with
+ * a merely STALE keyset we refresh in the background and verify against what we
+ * have, because the old keys are still perfectly valid — a rotation adds a key
+ * before it promotes one. Blocking on the refresh instead would put a network
+ * round trip on one unlucky request every TTL for no correctness gain.
  */
 export async function ensureProjectJwtKeysLoaded(): Promise<void> {
-  if (cached && cached.length > 0) return;
-  if (!fetchInFlight) {
-    fetchInFlight = fetchKeysFromGateway()
-      .then((fetched) => {
-        if (fetched.length > 0) cached = fetched;
-      })
-      .catch(() => {
-        /* keep whatever we have; the next request retries */
-      })
-      .finally(() => {
-        fetchInFlight = null;
-      });
+  if (!cached || cached.length === 0) {
+    await startFetch();
+    return;
   }
-  await fetchInFlight;
+  if (Date.now() - cachedAt > KEYSET_MAX_AGE_MS) {
+    void startFetch();
+  }
+}
+
+/**
+ * Refetch once when a token names a `kid` this environment has never seen, so a
+ * freshly promoted signing key is picked up NOW rather than at the next TTL.
+ *
+ * Returns true only when the refetch actually produced that `kid` — i.e. when
+ * retrying the verification is worth doing. Deliberately narrow:
+ *
+ *   - a kid-less token returns false. Those select the legacy key, and a
+ *     missing legacy key is not something a refetch fixes.
+ *   - a KNOWN kid returns false. If the kid is present and verification still
+ *     failed, the signature is bad; refetching the same public keys cannot
+ *     change that, and doing so would let a forged-signature flood drive the
+ *     same amplification the interval floor exists to prevent.
+ *   - inside the cooldown returns false, without fetching.
+ */
+export async function refreshForUnknownKid(kid: string | undefined): Promise<boolean> {
+  if (!kid) return false;
+  if (knownKids().has(kid)) return false;
+  if (Date.now() - lastUnknownKidRefetchAt < MIN_REFETCH_INTERVAL_MS) return false;
+  lastUnknownKidRefetchAt = Date.now();
+  await startFetch();
+  return knownKids().has(kid);
+}
+
+/**
+ * The `kid` a token claims, read WITHOUT verifying it.
+ *
+ * Untrusted by construction and used for exactly one decision: whether to
+ * refresh a PUBLIC keyset. It never selects a key, never influences which key
+ * verifies, and nothing it returns is trusted — `verifyWithKey` still does the
+ * real `kid` selection against material the gateway served.
+ */
+export function unverifiedKidFromToken(token: string): string | undefined {
+  try {
+    const [header] = token.split(".");
+    if (!header) return undefined;
+    const parsed = JSON.parse(Buffer.from(header, "base64url").toString("utf8")) as { kid?: unknown };
+    return typeof parsed.kid === "string" && parsed.kid.length > 0 ? parsed.kid : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** True when verification has no key at all — the caller must fail CLOSED
@@ -132,6 +234,8 @@ async function fetchKeysFromGateway(): Promise<VerificationKey[]> {
 export function _setProjectJwtKeysForTest(keys: VerificationKey[] | null): void {
   cached = keys;
   fetchInFlight = null;
+  cachedAt = keys ? Date.now() : 0;
+  lastUnknownKidRefetchAt = 0;
 }
 
 /**

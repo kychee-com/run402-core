@@ -1183,3 +1183,62 @@ describe("auth.account advanced tier (§4.4 / §7.7)", () => {
     );
   });
 });
+
+/**
+ * The rescue path end to end, through the public surface.
+ *
+ * The primitives are unit-tested in `lib/project-jwt-keys.test.ts`; this asserts
+ * the thing an operator actually cares about — that during a rotation window a
+ * warm function resolves a user from a token signed by a key it had never
+ * fetched, instead of returning null until its environment recycled.
+ */
+describe("auth.user rescues a rotation it has not seen yet", () => {
+  it("resolves a token whose kid arrived after this environment cached", async () => {
+    const { generateKeyPairSync } = await import("node:crypto");
+    const keys = await import("../lib/project-jwt-keys.js");
+    const jwtLib = (await import("../lib/jwt.js")).default;
+
+    const oldKey = Buffer.from("old-key-at-least-32-bytes-long!!!", "utf8");
+    const { publicKey, privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+    const jwk = publicKey.export({ format: "jwk" }) as Record<string, string>;
+
+    // This environment cached BEFORE the promotion: it holds only the old key.
+    keys._setProjectJwtKeysForTest([{ key: oldKey, alg: "HS256", kid: "old" }]);
+
+    // The gateway has since promoted `new-kid` and is signing with it.
+    const realFetch = globalThis.fetch;
+    let fetches = 0;
+    globalThis.fetch = (async () => {
+      fetches++;
+      return {
+        ok: true,
+        json: async () => ({
+          keys: [{ kty: "EC", crv: "P-256", alg: "ES256", x: jwk.x, y: jwk.y, kid: "new-kid" }],
+        }),
+      };
+    }) as unknown as typeof fetch;
+
+    const prevBase = process.env.RUN402_API_BASE;
+    const prevSvc = process.env.RUN402_SERVICE_KEY;
+    process.env.RUN402_API_BASE = "https://api.example.test";
+    process.env.RUN402_SERVICE_KEY = "svc";
+    try {
+      const token = jwtLib.sign(
+        { sub: "rotated-user", role: "authenticated", project_id: "p_test" },
+        privateKey,
+        { algorithm: "ES256", kid: "new-kid" },
+      );
+      const result = await inContext(
+        { actor: null, invocationKind: "direct", headers: { authorization: `Bearer ${token}` } },
+        async () => auth.user(),
+      );
+      assert.equal(result?.id, "rotated-user", "the unknown kid must be rescued by one refetch");
+      assert.equal(fetches, 1, "exactly one refetch, not one per attempt");
+    } finally {
+      globalThis.fetch = realFetch;
+      if (prevBase === undefined) delete process.env.RUN402_API_BASE; else process.env.RUN402_API_BASE = prevBase;
+      if (prevSvc === undefined) delete process.env.RUN402_SERVICE_KEY; else process.env.RUN402_SERVICE_KEY = prevSvc;
+      _setProjectJwtKeysForTest([{ key: TEST_KEY, alg: "HS256", kid: TEST_KID }]);
+    }
+  });
+});
