@@ -104,6 +104,11 @@ After the workflow succeeds:
    git fetch --tags
    ```
 4. If Run402 Cloud consumes the package, update `/Users/talweiss/Developer/run402-private/packages/gateway/package.json`, run the private boundary tests, commit, and push.
+5. Tell the fleet room — npm is irreversible, and step 4 is a second repo's work that someone may be waiting on (best-effort, never blocks):
+   ```
+   run402 rooms send "published @run402/<pkg> <new_version> from core: <what changed> — gateway pin <done|pending>" || true
+   ```
+   Needs `RUN402_ROOM` + `RUN402_WALLET` exported (see AGENTS.md).
 
 ## Troubleshooting
 
