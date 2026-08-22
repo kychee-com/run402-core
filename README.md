@@ -1,6 +1,11 @@
 # Run402 Core
 
-Run402 Core is the open-source server/runtime core for Run402.
+Run402 Core is the open-source, self-hostable server and runtime core for
+[Run402](https://run402.com) — backend infrastructure for AI agents. Run402 gives an
+agent a Postgres database, user auth, file storage, serverless functions and site
+hosting that it provisions and operates itself; this repository is the part of that
+backend you can run on your own machine, under Apache-2.0. The agent-facing SDK, CLI
+and MCP server live in [kychee-com/run402](https://github.com/kychee-com/run402) (MIT).
 
 The current Core runtime-kernel slice is an Apache-2.0 self-hosting runtime. It can create a local project, plan and commit a supported ReleaseSpec, run inline PostgreSQL migrations, serve PostgREST/RLS behavior, serve active-release static content, handle local storage objects and route manifests, execute trusted local functions including durable function runs and single-node schedule triggers, run a narrow Astro SSR target, and import verified portable project archives.
 
