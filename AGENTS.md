@@ -12,8 +12,8 @@ Agent sessions working on the run402 codebases (this repo, run402, run402-privat
 
 ```
 export RUN402_ROOM=57035b1e-ec41-4ce6-a7a5-a5b2560efdd7/run402-dev RUN402_WALLET=platform-deploy
-run402 rooms who --name <pick-your-own> --task "<what you're doing>"
-run402 rooms list --unread
+run402 rooms join --name <pick-your-own> --task "<what you're doing>"
+run402 messages list --unread
 ```
 
 (`--wallet platform-deploy` applies on machines where another local profile is active; drop it if your session's own wallet is an org member, or set `RUN402_ROOM=57035b1e-ec41-4ce6-a7a5-a5b2560efdd7/run402-dev` and omit the flags.) Pick your own presence name — collisions get an honest suffix (Opus → Opus-2). Claim shared areas before editing (`run402 claims create repo:<area>/** --note "why"` — advisory, never blocks; release when done). End your session with an `--ack` handoff message stating done / hot / next. Tool friction goes to `--thread dx`. Need a human? Send with `--importance high` — asking is always in-policy. The `.run402/` cache dir this creates is per-checkout and never committed.
