@@ -6,3 +6,4 @@ coverage/
 *.log
 *.tgz
 .run402/
+.claude/worktrees/
