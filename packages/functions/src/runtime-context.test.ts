@@ -223,8 +223,7 @@ describe("PAYMENT_PRIMITIVES registry (task 2.31)", () => {
 
   it("withPaymentTaint(name) where name IS in the set does NOT warn", async () => {
     if (PAYMENT_PRIMITIVES.size === 0) {
-      // Set is empty in v1 (no concrete payment primitives ship yet);
-      // skip this branch until the first registered helper lands.
+      // No concrete payment primitives are registered; nothing to exercise.
       return;
     }
     const name = [...PAYMENT_PRIMITIVES][0]!;

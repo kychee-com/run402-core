@@ -17,22 +17,14 @@
  * pattern for the actor-context key — same lazy single-flight fetch, same
  * service-key auth, same "failures are non-fatal, the next request retries".
  *
- * FETCH-ONLY. There was a transition fallback here: while `RUN402_JWT_SECRET`
- * was still injected, it was kept as a second, kid-less verification key tried
- * after the fetched keyset. It was load-bearing for exactly one window — after
- * the fleet carried this runtime but BEFORE the gateway's signing key became
- * asymmetric, the gateway was still minting HS256 tokens that an
- * asymmetric-only keyset cannot verify.
- *
- * That window closed. The gateway signs ES256 (`kid=p1-2026-08`), and §8 both
- * stopped injecting the env key and swept it out of the fleet, so the fallback
- * had already stopped firing in production before this removed it — it read an
- * env var that is no longer set on any live function.
+ * FETCH-ONLY, with no local fallback key. `RUN402_JWT_SECRET` is not injected
+ * into any live function and is not read here. The gateway signs project
+ * tokens with an asymmetric key (`kid`-stamped); this runtime verifies only
+ * against the fetched keyset.
  *
  * The consequence is deliberate and is the whole point: with no fallback, a
  * failed keyset fetch leaves NO keys, and `getUser()` fails closed rather than
  * silently falling back to material the tenant's own environment could supply.
- * See `openspec/changes/functions-runtime-key-decoupling/design.md`.
  */
 
 import { createPublicKey } from "node:crypto";

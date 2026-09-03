@@ -4,10 +4,8 @@ import assert from "node:assert/strict";
 import { getUser, getUserId, getRole } from "./auth.js";
 import { UnknownExportError } from "./auth/index.js";
 
-// v3.0 (auth-aware-ssr): the legacy bare-name exports were removed. They
-// now throw R402_AUTH_UNKNOWN_EXPORT with a structured fix-it pointing
-// at the canonical auth.* namespace. The earlier JWT-based test suite
-// was retired with the export; the replacement assertions live here.
+// The legacy bare-name exports throw R402_AUTH_UNKNOWN_EXPORT with a
+// structured fix-it pointing at the canonical auth.* namespace.
 
 describe("legacy bare-name auth exports — throwing sentinels", () => {
   it("getUser throws UnknownExportError with auth.user() fix-it", () => {

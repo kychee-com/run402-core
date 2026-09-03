@@ -6,11 +6,11 @@ Accepted
 
 ## Context
 
-`@run402/functions` is a production-used package bundled into deployed Run402 functions. It is visible to application authors and central to the portability story, but its source previously lived in the private Cloud monorepo.
+`@run402/functions` is a production-used package bundled into deployed Run402 functions. It is visible to application authors and central to the portability story.
 
 ## Decision
 
-Move `@run402/functions` source, tests, package metadata, README, changelog, and tarball smoke test into `run402-core` as the Phase 0 Core slice.
+`@run402/functions` source, tests, package metadata, README, changelog, and tarball smoke test live in `run402-core`.
 
 ## Consequences
 

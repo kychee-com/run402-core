@@ -6,7 +6,7 @@ This package defines the production-used, deterministic behavior for parsing, va
 
 The semantics are participant-neutral: the same reviewed application intent can be authored by a person or agent. The package deliberately does not authenticate that participant or decide its authority; Run402 Cloud or a Core host performs those control-plane checks before invoking these pure release operations.
 
-## Included In This Phase
+## Included
 
 - Version identifiers for release specs, portable release state, canonicalization, and planner semantics.
 - JSON Schemas in `schemas/`.
@@ -20,7 +20,7 @@ The semantics are participant-neutral: the same reviewed application intent can 
 - Pure materialization from `ReleaseSpec` plus a concrete `PortableReleaseState`.
 - Release diff envelopes, count-only summaries, truncation metadata, logical effect requirements, content-reference discovery, and `RUN402_CORE_*` warnings.
 - Package metadata and clean public build/test/publish scaffolding.
-- Fact protocol APIs will be added in the extraction steps that follow.
+- Fact protocol APIs (`FactRequirement`, fact evaluation) in `docs/canonicalization.md` and `src/facts.ts`.
 
 ## Capability Table
 

@@ -6,10 +6,6 @@
  * (`promoteStagedAssetSlice`), so visibility, immutable-URL retention, and
  * per-unique-hash storage billing all behave identically to deploy-time
  * `r.project(id).apply({ assets: { put: [...] } })`.
- *
- * Pre-v1.48 the runtime called `/storage/v1/uploads*`; that substrate was
- * removed in the unified-apply migration. This namespace is the v2.1+
- * in-function replacement.
  */
 
 import { config } from "./config.js";
@@ -34,7 +30,7 @@ export interface AssetPutOptions {
    */
   immutable?: boolean;
   /**
-   * v1.50 — caller-provided per-key metadata persisted to
+   * Caller-provided per-key metadata persisted to
    * `internal.blobs.metadata`. Flat object; values must be string, number,
    * boolean, or string[]. Nested objects are rejected. Serialized size cap:
    * 4 KB. Validated client-side before any HTTP call so bad shapes surface
@@ -45,7 +41,7 @@ export interface AssetPutOptions {
    */
   metadata?: Record<string, string | number | boolean | string[]>;
   /**
-   * v1.50 — EXIF policy applied to the indexed `image_exif` JSONB on
+   * EXIF policy applied to the indexed `image_exif` JSONB on
    * `internal.blobs`. `'keep'` (default) stores the full EXIF object;
    * `'strip'` keeps only the allowlist (camera_make / camera_model /
    * lens_model / exposure_time / f_number / iso / focal_length /

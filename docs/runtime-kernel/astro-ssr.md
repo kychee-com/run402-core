@@ -62,4 +62,4 @@ Unsupported required behavior fails closed with `astro_ssr_unsupported_feature`,
 - Cloud export, Cloud import, and existing-project archive merge
 - managed production operations such as fleet scheduling, billing, abuse controls, backups, monitoring, compliance, and support
 
-Run402 Core reduces lock-in for the supported runtime slice. It supports local new-project import for portable archives, while Cloud export and Cloud import remain separate follow-up work.
+Run402 Core reduces lock-in for the supported runtime slice. It supports local new-project import for portable archives; Cloud export and re-import into managed Run402 Cloud are Cloud-side capabilities, not part of Core.

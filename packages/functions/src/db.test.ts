@@ -132,11 +132,11 @@ describe("adminDb().sql() — SQL bypass", () => {
   });
 });
 
-// D10 companion (release-error-rollup): non-ok DB responses throw a
-// structured R402DbError whose MESSAGE is a stable, low-cardinality
-// template (byte-compatible with the gateway's normalizeErrorMessage) and
-// whose high-cardinality material (trace_id, full body) rides on
-// PROPERTIES — so a fresh trace_id per event no longer defeats grouping.
+// Non-ok DB responses throw a structured R402DbError whose MESSAGE is a
+// stable, low-cardinality template (byte-compatible with the gateway's
+// normalizeErrorMessage) and whose high-cardinality material (trace_id, full
+// body) rides on PROPERTIES, so a fresh trace_id per event does not defeat
+// grouping.
 describe("R402DbError — structured DB errors (D10)", () => {
   describe("adminDb().sql() — R402_DB_SQL_ERROR", () => {
     it("envelope JSON with code + trace_id → canonical message + populated properties", async () => {
@@ -464,9 +464,8 @@ describe("db() actor-context propagation (auth-aware-ssr)", () => {
   });
 
   it("FORWARDS the gateway-minted actor token rather than signing one", async () => {
-    // functions-runtime-key-decoupling: the runtime used to mint this itself
-    // with the platform signing key. It now forwards what the gateway minted,
-    // so a tenant Lambda no longer holds anything that can sign.
+    // The runtime forwards the actor token the gateway minted; a tenant
+    // Lambda holds nothing that can sign.
     const { runWithContext } = await import("./runtime-context.js");
     await runWithContext(
       {

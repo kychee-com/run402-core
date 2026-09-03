@@ -59,12 +59,10 @@
  *     a 500, not a redirect).
  *   - `requireMembership` is forward-only API: the gateway producer for
  *     `x-run402-user-membership` is not shipped, so it throws
- *     `MembershipGateNotWiredError` (a distinct "not wired yet" diagnostic,
- *     NOT an authz denial). `@deprecated` until the membership gate lands.
+ *     `MembershipGateNotWiredError` (a distinct "not wired" diagnostic,
+ *     NOT an authz denial).
  *   - `requireFresh` consults the per-method `amr_times` on the Actor —
  *     a recent password proof does NOT satisfy `{amr: ["passkey"]}`.
- *
- * @see openspec/changes/auth-aware-ssr/specs/auth-sdk-namespace/spec.md
  */
 
 import {
@@ -128,19 +126,19 @@ async function user(): Promise<Actor | null> {
   if (ctx.actor) {
     return actorContextToPublicActor(ctx.actor, ctx.projectId);
   }
-  // auth-hosted-surface-parity: for browser SSR (routed_http) the cookie
-  // envelope is the ONLY actor input. We do NOT fall back to decoding an
-  // `Authorization: Bearer` header here — otherwise a Bearer on a GET to
-  // a tenant SSR page would resolve an actor, contradicting the
-  // "cookie is the only browser actor input" invariant (Kychon finding).
-  // The fallback is preserved only for direct/machine invocations below.
+  // For browser SSR (routed_http) the cookie envelope is the ONLY actor
+  // input. We do NOT fall back to decoding an `Authorization: Bearer`
+  // header here — otherwise a Bearer on a GET to a tenant SSR page would
+  // resolve an actor, contradicting the "cookie is the only browser actor
+  // input" invariant. The fallback is preserved only for direct/machine
+  // invocations below.
   if (ctx.invocationKind === "routed_http") {
     return null;
   }
   // Direct function invocation path (Bearer JWT, no cookie envelope):
-  // fall back to decoding the Authorization header. This is the legacy
-  // getUser(req) contract — mobile / server-to-server callers send a
-  // signed JWT in the Authorization header, the function reads it.
+  // fall back to decoding the Authorization header. Mobile / server-to-server
+  // callers send a signed JWT in the Authorization header, the function
+  // reads it.
   // The gateway has already routed the request to this function and
   // injected the Authorization header per the apikey/wallet-auth
   // pipeline, so we can trust claims the project keyset verifies here.
@@ -155,8 +153,7 @@ async function user(): Promise<Actor | null> {
   // ONE rescue attempt, for the rotation window only. A token signed by a key
   // this environment has never fetched fails here for a reason a refetch fixes:
   // the gateway promoted a new signing key after we cached. Without this the
-  // environment stays wrong until its TTL elapses, and before the TTL existed,
-  // until the environment was recycled by hand.
+  // environment stays wrong until its TTL elapses.
   //
   // `refreshForUnknownKid` returns false — without fetching — for a kid we
   // already hold, for a kid-less token, and inside its cooldown, so a flood of
@@ -174,9 +171,8 @@ async function user(): Promise<Actor | null> {
  *  populated from the JWT claims on success, `null` on absence /
  *  malformed / wrong-project / verify-fail.
  *
- *  This is the legacy `getUser(req)` shape adapted to the v3.0 `auth.*`
- *  surface — it preserves the direct-function-invocation contract that
- *  the platform's own E2E suite exercises and that mobile / CI callers
+ *  This implements the direct-function-invocation contract that the
+ *  platform's own E2E suite exercises and that mobile / CI callers
  *  rely on. The cookie-session SSR path doesn't go through here (it
  *  populates ctx.actor at runWithContext entry via the verified
  *  envelope). */
@@ -360,13 +356,12 @@ function readHeader(
 async function requireMembership<const M extends string>(
   membership: M,
 ): Promise<{ user: Actor; membership: M }> {
-  // The membership gate has no gateway producer yet (`x-run402-user-membership`
+  // The membership gate has no gateway producer (`x-run402-user-membership`
   // is never set), so this helper cannot succeed. Require auth first (parity
   // with requireRole), then fail with an HONEST, distinct diagnostic — NOT
   // `InsufficientMembershipError`, which would falsely imply the platform
-  // evaluated a membership the caller lacks. Forward-only API surface (see the
-  // `@deprecated` tag on the namespace); replace this stub when the membership
-  // gate ships.
+  // evaluated a membership the caller lacks. Forward-only API surface (see
+  // the `@deprecated` tag on the namespace).
   await requireUser();
   throw new MembershipGateNotWiredError(membership);
 }
@@ -652,11 +647,10 @@ async function endResponse(): Promise<Response> {
 // Identity linking.
 // ---------------------------------------------------------------------------
 
-/** §4.5: the shipped top-level `auth.identities.link` is renamed/moved to
+/** The top-level `auth.identities.link` name is renamed/moved to
  *  `auth.account.identities.startLink` (the redirect+proof ceremony that links
  *  an OAuth identity to the already-signed-in account). Throws
- *  `R402_AUTH_RENAMED_EXPORT` teaching the move. (It also fetched a gateway
- *  route that never existed — see #429 — so it was non-functional regardless.) */
+ *  `R402_AUTH_RENAMED_EXPORT` teaching the move. */
 async function linkIdentity(_opts: IdentityLinkOptions): Promise<void> {
   throw new RenamedExportError({
     oldName: "auth.identities.link",
@@ -665,9 +659,9 @@ async function linkIdentity(_opts: IdentityLinkOptions): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Account security (§4). `getSecurity()` is the everyday rich read; the
-// advanced mutation tier (setPassword / passkeys / sessions / identities) is
-// demoted and lands in a follow-up increment.
+// Account security. `getSecurity()` is the everyday rich read; the advanced
+// mutation tier (setPassword / passkeys / sessions / identities) is demoted
+// — not in the everyday docs; see below.
 // ---------------------------------------------------------------------------
 
 /**
@@ -740,11 +734,9 @@ async function requireSecurity(): Promise<AccountSecurity> {
 /**
  * The actor token for an advanced-tier account call.
  *
- * functions-runtime-key-decoupling: this used to MINT a JWT with the platform
- * signing key. It now returns the gateway-minted token forwarded on the
- * request. The gateway includes `auth_time`, which the sensitive-mutation
- * freshness gate reads — so the claim the gate depends on still arrives, it is
- * simply issued by the party that can be trusted to assert it.
+ * Returns the gateway-minted token forwarded on the request. The gateway
+ * includes `auth_time`, which the sensitive-mutation freshness gate reads —
+ * the claim the gate depends on is issued by the party trusted to assert it.
  *
  * Returns null when no token was forwarded (anonymous, or a gateway that
  * predates the header); callers already treat null as "cannot make this call".
@@ -986,9 +978,9 @@ interface AuthNamespace {
    *  tenant table for cookie-session SSR. Branch on it (and `Astro.redirect`
    *  yourself); `requireRole` is the throwing hard assert. */
   role(opts?: { from?: RoleSource }): Promise<string | null>;
-  /** @deprecated Forward-only API — the membership gate has no gateway producer
-   *  yet, so this always throws `MembershipGateNotWiredError`. Use
-   *  `requireRole` (a role gate) until membership gates ship. */
+  /** @deprecated Forward-only API — the membership gate has no gateway producer,
+   *  so this always throws `MembershipGateNotWiredError`. Use
+   *  `requireRole` (a role gate) instead. */
   requireMembership<const M extends string>(
     membership: M,
   ): Promise<{ user: Actor; membership: M }>;

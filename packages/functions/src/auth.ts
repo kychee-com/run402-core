@@ -1,10 +1,9 @@
 /**
  * Legacy auth exports — throwing sentinels.
  *
- * **REMOVED in v3.0 (auth-aware-ssr).** `getUser`, `getUserId`, and
- * `getRole` are no longer working exports — they throw
- * `R402_AUTH_UNKNOWN_EXPORT` with a structured fix-it pointing at the
- * canonical `auth.*` namespace.
+ * `getUser`, `getUserId`, and `getRole` are not working exports — calling
+ * them throws `R402_AUTH_UNKNOWN_EXPORT` with a structured fix-it pointing
+ * at the canonical `auth.*` namespace.
  *
  * ESM named imports (`import { getUser } from "@run402/functions"`)
  * can't be intercepted by a Proxy; the only way to fail loudly on
@@ -13,17 +12,16 @@
  * catch the import before runtime; this file is the last line of defense
  * for code that bypasses both.
  *
- * The legacy `User` type is preserved as an alias of `Actor` for any
- * stragglers — but accessing the throwing sentinels at runtime fails.
- *
- * @see openspec/changes/auth-aware-ssr/specs/auth-sdk-namespace/spec.md
+ * The `User` type is preserved as an alias of `Actor` for callers that
+ * still import the type — but calling the sentinel functions at runtime
+ * always fails.
  */
 
 import { UnknownExportError } from "./auth/errors.js";
 
 export type User = { id: string; role: string; email: string };
 
-/** @deprecated Removed in `@run402/functions` v3.0. Use `auth.user()` or `auth.requireUser()`. */
+/** @deprecated Use `auth.user()` or `auth.requireUser()` instead. */
 export function getUser(_req?: Request): never {
   throw new UnknownExportError({
     attemptedName: "getUser",
@@ -31,7 +29,7 @@ export function getUser(_req?: Request): never {
   });
 }
 
-/** @deprecated Removed in `@run402/functions` v3.0. Use `(await auth.user())?.id` or `(await auth.requireUser()).id`. */
+/** @deprecated Use `(await auth.user())?.id` or `(await auth.requireUser()).id` instead. */
 export function getUserId(_req?: Request): never {
   throw new UnknownExportError({
     attemptedName: "getUserId",
@@ -39,7 +37,7 @@ export function getUserId(_req?: Request): never {
   });
 }
 
-/** @deprecated Removed in `@run402/functions` v3.0. Use `auth.requireRole(role)`. */
+/** @deprecated Use `auth.requireRole(role)` instead. */
 export function getRole(_req?: Request): never {
   throw new UnknownExportError({
     attemptedName: "getRole",

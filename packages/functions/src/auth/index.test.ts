@@ -2,12 +2,9 @@ import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 
 // The Bearer path verifies against the keyset the runtime FETCHES from the
-// gateway — there is no env-key fallback any more (§8 removed it, after §8's
-// fleet sweep had already emptied `RUN402_JWT_SECRET` from every live
-// function). These tests therefore seed the fetched keyset directly via
-// `_setProjectJwtKeysForTest` and mint tokens against it, which is what
-// production actually does. The CONTRACTS below are unchanged; only the way a
-// token is signed and the key reaches the runtime has moved.
+// gateway — there is no env-key fallback. These tests therefore seed the
+// fetched keyset directly via `_setProjectJwtKeysForTest` and mint tokens
+// against it, which is what production actually does.
 process.env.RUN402_PROJECT_ID ??= "p_test";
 process.env.RUN402_ANON_KEY ??= "test-anon-key";
 process.env.RUN402_SERVICE_KEY ??= "test-service-key";

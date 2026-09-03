@@ -169,7 +169,7 @@ await r.project(projectId).apply({
 });
 ```
 
-`requireAuth` and `requireRole` are independent. `requireRole` on its own implies authentication (no valid JWT → 401), then runs the role lookup. `requireAuth: true` alone does a session check with no DB lookup. Set neither to opt out of platform auth (your function owns the check, as today).
+`requireAuth` and `requireRole` are independent. `requireRole` on its own implies authentication (no valid JWT → 401), then runs the role lookup. `requireAuth: true` alone does a session check with no DB lookup. Set neither to opt out of platform auth (your function owns the check).
 
 **Single role-table per release:** all `requireRole` blocks in a single release must share the same `(table, idColumn, roleColumn)` triple. Different `allowed` sets are fine; different tables are not. The gateway rejects conflicting triples at plan time with `INVALID_SPEC`.
 
@@ -371,7 +371,7 @@ Read it back with `GET /projects/v1/:project_id/events?source=app` (or `run402 e
 
 **Errors.** Non-2xx responses throw `Run402EventsPlatformError` — see [Errors](#errors) below. In practice the two you're most likely to see are `code: "QUOTA_EXCEEDED"` (403, the organization's pooled daily quota is exhausted; `details: {resource: "events_per_day", scope, used, limit}`) and cross-project denials (`code: "FORBIDDEN"`, 403), alongside the two vocabulary errors above.
 
-**Always `await` it (and every other side-channel call).** The function's sandbox freezes the moment your handler's response is returned — a fire-and-forget `void events.emit(...)` (or any un-awaited `fetch` to a webhook, analytics endpoint, etc.) is silently killed mid-flight and the event never lands. There is no error, no log, nothing: the request just evaporates with the freeze. If you don't want the caller's latency to include the emit, bound it instead of detaching it — `await` with a short `AbortSignal.timeout(...)` on hand-rolled calls — but never let the handler return before the side effect settles. (Observed in production 2026-07-25: an instrumentation emit that "worked in testing" recorded zero events until it was awaited.)
+**Always `await` it (and every other side-channel call).** The function's sandbox freezes the moment your handler's response is returned — a fire-and-forget `void events.emit(...)` (or any un-awaited `fetch` to a webhook, analytics endpoint, etc.) is silently killed mid-flight and the event never lands. There is no error, no log, nothing: the request just evaporates with the freeze. If you don't want the caller's latency to include the emit, bound it instead of detaching it — `await` with a short `AbortSignal.timeout(...)` on hand-rolled calls — but never let the handler return before the side effect settles.
 
 ## Static-site generation (build-time use)
 
@@ -448,7 +448,7 @@ Response behavior:
   a merchant claim.
 - Append each cookie with `headers.append("Set-Cookie", value)`; Run402 preserves multiple `Set-Cookie` values as separate browser headers.
 - Redirects are ordinary 3xx responses with a `Location` header. `HEAD` responses send headers without body bytes.
-- Request and response bodies are capped at 6 MiB. WebSockets, `101 Switching Protocols`, streaming, and SSE are not supported in Phase 1.
+- Request and response bodies are capped at 6 MiB. WebSockets, `101 Switching Protocols`, streaming, and SSE are not supported.
 
 Limits and defaults: Run402 does not add wildcard CORS. Run402 does not store routed dynamic responses in a shared cache; if your function sets no `Cache-Control`, the gateway adds `Cache-Control: private, no-store` and `x-run402-cache: dynamic-bypass`.
 
@@ -554,7 +554,7 @@ Node 22 in deployed functions. `>=18` for local use (autocomplete and SSG).
 
 ## Other interfaces
 
-Run402's public surfaces now span two repositories:
+Run402's public surfaces span two repositories:
 
 - [`run402-core`](https://github.com/kychee-com/run402-core) - server/runtime core, including **`@run402/functions`** (this package)
 - [`run402`](https://github.com/kychee-com/run402) - agent/client surfaces:

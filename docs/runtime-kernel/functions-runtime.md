@@ -21,7 +21,7 @@ Public Core owns the portable semantics:
 - dynamic route fail-closed behavior before the local worker is configured
 - local typed errors, request IDs, resource defaults, redaction rules, capability document, fixture contracts, and boundary scans
 
-The first public implementation supports only pre-bundled `source` artifacts with no external npm dependencies. Lockfile npm install is a later mode, not part of this checkpoint.
+The public implementation supports only pre-bundled `source` artifacts with no external npm dependencies. Core does not support lockfile npm install.
 
 ## Isolation Profile
 
@@ -35,7 +35,7 @@ The machine-readable capability document exposes:
 - `environment_policy: explicit_allowlist`
 - `host_environment_inherited: false`
 
-Dynamic code must execute outside the gateway/control-plane process once invocation is enabled. The legacy private in-process fallback is not a Core conformance path.
+Dynamic code must execute outside the gateway/control-plane process. Core does not implement an in-process execution fallback.
 
 ## Local Executor Adapter
 
@@ -66,7 +66,7 @@ Current hardening limits:
 - stdout/stderr capture is capped at 64 KiB per invocation and 16 KiB per line.
 - Docker Compose sets the worker service memory limit to 512 MiB.
 
-Temp-dir byte quotas and `node_modules` byte quotas are documented resource defaults but are not yet enforced by a filesystem quota in this Run402 Core adapter.
+Temp-dir byte quotas and `node_modules` byte quotas are documented resource defaults; Core does not enforce them with a filesystem quota.
 
 ## Resource Defaults
 
@@ -107,7 +107,7 @@ Temp-dir byte quotas and `node_modules` byte quotas are documented resource defa
 
 ## Scheduled Function Runs
 
-Core accepts ReleaseSpec `functions.replace.<name>.triggers[]` entries with `type: "schedule"`, a stable `id`, a 5-field `cron`, and nested `run: { event_type, payload?, retry?, expires_after_seconds? }`. The first adapter is single-node and in-process in the Core Gateway: it registers active triggers on startup, refreshes timers after release activation, stops timers during shutdown, and guards stale callbacks from older registrations.
+Core accepts ReleaseSpec `functions.replace.<name>.triggers[]` entries with `type: "schedule"`, a stable `id`, a 5-field `cron`, and nested `run: { event_type, payload?, retry?, expires_after_seconds? }`. The adapter is single-node and in-process in the Core Gateway: it registers active triggers on startup, refreshes timers after release activation, stops timers during shutdown, and guards stale callbacks from older registrations.
 
 Scheduled ticks create durable function runs in the local Core run store. The run worker then uses the same local worker, secrets, request IDs, logs, redaction, timeout, body/response caps, and platform idempotency header as routed functions. The function receives `X-Run402-Trigger: function_run`, `X-Run402-Run-Id`, `X-Run402-Attempt-Id`, `X-Run402-Idempotency-Key`, and the standard function-run envelope, so Cloud and Core handler code can share the same `defineFunctionRuns(...)` path.
 
@@ -153,13 +153,7 @@ Local retention defaults to 10 MiB or 24h, whichever prunes first. The cleanup p
 
 ## Dependency Policy
 
-Core currently rejects function specs with `deps`. Future npm mode must be lockfile-only and use:
-
-```bash
-npm ci --ignore-scripts --omit=dev --no-audit --no-fund
-```
-
-Future npm mode must also force the public registry, ignore host npm config, use a scrubbed environment, and reject `file:`, `link:`, `workspace:`, git URLs, HTTP/HTTPS tarballs, local paths, private registries, npm aliases, lifecycle-script-dependent packages, and native postinstall assumptions unless separately tested.
+Core rejects function specs with `deps`. Function bundles carry no external npm dependencies beyond the platform package `@run402/functions`.
 
 ## Leakage And Redaction Checklist
 
@@ -174,18 +168,5 @@ Boundary scans and code review must check source, package tarballs, source maps,
 - Astro SSR adapter artifacts, source maps, manifests, env templates, package tarballs, container layers, provider identifiers, private paths, and Cloud-only strings
 
 Platform diagnostics must not intentionally include secrets. User-code stdout/stderr redaction is best-effort only; trusted code can print secrets it is allowed to read.
-
-## Evidence Expectations
-
-Before this change can be archived, implementation notes must record:
-
-- public package version and tarball integrity
-- public commit SHA
-- public image digest when an image is published
-- Core functions conformance output
-- private Cloud/Core comparison output
-- private deploy run URL
-- post-deploy functions smoke output
-- boundary scan output
 
 Open source addresses portability and lock-in risk. Allowances and spend controls address financial-risk exposure. Keep those as separate trust claims.

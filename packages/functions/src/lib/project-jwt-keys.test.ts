@@ -166,15 +166,10 @@ describe("project JWT keyset — fail closed, and the transition fallback", () =
   });
 
   it("IGNORES the env-injected key entirely — the fallback is gone", async () => {
-    // REVERSAL, and deliberate. This used to assert the opposite: that
-    // `RUN402_JWT_SECRET` was kept as a kid-less legacy verifier. That was
-    // load-bearing for exactly one window — after the fleet carried this
-    // runtime but before the gateway's signing key was asymmetric, the gateway
-    // was still minting HS256 tokens an asymmetric-only keyset cannot verify.
-    //
-    // The window closed: the gateway signs ES256/p1-2026-08, and §8 stopped
-    // injecting the env key AND swept it out of the fleet, so this code path
-    // had already stopped firing in production before it was deleted.
+    // `RUN402_JWT_SECRET` is not injected into any live function and
+    // contributes nothing to verification, even when set. The gateway signs
+    // project tokens with an asymmetric key; only the fetched keyset can
+    // verify them.
     const legacySecret = "legacy-env-secret-at-least-32-bytes-long!!";
     process.env.RUN402_JWT_SECRET = legacySecret;
     responseOk = false;

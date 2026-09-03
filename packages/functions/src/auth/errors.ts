@@ -128,11 +128,11 @@ export class RoleGateNotConfiguredError extends Run402AuthError {
 }
 
 /** Thrown by `auth.requireMembership(membership)`. The membership gate has no
- *  gateway producer yet (`x-run402-user-membership` is never set), so the
+ *  gateway producer (`x-run402-user-membership` is never set), so the
  *  helper cannot succeed. Surfaced as a distinct, server-class (501 Not
  *  Implemented) diagnostic instead of `InsufficientMembershipError` (403),
  *  which would falsely imply the platform evaluated a membership the caller
- *  lacks. Forward-only API surface until the membership gate ships. */
+ *  lacks. Forward-only API surface. */
 export class MembershipGateNotWiredError extends Run402AuthError {
   readonly requiredMembership: string;
   constructor(requiredMembership: string) {
@@ -279,7 +279,7 @@ export class InvalidCredentialsError extends Run402AuthError {
 
 /** A shipped export that has been renamed/moved. Distinct from
  *  `UnknownExportError` (never-existed names): this one teaches the specific
- *  move for a name that used to work. Used for `auth.identities.link` →
+ *  move for a renamed export. Used for `auth.identities.link` →
  *  `auth.account.identities.startLink`. */
 export class RenamedExportError extends Run402AuthError {
   readonly oldName: string;

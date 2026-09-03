@@ -4,7 +4,7 @@ This guide is the first generic AWS portability drill for Run402 Core. It shows 
 
 Today, this guide is fully executable with the public portable archive fixture in this repo. That proves the Core side of the portability promise: gateway, Postgres, PostgREST/RLS, static/storage bytes, trusted local functions, and narrow Astro SSR can run outside Run402 Cloud.
 
-The final "port a live Run402 Cloud project to AWS" path also needs the managed Cloud export/download CLI/API. That Cloud export surface is specified by the portable project archive contract, but it is not exposed in the current public `run402` CLI yet. Do not present the Cloud export command below as shipped until that feature lands.
+The "port a live Run402 Cloud project to AWS" path also needs the managed Cloud export/download CLI/API. That Cloud export surface is specified by the portable project archive contract; it is not exposed in the public `run402` CLI. Do not present the Cloud export command below as shipped.
 
 ## What This Proves Today
 
@@ -15,7 +15,7 @@ This walkthrough proves:
 - static routes, storage bytes, trusted local functions, narrow Astro SSR, Postgres schema/data, and REST/RLS behavior run outside Run402 Cloud
 - the AWS host can serve the imported project through the Core Gateway without calling Run402 Cloud
 
-This walkthrough does not yet prove:
+This walkthrough does not prove:
 
 - exporting a live Cloud project from Run402 Cloud
 - downloading that Cloud archive through the public CLI
@@ -40,7 +40,7 @@ EC2
     content/function volumes
 ```
 
-Future production distributions can move pieces to ECS, RDS, S3-compatible storage, ALB, TLS, Route53, CloudWatch, and IaC. Those are separate product/distribution features. They are not required for this first portability drill.
+Production distributions can move pieces to ECS, RDS, S3-compatible storage, ALB, TLS, Route53, CloudWatch, and IaC. Those are separate product/distribution features, not required for this portability drill.
 
 ## Prerequisites
 
@@ -310,9 +310,9 @@ This fixture imports a tiny todo-style project and exercises:
 - trigger restore
 - unsupported/unsafe archive rollback
 
-## Planned Cloud-To-Core Flow
+## Cloud-To-Core Flow
 
-This is the target user experience for porting a live project from Run402 Cloud to the EC2 Core stack. It depends on the Cloud archive export/download CLI/API landing first.
+This is the target user experience for porting a live project from Run402 Cloud to the EC2 Core stack. The Cloud archive export/download CLI/API is not part of the public `run402` CLI; the commands below show the intended shape for when it is.
 
 From your development machine, export a Cloud project:
 
@@ -396,13 +396,13 @@ aws ec2 delete-key-pair --key-name "$RUN402_CORE_NAME"
 rm -f "$RUN402_CORE_NAME.pem"
 ```
 
-## Friction To Remove Later
+## Current Limitations
 
-The current path is intentionally explicit. Good follow-up features would make it smoother:
+This path is intentionally explicit and does not include:
 
-- ship the Cloud archive export/download CLI/API and Cloud-to-Core conformance
-- publish signed Core Gateway container images so EC2 does not need to build from source
-- add an upload-stream archive import endpoint, so the archive does not need to live on the Core host filesystem
-- provide Terraform/CDK for EC2/ECS/RDS/S3 targets
-- add TLS/custom-domain automation
-- add managed backup/monitoring recipes for self-hosted Core
+- the Cloud archive export/download CLI/API or Cloud-to-Core conformance checks
+- signed Core Gateway container images (EC2 builds from source)
+- an upload-stream archive import endpoint (the archive must live on the Core host filesystem)
+- Terraform/CDK for EC2/ECS/RDS/S3 targets
+- TLS/custom-domain automation
+- managed backup/monitoring recipes for self-hosted Core

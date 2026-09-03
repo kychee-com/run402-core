@@ -326,19 +326,15 @@ function extractAuthFromAls(): string | undefined {
   const ctx = getCurrentContext();
   if (ctx === undefined) return undefined;
 
-  // v3.0 (auth-aware-ssr) → functions-runtime-key-decoupling.
-  //
   // When a verified actor is present, the data-plane call must carry that
   // actor's claims so the gateway's PostgREST proxy → pre_request → RLS
   // pipeline sees the browser-cookie actor identically to a Bearer-JWT call.
   // The cookie itself is `__Host-` scoped and never forwarded server-to-server
   // (D13 forbids cookie forwarding), so something has to carry the identity.
   //
-  // That used to be a JWT this runtime SIGNED with `config.JWT_SECRET` — the
-  // platform key. Signing required holding a key that mints credentials for
-  // EVERY project on the platform, in every tenant Lambda. Now the GATEWAY
-  // mints it and we forward it: we carry a short-lived token for ONE identity
-  // instead of a key that forges ANY identity forever.
+  // The GATEWAY mints that token and this runtime forwards it: a short-lived
+  // token scoped to ONE identity. This runtime never holds a key capable of
+  // signing credentials for another project.
   const forwarded = forwardedActorAuthorization(ctx.request.headers);
   if (forwarded) return forwarded;
 
@@ -347,8 +343,8 @@ function extractAuthFromAls(): string | undefined {
   // a verified actor is present but no gateway-minted token came with it, we
   // return NOTHING rather than falling through to the inbound Authorization
   // header: forwarding an unverified header there would let a caller-supplied
-  // credential overwrite the verified identity downstream, which is exactly
-  // what the previous mint-from-actor behaviour existed to prevent.
+  // credential overwrite the verified identity downstream — exactly the
+  // substitution this guard exists to prevent.
   //
   // In practice this branch is near-unreachable: the gateway mints the token
   // in the same block that signs the envelope, so actor-present implies
@@ -356,9 +352,9 @@ function extractAuthFromAls(): string | undefined {
   // anonymous call there is the intended failure mode.
   if (ctx.actor) return undefined;
 
-  // Fallback: forward whatever Authorization the inbound request carried.
-  // This is the v2.x behavior — preserved for explicit Bearer flows
-  // (mobile, server-to-server) where the caller already has a JWT.
+  // Fallback: forward whatever Authorization the inbound request carried,
+  // for explicit Bearer flows (mobile, server-to-server) where the caller
+  // already has a JWT.
   const headers = ctx.request.headers;
   const raw = headers["authorization"] ?? headers["Authorization"];
   if (Array.isArray(raw)) return raw[0];
@@ -373,11 +369,10 @@ interface CallerDbClient {
  * Caller-context DB client. Forwards the caller's Authorization header
  * to PostgREST so RLS policies evaluate against the caller's role.
  *
- * Capability `astro-ssr-runtime` (v1.52): `db()` now accepts the request
- * via either path:
+ * `db()` accepts the request via either path:
  *
  *   1. **Explicit `db(req)`** — pass a Web `Request` (or Express
- *      `req.raw` equivalent). The existing v0.x call shape.
+ *      `req.raw` equivalent).
  *
  *   2. **Implicit `db()`** — when called with no argument, reads the
  *      Authorization header from the active AsyncLocalStorage request
@@ -392,8 +387,8 @@ interface CallerDbClient {
  *
  * Outside an active request context (module scope, background timer
  * past response materialization), `db()` (no arg) still works — it
- * sends with no Authorization, exactly as the v0.x behavior with a
- * Request that has no auth header. SDK functions that REQUIRE a context
+ * sends with no Authorization, matching a Request with no auth header.
+ * SDK functions that REQUIRE a context
  * (like `cache.invalidate` path-form) throw `R402_SDK_OUTSIDE_REQUEST_CONTEXT`
  * separately.
  */
@@ -420,9 +415,8 @@ export function db(req?: Request): CallerDbClient {
 /**
  * The gateway's SQL endpoint envelope, returned verbatim by `adminDb().sql()`.
  * NOTE the snake_case `row_count` — this shape is the wire contract
- * (docs/style.md snake_case), not a camelCase SDK projection. The type was
- * previously declared as a bare row array, which did not match runtime and
- * cost real deploy cycles (2026-07-19 review finding).
+ * (docs/style.md snake_case), not a camelCase SDK projection. Do not declare
+ * this type as a bare row array; it does not match the runtime response shape.
  */
 export interface AdminSqlResult {
   status: string;

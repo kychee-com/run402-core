@@ -3,16 +3,14 @@
 //
 // Builds the package, packs it, installs in a scratch dir, and exercises
 // auth.user() end-to-end with a real signed JWT. This catches the
-// JWT-bundling regression class — v3.0 swapped the `jsonwebtoken`
-// runtime dep for an inlined `src/lib/jwt.ts`, so the regression we now
-// guard against is "vendored jwt.ts fails to bundle into the tarball" or
-// "auth.user() Bearer-JWT fallback path stops decoding tokens signed by
-// downstream consumers."
+// JWT-bundling regression class: "vendored jwt.ts fails to bundle into the
+// tarball" or "auth.user() Bearer-JWT fallback path stops decoding tokens
+// signed by downstream consumers."
 //
 // Also asserts the legacy `run402-functions` import path is not provided
-// by the package (no leakage of the deprecated name), and that the v3.0
-// throwing-sentinel exports (`getUser`, `getSession`, …) still throw
-// `R402_AUTH_UNKNOWN_EXPORT` rather than silently no-op'ing.
+// by the package, and that the throwing-sentinel exports (`getUser`,
+// `getSession`, …) still throw `R402_AUTH_UNKNOWN_EXPORT` rather than
+// silently no-op'ing.
 //
 // Usage:
 //   node packages/functions/test/smoke-tarball.mjs
@@ -109,10 +107,9 @@ try {
   step("auth.user() round-trips an ES256 JWT verified against the FETCHED keyset", () => {
     // Exercises the real production mechanism from the packaged tarball: the
     // runtime fetches a PUBLIC EC keyset from the gateway at cold start and
-    // verifies against that. It used to sign HS256 with `RUN402_JWT_SECRET`
-    // and rely on the env fallback; that fallback is gone, and the env var is
-    // no longer injected into any function, so testing it would have been
-    // testing a path production cannot take.
+    // verifies against that. There is no env-var fallback; `RUN402_JWT_SECRET`
+    // is not injected into any function, so this exercises only the path
+    // production takes.
     //
     // `fetch` is stubbed to stand in for the gateway. That is the only fake —
     // the keyset parsing, the single-flight cold-start load, the `kid`

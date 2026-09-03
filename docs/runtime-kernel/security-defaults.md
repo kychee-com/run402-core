@@ -46,4 +46,4 @@ Default credentials are local-development credentials. Do not expose this stack 
 - durable multi-node object storage
 - managed object quotas, abuse automation, and backup/restore workflows
 
-Treat this runtime as a portable developer reference until those operational concerns are designed and implemented.
+Treat this runtime as a portable developer reference, not a production security posture.

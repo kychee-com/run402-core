@@ -12,7 +12,7 @@ Opening the entire managed control plane in one step would mix portable semantic
 
 ## Decision
 
-Add `@run402/release` to `run402-core` as the public Apache 2.0 package that owns ReleaseSpec semantics, portable release state, canonicalization, digest identities, compatibility fixtures, and eventually fact evaluation.
+`@run402/release` is the public Apache 2.0 package in `run402-core` that owns ReleaseSpec semantics, portable release state, canonicalization, digest identities, compatibility fixtures, and fact evaluation.
 
 Run402 Cloud keeps fact acquisition, auth, billing, quota, operation persistence, migration execution, provider activation, routing infrastructure, backups, monitoring, abuse controls, compliance, and support operations private.
 

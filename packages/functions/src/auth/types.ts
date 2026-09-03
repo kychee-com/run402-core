@@ -6,8 +6,6 @@
  * Note that `id` (not `userId`) is the canonical public field — matches
  * Supabase / Clerk / Auth.js / NextAuth so coding-agent generated code
  * gets it right on the first try.
- *
- * @see openspec/changes/auth-aware-ssr/specs/auth-sdk-namespace/spec.md
  */
 
 export interface Actor {
@@ -17,10 +15,10 @@ export interface Actor {
   sessionId: string;
   /** The user's email. Populated ONLY on the direct Bearer-JWT invocation
    *  path (machine / mobile callers, from the JWT `email` claim). On the
-   *  browser cookie-session / SSR path it is currently `""`: the actor
-   *  envelope is signed from the session row, which carries no email (a JOIN
-   *  to `internal.users` is a pending follow-up). Do NOT gate on `email` for
-   *  SSR surfaces — key off `id` and resolve the email yourself if needed. */
+   *  browser cookie-session / SSR path it is `""`: the actor envelope is
+   *  signed from the session row, which carries no email. Do NOT gate on
+   *  `email` for SSR surfaces — key off `id` and resolve the email yourself
+   *  if needed. */
   email: string;
   /** True only for Run402 tenant test-session users.
    *
