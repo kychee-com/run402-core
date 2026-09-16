@@ -85,3 +85,7 @@ Open source reduces vendor-lock-in risk: the supported runtime behavior is publi
 Allowances and pricing controls reduce financial-risk exposure: users can cap spend when starting on Run402 Cloud.
 
 Run402 Cloud should be the easiest place to start, not the only place the supported storage/routing slice can run.
+
+### Static absence and application errors
+
+Static serving uses the active manifest as authority. Missing favicon/deleted assets and non-public paths return 404; a declared object that cannot be served remains a serving failure. Route resolution precedes static lookup, so extension-bearing function routes retain their application status. CloudFront-specific cache headers are hosted infrastructure metadata and do not alter the portable HTTP contract. The Core gateway fixture covers missing favicon and deleted assets alongside aliases, explicit-hidden paths and dynamic fail-closed behavior.

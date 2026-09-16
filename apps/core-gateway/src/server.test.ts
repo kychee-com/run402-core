@@ -1576,6 +1576,13 @@ test("static route manifest serving honors explicit paths, aliases, methods, dia
     pathname: `/projects/v1/${project.project_id}/static/events.html`,
   }, runtime)).status, 404);
 
+  for (const absent of ["favicon.ico", "deleted.css"]) {
+    const missing = await coreGatewayResponse({ method: "GET",
+      pathname: `/projects/v1/${project.project_id}/static/${absent}` }, runtime);
+    assert.equal(missing.status, 404);
+    assert.doesNotMatch(JSON.stringify(missing.body), /AccessDenied|<Error>/);
+  }
+
   const loginHead = await coreGatewayResponse({
     method: "HEAD",
     pathname: `/projects/v1/${project.project_id}/static/login/`,
