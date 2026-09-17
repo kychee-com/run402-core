@@ -105,6 +105,8 @@ const { rows, row_count } = await adminDb().sql(
 
 Returns `AdminSqlResult` (exported type): `{ status, schema, rows, row_count, fields }` — snake_case on the wire. For SELECT, `rows` is the result set and `row_count` is the row count. For INSERT/UPDATE/DELETE, `rows` is `[]` and `row_count` is the affected count — unless the statement uses `RETURNING`, in which case `rows` carries the returned rows. `fields` lists the result columns (`{ name, type }`) so even an empty SELECT conveys its shape.
 
+The result is the **envelope, never a bare row array** — iterating the result itself or reading `.length` on it silently yields nothing; destructure `rows`. A 2xx whose body is not `{ rows: [...] }` throws `R402DbError` with `code: "R402_DB_SQL_RESULT_SHAPE"` rather than resolving. An omitted or **empty** `params` array sends the query as `text/plain` with no parameter binding, so `$1` placeholders fail server-side — pass a non-empty array whenever the query uses placeholders.
+
 ## `getUser(req)` — caller identity
 
 Verifies the caller's JWT and returns the user, or `null` for unauthenticated requests.
@@ -490,7 +492,7 @@ All helpers throw on non-2xx responses.
 
 The DB helpers throw a structured `R402DbError` (also exported as a type from the package). Both throw sites carry a stable SDK-level `code`:
 
-- `adminDb().sql(...)` → `code: "R402_DB_SQL_ERROR"`
+- `adminDb().sql(...)` → `code: "R402_DB_SQL_ERROR"` (non-2xx), or `code: "R402_DB_SQL_RESULT_SHAPE"` (a 2xx whose body is not the `{ rows: [...] }` envelope — `status` is the HTTP status, `body` the full parsed body, and the message names only the top-level type / keys, e.g. `SQL result shape (200): expected envelope { rows: [...] }, got array(length=2)`)
 - `db(req).from(...)` / `adminDb().from(...)` (the `QueryBuilder`) → `code: "R402_DB_QUERY_ERROR"`
 
 Branch on the **properties**, not the message string:
@@ -502,7 +504,7 @@ try {
   await adminDb().sql("INSERT INTO items (name) VALUES ($1)", [name]);
 } catch (err) {
   if (err instanceof R402DbError) {
-    err.code;       // "R402_DB_SQL_ERROR" | "R402_DB_QUERY_ERROR" (stable SDK code)
+    err.code;       // "R402_DB_SQL_ERROR" | "R402_DB_SQL_RESULT_SHAPE" | "R402_DB_QUERY_ERROR" (stable SDK code)
     err.status;     // HTTP status number, e.g. 402
     err.trace_id;   // gateway trace id (string) or null — for support tickets
     err.remote_code;// the gateway/PostgREST error code that shaped the message, or null

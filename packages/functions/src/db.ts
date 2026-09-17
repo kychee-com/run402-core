@@ -8,14 +8,22 @@ interface QueryBuilderOpts {
   basePath: string;
 }
 
-/** Stable SDK-level codes for the two `db()` throw sites. */
-export type R402DbErrorCode = "R402_DB_QUERY_ERROR" | "R402_DB_SQL_ERROR";
+/** Stable SDK-level codes for the `db()` / `adminDb()` throw sites. */
+export type R402DbErrorCode =
+  | "R402_DB_QUERY_ERROR"
+  | "R402_DB_SQL_ERROR"
+  | "R402_DB_SQL_RESULT_SHAPE";
 
 /**
  * Structured error thrown by the DB helpers on a non-ok gateway/PostgREST
  * response:
  *   - `db()` / `adminDb().from()` (QueryBuilder) → code `R402_DB_QUERY_ERROR`
  *   - `adminDb().sql()` → code `R402_DB_SQL_ERROR`
+ *
+ * Also thrown by `adminDb().sql()` on a 2xx whose body is NOT the
+ * `{ rows: [...] }` envelope → code `R402_DB_SQL_RESULT_SHAPE` (see
+ * {@link buildSqlResultShapeError}); the message names only the top-level
+ * type / keys of what came back, never the body.
  *
  * The `message` is a stable, LOW-cardinality template so error monitors
  * group failures by kind. High-cardinality material — a fresh `trace_id`
@@ -106,6 +114,43 @@ function buildDbError(
     remote_code: null,
     body: errBody,
   });
+}
+
+/** Describe a parsed body by top-level type / keys only — never its contents. */
+function describeBodyShape(body: unknown): string {
+  if (body === null) return "null";
+  if (Array.isArray(body)) return `array(length=${body.length})`;
+  if (typeof body === "object") {
+    const keys = Object.keys(body as Record<string, unknown>);
+    return keys.length === 0 ? "object(no keys)" : `object(keys=${keys.join(",")})`;
+  }
+  return typeof body;
+}
+
+/**
+ * Build the {@link R402DbError} thrown when `adminDb().sql()` gets a 2xx whose
+ * body is not the `{ rows: [...] }` envelope. Same fingerprint discipline as
+ * {@link buildDbError}: the message carries only a low-cardinality shape
+ * description (top-level type / keys); the full body rides on `body`.
+ */
+function buildSqlResultShapeError(status: number, body: unknown): R402DbError {
+  const shape = describeBodyShape(body);
+  return new R402DbError(
+    "R402_DB_SQL_RESULT_SHAPE",
+    `SQL result shape (${status}): expected envelope { rows: [...] }, got ${shape}`,
+    {
+      status,
+      trace_id:
+        body !== null &&
+        typeof body === "object" &&
+        !Array.isArray(body) &&
+        typeof (body as Record<string, unknown>).trace_id === "string"
+          ? ((body as Record<string, unknown>).trace_id as string)
+          : null,
+      remote_code: null,
+      body,
+    },
+  );
 }
 
 export class QueryBuilder {
@@ -432,6 +477,33 @@ export interface AdminSqlResult {
 
 interface AdminDbClient {
   from(table: string): QueryBuilder;
+  /**
+   * Run raw SQL as the project's superuser-scoped role (always BYPASSRLS).
+   *
+   * The result is the gateway ENVELOPE, never a bare row array:
+   *
+   * ```ts
+   * const { rows, row_count } = await adminDb().sql(
+   *   "UPDATE items SET done = true WHERE id = $1 RETURNING id",
+   *   [id],
+   * );
+   * ```
+   *
+   * - `rows` — SELECT rows, and `RETURNING` rows for INSERT/UPDATE/DELETE
+   *   (`[]` for a write without `RETURNING`).
+   * - `row_count` — the matched/affected count (snake_case, wire contract).
+   * - `status`, `schema`, `fields` — see {@link AdminSqlResult}.
+   *
+   * Iterating the result itself (`for (const r of result)`) or reading
+   * `result.length` is wrong and silently yields nothing — destructure `rows`.
+   *
+   * A 2xx whose body is not `{ rows: [...] }` throws `R402DbError` with
+   * `code: "R402_DB_SQL_RESULT_SHAPE"`; a non-2xx throws `R402_DB_SQL_ERROR`.
+   *
+   * `params`: omitted or `[]` sends the query as `text/plain` with NO
+   * parameter binding, so `$1` placeholders fail server-side — pass a
+   * non-empty array whenever the query uses placeholders.
+   */
   sql(query: string, params?: unknown[]): Promise<AdminSqlResult>;
 }
 
@@ -472,7 +544,16 @@ export function adminDb(): AdminDbClient {
         const errBody = await res.text();
         throw buildDbError("R402_DB_SQL_ERROR", "SQL error", res.status, errBody);
       }
-      return res.json() as Promise<AdminSqlResult>;
+      const body: unknown = await res.json();
+      if (
+        body === null ||
+        typeof body !== "object" ||
+        Array.isArray(body) ||
+        !Array.isArray((body as Record<string, unknown>).rows)
+      ) {
+        throw buildSqlResultShapeError(res.status, body);
+      }
+      return body as AdminSqlResult;
     },
   };
 }

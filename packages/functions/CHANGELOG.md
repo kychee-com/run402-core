@@ -13,6 +13,20 @@
   camelCase `rowCount` never existed at runtime). Code written against the
   old array type was already broken at runtime; code that (correctly) read
   `.rows` is unaffected.
+- **`adminDb().sql()` now guards the result shape** — a 2xx response whose
+  body is not the `{ rows: [...] }` envelope (a bare array, `{ ok: true }`,
+  a non-array `rows`, a primitive) throws `R402DbError` with the new code
+  `R402_DB_SQL_RESULT_SHAPE` (`status` = the HTTP status, `body` = the full
+  parsed body, `trace_id` lifted when the body carries one) instead of
+  resolving to something a caller would silently iterate as "empty". The
+  message names only the top-level type / keys of what came back
+  (`SQL result shape (200): expected envelope { rows: [...] }, got
+  array(length=2)`), never the body, so it stays fingerprint-stable. The
+  `.sql()` JSDoc now shows the `const { rows, row_count } = await
+  adminDb().sql(q, params)` destructuring, states that `RETURNING` rows land
+  in `rows` and `row_count` is the affected count, and documents that an
+  omitted or EMPTY `params` array sends the query as `text/plain` with no
+  parameter binding (so `$1` placeholders fail server-side).
 
 ### Added
 

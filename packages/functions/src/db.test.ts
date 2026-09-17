@@ -104,7 +104,7 @@ describe("adminDb().sql() — SQL bypass", () => {
     mock.method(globalThis, "fetch", async (url: string, opts: RequestInit) => {
       capturedUrl = url;
       capturedOpts = opts;
-      return new Response(JSON.stringify([{ count: 5 }]), { status: 200 });
+      return new Response(JSON.stringify({ status: "ok", schema: "p0001", rows: [{ count: 5 }], row_count: 1, fields: [] }), { status: 200 });
     });
 
     await adminDb().sql("SELECT * FROM users WHERE id = $1", ["abc"]);
@@ -122,13 +122,128 @@ describe("adminDb().sql() — SQL bypass", () => {
     let capturedOpts: RequestInit = {};
     mock.method(globalThis, "fetch", async (_url: string, opts: RequestInit) => {
       capturedOpts = opts;
-      return new Response(JSON.stringify([]), { status: 200 });
+      return new Response(
+        JSON.stringify({ status: "ok", schema: "p0001", rows: [], row_count: 0, fields: [] }),
+        { status: 200 },
+      );
     });
 
     await adminDb().sql("SELECT count(*) FROM users");
     const headers = capturedOpts.headers as Record<string, string>;
     assert.equal(headers["Content-Type"], "text/plain");
     assert.equal(capturedOpts.body, "SELECT count(*) FROM users");
+  });
+
+  it("sends SQL with an EMPTY params array as text/plain too (no binding)", async () => {
+    let capturedOpts: RequestInit = {};
+    mock.method(globalThis, "fetch", async (_url: string, opts: RequestInit) => {
+      capturedOpts = opts;
+      return new Response(
+        JSON.stringify({ status: "ok", schema: "p0001", rows: [], row_count: 0, fields: [] }),
+        { status: 200 },
+      );
+    });
+
+    await adminDb().sql("SELECT count(*) FROM users", []);
+    const headers = capturedOpts.headers as Record<string, string>;
+    assert.equal(headers["Content-Type"], "text/plain");
+    assert.equal(capturedOpts.body, "SELECT count(*) FROM users");
+  });
+});
+
+// `adminDb().sql()` resolves the gateway ENVELOPE, never a bare row array. A
+// 2xx whose body is not `{ rows: [...] }` is a contract violation and throws
+// R402_DB_SQL_RESULT_SHAPE instead of resolving to something a caller would
+// silently iterate as "empty".
+describe("adminDb().sql() — result envelope + R402_DB_SQL_RESULT_SHAPE", () => {
+  it("passes the envelope through verbatim: rows / row_count / fields destructure", async () => {
+    const envelope = {
+      status: "ok",
+      schema: "p0005",
+      rows: [{ id: 7, name: "a" }, { id: 8, name: "b" }],
+      row_count: 2,
+      fields: [
+        { name: "id", type: "int4" },
+        { name: "name", type: "text" },
+      ],
+    };
+    mock.method(globalThis, "fetch", async () =>
+      new Response(JSON.stringify(envelope), { status: 200 }),
+    );
+    const result = await adminDb().sql("UPDATE t SET x = 1 RETURNING id, name");
+    assert.deepEqual(result, envelope);
+    const { rows, row_count } = result;
+    assert.deepEqual(rows, envelope.rows);
+    assert.equal(row_count, 2);
+    assert.ok(!Array.isArray(result), "result is the envelope object, not a bare array");
+  });
+
+  it("200 with a bare JSON array → throws R402_DB_SQL_RESULT_SHAPE", async () => {
+    mock.method(globalThis, "fetch", async () =>
+      new Response(JSON.stringify([{ id: 1 }, { id: 2 }]), { status: 200 }),
+    );
+    const err = (await catchThrown(() => adminDb().sql("SELECT 1"))) as InstanceType<
+      typeof R402DbError
+    >;
+    assert.ok(err instanceof R402DbError, "is R402DbError");
+    assert.equal(err.name, "R402DbError");
+    assert.equal(err.code, "R402_DB_SQL_RESULT_SHAPE");
+    assert.equal(err.status, 200);
+    assert.equal(
+      err.message,
+      "SQL result shape (200): expected envelope { rows: [...] }, got array(length=2)",
+    );
+    assert.equal(err.remote_code, null);
+    assert.equal(err.trace_id, null);
+    assert.deepEqual(err.body, [{ id: 1 }, { id: 2 }], "full body preserved on the property");
+    assert.equal(err.docs, "https://run402.com/errors/#R402_DB_ERROR");
+  });
+
+  it("200 with `{ ok: true }` (no rows key) → throws R402_DB_SQL_RESULT_SHAPE naming keys only", async () => {
+    mock.method(globalThis, "fetch", async () =>
+      new Response(JSON.stringify({ ok: true }), { status: 200 }),
+    );
+    const err = (await catchThrown(() => adminDb().sql("SELECT 1"))) as InstanceType<
+      typeof R402DbError
+    >;
+    assert.ok(err instanceof R402DbError);
+    assert.equal(err.code, "R402_DB_SQL_RESULT_SHAPE");
+    assert.equal(err.status, 200);
+    assert.equal(
+      err.message,
+      "SQL result shape (200): expected envelope { rows: [...] }, got object(keys=ok)",
+    );
+    assert.ok(!err.message.includes("true"), "message names keys, never values");
+    assert.deepEqual(err.body, { ok: true });
+  });
+
+  it("200 with `rows` that is not an array → throws R402_DB_SQL_RESULT_SHAPE", async () => {
+    mock.method(globalThis, "fetch", async () =>
+      new Response(JSON.stringify({ status: "ok", rows: "nope", trace_id: "t-1" }), {
+        status: 200,
+      }),
+    );
+    const err = (await catchThrown(() => adminDb().sql("SELECT 1"))) as InstanceType<
+      typeof R402DbError
+    >;
+    assert.equal(err.code, "R402_DB_SQL_RESULT_SHAPE");
+    assert.equal(err.trace_id, "t-1", "trace_id lifted from the object body when present");
+    assert.equal(
+      err.message,
+      "SQL result shape (200): expected envelope { rows: [...] }, got object(keys=status,rows,trace_id)",
+    );
+  });
+
+  it("non-2xx still throws R402_DB_SQL_ERROR (shape guard never runs)", async () => {
+    mock.method(globalThis, "fetch", async () =>
+      new Response(JSON.stringify({ code: "SQL_SYNTAX", trace_id: "t-2" }), { status: 400 }),
+    );
+    const err = (await catchThrown(() => adminDb().sql("SELEC 1"))) as InstanceType<
+      typeof R402DbError
+    >;
+    assert.equal(err.code, "R402_DB_SQL_ERROR");
+    assert.equal(err.status, 400);
+    assert.equal(err.message, "SQL error (400): SQL_SYNTAX");
   });
 });
 
