@@ -1,5 +1,7 @@
 # Enable Core Outbound Email On AWS
 
+This is a provider setup and native protocol validation reference. For normal mailbox operations, use the [CLI email commands](https://docs.run402.com/cli/assets/) with an explicitly configured Core target and project. The HTTP probes below verify the host’s provider wiring.
+
 This guide adds outbound email to a Dockerized Run402 Core gateway running on AWS. It keeps the important boundary intact:
 
 - apps still deploy with `run402 deploy apply --manifest`

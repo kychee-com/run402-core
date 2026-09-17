@@ -133,7 +133,8 @@ This lets you delete the hand-rolled "fetch JWT, query members table, check role
 import { run402 } from "@run402/sdk/node";
 
 const r = run402();
-await r.project(projectId).apply({
+const project = await r.project(projectId);
+await project.apply({
   functions: {
     patch: {
       set: {
@@ -228,7 +229,7 @@ For a gated function reached through the gateway, `getUserId(req)` and `getUser(
 
 ## `email.send(...)` — send mail from the project's mailbox
 
-Auto-discovers the project's mailbox on first call (the project must already have one — create it once with `run402 email create <slug>` or the `create_mailbox` MCP tool). After that the mailbox id is cached for the function's lifetime.
+Auto-discovers the project's mailbox on first call (the project must already have one — create it once with `run402 email create <slug> --project <project-id>`). After that the mailbox id is cached for the function's lifetime.
 
 On Run402 Core, this uses the same `/mailboxes/v1` contract as Cloud. Deploy still happens through `run402 deploy apply --manifest`; outbound email is enabled separately by configuring the Core gateway's provider (for example SES) and creating a project mailbox/default. If Core has mailboxes but no outbound provider configured, `email.send()` throws `EmailConfigurationError` with code `PROVIDER_NOT_CONFIGURED` and setup `next_actions`.
 
@@ -347,7 +348,7 @@ await events.emit("signature_completed", { request_id, signer }, {
 });
 ```
 
-Read it back with `GET /projects/v1/:project_id/events?source=app` (or `run402 events --source app`) — app events share the exact cursor/pagination/retention machinery as platform events (deploys, suspensions, transfers), just filtered to `source=app`.
+Read it back with `run402 events --source app --project <project-id>` — app events share the exact cursor/pagination/retention machinery as platform events (deploys, suspensions, transfers), just filtered to `source=app`.
 
 **Vocabulary.** `type` must be flat snake_case matching `/^[a-z][a-z0-9_]{2,63}$/` — no dots, no `app_` prefix. Platform-registered type names (`deploy_activated`, `mailbox_suspended`, ...) are **reserved**: an app cannot impersonate a platform fact. This is enforced **server-side only** — `events.emit` does not pre-validate the grammar or check the reservation list locally; it sends `type` exactly as given. A bad grammar or a reserved name comes back as a thrown `Run402EventsPlatformError` with `code: "INVALID_EVENT_TYPE"` or `code: "RESERVED_EVENT_TYPE"` (both HTTP 400) — never a silently rewritten or dropped call.
 

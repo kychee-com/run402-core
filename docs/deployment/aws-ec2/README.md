@@ -4,7 +4,7 @@ This guide is the first generic AWS portability drill for Run402 Core. It shows 
 
 Today, this guide is fully executable with the public portable archive fixture in this repo. That proves the Core side of the portability promise: gateway, Postgres, PostgREST/RLS, static/storage bytes, trusted local functions, and narrow Astro SSR can run outside Run402 Cloud.
 
-The "port a live Run402 Cloud project to AWS" path also needs the managed Cloud export/download CLI/API. That Cloud export surface is specified by the portable project archive contract; it is not exposed in the public `run402` CLI. Do not present the Cloud export command below as shipped.
+The "port a live Run402 Cloud project to AWS" path uses the public CLI’s `run402 cloud archives create` command. Inspect portability diagnostics and required secrets before importing; Cloud-only capabilities do not become Core capabilities.
 
 ## What This Proves Today
 
@@ -18,7 +18,7 @@ This walkthrough proves:
 This walkthrough does not prove:
 
 - exporting a live Cloud project from Run402 Cloud
-- downloading that Cloud archive through the public CLI
+- deploying a Core host and verifying the imported workload
 - importing back into managed Run402 Cloud
 - production managed operations such as backups, PITR, HA, monitoring, abuse controls, TLS automation, custom domains, compliance, or support
 
@@ -312,14 +312,15 @@ This fixture imports a tiny todo-style project and exercises:
 
 ## Cloud-To-Core Flow
 
-This is the target user experience for porting a live project from Run402 Cloud to the EC2 Core stack. The Cloud archive export/download CLI/API is not part of the public `run402` CLI; the commands below show the intended shape for when it is.
+Use the public CLI to export and inspect a supported Cloud project. The explicit provider-level import probe below uses the archive path mounted inside the Core container. For the CLI import workflow, see [portable archives](../../runtime-kernel/portable-archives.md).
 
 From your development machine, export a Cloud project:
 
 ```bash
-run402 archives export prj_... \
+run402 cloud archives create --project prj_example \
   --scope portable-runtime-v1 \
   --auth stubs \
+  --consistency pause-writes \
   --wait \
   --output ./project.r402ar \
   --json
@@ -400,7 +401,7 @@ rm -f "$RUN402_CORE_NAME.pem"
 
 This path is intentionally explicit and does not include:
 
-- the Cloud archive export/download CLI/API or Cloud-to-Core conformance checks
+- live Cloud-to-Core acceptance for your particular application
 - signed Core Gateway container images (EC2 builds from source)
 - an upload-stream archive import endpoint (the archive must live on the Core host filesystem)
 - Terraform/CDK for EC2/ECS/RDS/S3 targets

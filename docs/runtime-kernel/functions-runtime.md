@@ -111,7 +111,7 @@ Core accepts ReleaseSpec `functions.replace.<name>.triggers[]` entries with `typ
 
 Scheduled ticks create durable function runs in the local Core run store. The run worker then uses the same local worker, secrets, request IDs, logs, redaction, timeout, body/response caps, and platform idempotency header as routed functions. The function receives `X-Run402-Trigger: function_run`, `X-Run402-Run-Id`, `X-Run402-Attempt-Id`, `X-Run402-Idempotency-Key`, and the standard function-run envelope, so Cloud and Core handler code can share the same `defineFunctionRuns(...)` path.
 
-Agents can test a scheduled function immediately without waiting for wall-clock cron:
+The native HTTP testing hook can trigger a schedule immediately. A dedicated CLI command for this hook is not yet available:
 
 ```bash
 curl -X POST "$CORE_URL/projects/v1/$PROJECT_ID/functions/reminder-sweep/triggers/reminder_every_15m/run" \
@@ -124,7 +124,7 @@ Limits are host-owned through `CORE_SCHEDULER_ENABLED`, `CORE_SCHEDULER_MAX_PER_
 
 ## Local Secrets
 
-Set and list local function secrets through Core local endpoints:
+For normal operation, use `run402 secrets set API_TOKEN --file ./secret.txt --project <project-id>` and `run402 secrets list --project <project-id>` with your Core target configured. The following native probes document the Core endpoint contract:
 
 ```bash
 curl -X POST "$CORE_URL/projects/v1/$PROJECT_ID/functions/secrets" \
@@ -140,7 +140,7 @@ The list response contains metadata only: name, scope, function name, and timest
 
 ## Logs And Diagnostics
 
-Routed dynamic responses include `X-Run402-Request-Id: req_...`. Logs can be read with the project service key:
+Routed dynamic responses include `X-Run402-Request-Id: req_...`. Use `run402 logs --request-id <request-id> --project <project-id>` with the Core target configured. This native probe documents the service-key endpoint:
 
 ```bash
 curl "$CORE_URL/projects/v1/$PROJECT_ID/functions/logs?request_id=$REQUEST_ID&tail=100" \
