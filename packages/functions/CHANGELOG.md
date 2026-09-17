@@ -1,6 +1,6 @@
 # `@run402/functions` changelog
 
-## Unreleased
+## 4.2.0 (2026-09-17)
 
 ### Fixed
 
