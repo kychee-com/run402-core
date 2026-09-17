@@ -4,7 +4,9 @@ Run402 Core is the public home for production-used server/runtime code that is s
 
 ## Current Boundary
 
-The first Core slice is `@run402/functions`.
+Core includes `@run402/functions`, `@run402/release`, `@run402/runtime-kernel` and the local Core gateway. See [Cloud vs Core](CLOUD_VS_CORE.md) for the current supported subset.
+
+`@run402/functions` is the deployed application helper library.
 
 `@run402/functions` runs inside deployed Run402 functions and SSR runtimes. It is intentionally dependency-light:
 
@@ -15,7 +17,7 @@ The first Core slice is `@run402/functions`.
 
 It does not import Run402 Cloud gateway source or private shared packages.
 
-The next Core slice is `@run402/release`.
+`@run402/release` owns the deterministic release compiler boundary.
 
 `@run402/release` owns the public release manifest semantics:
 
@@ -25,7 +27,7 @@ The next Core slice is `@run402/release`.
 - Digest identities.
 - Field support matrix.
 - Compatibility policy.
-- Eventually: public parsing, validation, materialization, diffing, requirement derivation, Core warnings, and fact evaluation.
+- Public parsing, validation, materialization, diffing, requirement derivation, Core warnings, and fact evaluation.
 
 It does not provision resources, execute migrations, store content or secrets, provide auth, run the HTTP gateway, or operate a local control plane.
 

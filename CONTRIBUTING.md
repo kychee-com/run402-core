@@ -2,7 +2,7 @@
 
 Thanks for taking a look at Run402 Core.
 
-This repository is new and intentionally narrow. Phase 0 focuses on `@run402/functions`, the runtime helper package bundled into deployed Run402 functions.
+This repository owns the public functions helper, release compiler, runtime kernel and local gateway. Keep changes within the supported boundary described in [CLOUD_VS_CORE.md](CLOUD_VS_CORE.md).
 
 ## Development
 
@@ -25,3 +25,7 @@ npm run test:functions:smoke
 ## Planning
 
 Run402's private OpenSpec workspace is not published. Public decisions that affect contributors should be captured in docs, tests, schemas, or ADRs in this repository.
+
+## Error documentation contributions
+
+After changing a public literal runtime error code, run `node scripts/export-error-docs.mjs` and `node scripts/export-error-docs.mjs --check`. The generated `docs/generated/error-codes.json` is safe public metadata (source paths, digests and code names). Vendor that contribution into the public client docs repository; package source remains the owner. Detailed recovery guidance and hosted acceptance are separate from code parity.

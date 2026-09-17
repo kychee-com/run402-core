@@ -11,6 +11,12 @@ The current Core runtime-kernel slice is an Apache-2.0 self-hosting runtime. It 
 
 Run402's wider product model treats people and agents as first-class participants: each acts through its own principal and authenticator, while explicit authority determines what it may do. Core supports the sovereignty side of that model by making a concrete application-runtime slice inspectable and portable. It does **not** currently reproduce the managed Cloud control plane, its human/agent principal graph, or its complete attribution history.
 
+## Operating interface
+
+Use the [Run402 CLI](https://docs.run402.com/cli/reference/) by default to operate supported Core targets. Use the [typed SDK](https://docs.run402.com/sdk/scripting/) for programmatic TypeScript/JavaScript workflows; MCP is a thin adapter for tool-native hosts. The API remains the supported integration foundation. A shared client does not imply every Cloud capability exists in Core: inspect the target's capability document first.
+
+The setup, conformance and native package examples below intentionally use Docker, npm, HTTP probes and runtime code where those are the operation being taught. They are not competing Cloud first-deploy recipes.
+
 ## What Is Here Today
 
 - `packages/functions` - `@run402/functions`, the helper library for deployed Run402 functions.

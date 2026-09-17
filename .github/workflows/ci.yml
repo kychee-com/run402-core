@@ -24,6 +24,9 @@ jobs:
       - name: Install
         run: npm ci
 
+      - name: Error documentation source parity
+        run: node scripts/export-error-docs.mjs --check
+
       - name: Lint
         run: npm run lint
 
