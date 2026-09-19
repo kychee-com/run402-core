@@ -11,3 +11,9 @@ It is an Apache-2.0 self-hosting runtime component. Core functions are also trus
 Portable archive schemas ship under `@run402/runtime-kernel/schemas/*`. Archive verification is offline and treats archives as untrusted input; it checks integrity and compatibility but does not make the archive trusted. Core import verifies before mutation and supports new local projects only in v1.
 
 It does not include Cloud archive export creation, Cloud import, existing-project archive merge, hosted OAuth, managed backups, TLS automation, observability, distributed/HA scheduling, Cloud-grade sandboxing, or production hardening.
+
+### Static continuity
+
+The local Postgres adapter records effective publication history when replacing a release. For one hour, a missing public non-HTML path can resolve to its most recently superseded public entry. Current routes, files and failures take precedence. HTML, private backing paths and route-only entries are not retained. Reusing a path serves current bytes; this does not pin backend versions or protect requests after the deadline.
+
+The derived index adds no content copies or storage holds. Archive import does not invent historical publication from archived files. Retained responses identify their source release and cap new shared-cache freshness at the remaining origin interval; browser-cached immutable copies may last longer.

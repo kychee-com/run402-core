@@ -89,3 +89,7 @@ Run402 Cloud should be the easiest place to start, not the only place the suppor
 ### Static absence and application errors
 
 Static serving uses the active manifest as authority. Missing favicon/deleted assets and non-public paths return 404; a declared object that cannot be served remains a serving failure. Route resolution precedes static lookup, so extension-bearing function routes retain their application status. CloudFront-specific cache headers are hosted infrastructure metadata and do not alter the portable HTTP contract. The Core gateway fixture covers missing favicon and deleted assets alongside aliases, explicit-hidden paths and dynamic fail-closed behavior.
+
+## Removed static paths
+
+Replacing an effective release leaves its formerly direct-public non-HTML URLs eligible for one hour when the current release has no matching route or file. An explicit alias retains its public URL, never its private backing path. After that origin deadline, a fresh request receives the ordinary miss; an old tab may therefore fail to import a previously unfetched chunk. Removing HTML remains immediate at a fresh origin. Existing cache entries can outlive the deadline.

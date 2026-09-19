@@ -1,7 +1,10 @@
+import { retainCorePublicPaths } from "./static-continuity.js";
 import { randomBytes } from "node:crypto";
 import pg, { type Pool as PgPool, type PoolClient } from "pg";
 import {
   ApplyInvariantError,
+  isRetainablePublicEntry,
+  type RetainedStaticEntry,
   emptyCoreReleaseState,
   type ApplyPlanStorePort,
   type CoreApplyPlan,
@@ -101,6 +104,18 @@ export class PostgresApplyStore implements ReleaseStatePort, ApplyPlanStorePort,
         created_at timestamptz NOT NULL DEFAULT now(),
         PRIMARY KEY (project_id, release_id)
       );
+
+      CREATE TABLE IF NOT EXISTS internal.core_retained_static (
+        project_id text NOT NULL REFERENCES internal.core_projects(project_id) ON DELETE CASCADE,
+        source_release_id text NOT NULL,
+        public_path text NOT NULL,
+        superseded_at timestamptz NOT NULL,
+        origin_available_until timestamptz NOT NULL,
+        entry jsonb NOT NULL,
+        PRIMARY KEY (project_id, public_path, source_release_id, superseded_at)
+      );
+      CREATE INDEX IF NOT EXISTS core_retained_static_lookup
+        ON internal.core_retained_static(project_id, public_path, superseded_at DESC);
 
       CREATE TABLE IF NOT EXISTS internal.core_apply_plans (
         plan_id text PRIMARY KEY,
@@ -251,6 +266,16 @@ export class PostgresApplyStore implements ReleaseStatePort, ApplyPlanStorePort,
     };
   }
 
+  async lookupRetainedStatic(projectId: string, publicPath: string): Promise<RetainedStaticEntry | null> {
+    const result = await this.#pool.query(
+      `SELECT source_release_id, origin_available_until, entry FROM internal.core_retained_static
+       WHERE project_id = $1 AND public_path = $2 AND origin_available_until > NOW()
+       ORDER BY superseded_at DESC, source_release_id DESC LIMIT 1`, [projectId, publicPath]);
+    const row = result.rows[0];
+    if (!row || !isRetainablePublicEntry(publicPath, row.entry)) return null;
+    return { ...row, origin_available_until: new Date(row.origin_available_until).toISOString() };
+  }
+
   async setActiveRelease(input: {
     projectId: string;
     releaseId: string;
@@ -272,6 +297,7 @@ export class PostgresApplyStore implements ReleaseStatePort, ApplyPlanStorePort,
         throw new ApplyInvariantError("stale_plan", "Apply plan base release no longer matches the active release.");
       }
 
+      await retainCorePublicPaths(client, input);
       await client.query(
         `
           INSERT INTO internal.core_releases (project_id, release_id, digest, state)

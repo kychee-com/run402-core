@@ -47,6 +47,7 @@ import {
 import {
   cacheControlForStaticCacheClass,
   computeStaticManifestSha256,
+  isDirectStaticManifestEntry,
   ReleaseCoreError,
   staticManifestPublicPathMode,
   type ContentRefHex,
@@ -2893,10 +2894,11 @@ async function staticResponse(
     if (!routeMethodAllows(route, request.method)) return methodNotAllowed(route);
     const entry = active.state.static_manifest?.files[route.pattern];
     if (entry) return await serveStaticEntry(runtime, projectId, active.state, publicPath, entry, request.method);
+    return { status: 503, headers: { "Cache-Control": "no-store" }, body: { error: "static_not_found", message: "The current static route target is unavailable." } };
   }
 
   const directEntry = active.state.static_manifest?.files[publicPath];
-  if (directEntry?.direct) {
+  if (directEntry && isDirectStaticManifestEntry(directEntry)) {
     if (request.method !== "GET" && request.method !== "HEAD") {
       return staticAssetMethodNotAllowed(publicPath);
     }
@@ -2952,8 +2954,17 @@ async function staticResponse(
     });
   }
 
+  if ((request.method === "GET" || request.method === "HEAD") && runtime.releases.lookupRetainedStatic) {
+    const retained = await runtime.releases.lookupRetainedStatic(projectId, publicPath);
+    if (retained) {
+      const result = await serveStaticEntry(runtime, projectId, { ...active.state, site: { ...active.state.site, paths: [] } }, publicPath, retained.entry, request.method);
+      if (result.status === 200) result.headers = { ...result.headers, "x-run402-release-id": retained.source_release_id, "Cache-Control": `${cacheControlForStaticCacheClass(retained.entry.cache_class)}, s-maxage=${Math.max(0, Math.floor((Date.parse(retained.origin_available_until) - Date.now()) / 1000))}` };
+      return result;
+    }
+  }
   return {
     status: 404,
+    headers: { "Cache-Control": "no-store" },
     body: {
       error: "static_not_found",
       message: `Static path not found: ${publicPath}`,

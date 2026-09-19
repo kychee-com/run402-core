@@ -1,3 +1,4 @@
+import { retainCorePublicPaths } from "./static-continuity.js";
 import { randomBytes } from "node:crypto";
 import type { Pool as PgPool } from "pg";
 import {
@@ -542,6 +543,7 @@ export class PostgresStorageStore implements StoragePort, SignedReadPort, Cleanu
       if (input.functionEffects) {
         await this.#replaceFunctionBundles(client, input.projectId, input.releaseId, input.functionEffects);
       }
+      await retainCorePublicPaths(client, input);
       await client.query(
         `
           INSERT INTO internal.core_releases (project_id, release_id, digest, state)

@@ -8,3 +8,5 @@ export * from "./health.js";
 export * from "./ports.js";
 export * from "./projects.js";
 export * from "./storage.js";
+
+export * from "./static-continuity.js";

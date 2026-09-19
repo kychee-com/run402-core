@@ -1,3 +1,4 @@
+import type { RetainedStaticEntry } from "./static-continuity.js";
 import type {
   ContentRefHex,
   MaterializedRoutes,
@@ -38,6 +39,7 @@ export interface ProjectCatalogPort {
 }
 
 export interface ReleaseStatePort {
+  lookupRetainedStatic?(projectId: string, publicPath: string): Promise<RetainedStaticEntry | null>;
   getBase(projectId: string, target: "empty" | "current" | { release_id: string }): Promise<{
     release_id: string | null;
     state: PortableReleaseState;

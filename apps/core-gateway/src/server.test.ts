@@ -4239,3 +4239,26 @@ class MemoryStoragePort implements StoragePort, SignedReadPort {
 function sha256Hex(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
+
+test('retained static aliases serve source bytes without exposing backing URLs', async () => {
+  const catalog = new MemoryProjectCatalog();
+  const project = await catalog.create({ name: 'continuity' });
+  const content = new MemoryContentStore();
+  const bytes = Buffer.from('old lazy chunk');
+  const sha = sha256Hex(bytes);
+  await content.putStatic({ sha256: sha, bytes, contentType: 'application/javascript' });
+  const releases = new MemoryReleaseState(emptyCoreReleaseState());
+  const runtime = { projects: catalog, content, releases: {
+    getBase: releases.getBase.bind(releases), setActiveRelease: releases.setActiveRelease.bind(releases),
+    lookupRetainedStatic: async (_project: string, path: string) => path === '/download' ? {
+      source_release_id: 'rel_old', origin_available_until: new Date(Date.now() + 3600000).toISOString(),
+      entry: { sha256: sha, size: bytes.length, content_type: 'application/javascript', cache_class: 'immutable_versioned' as const, cache_class_source: 'declared' as const, asset_path: 'hidden/source.js', direct: true },
+    } : null,
+  } };
+  const result = await coreGatewayResponse({ method: 'GET', pathname: `/projects/v1/${project.project_id}/static/download` }, runtime);
+  assert.equal(result.status, 200);
+  assert.equal(Buffer.from(result.body as Uint8Array).toString(), 'old lazy chunk');
+  assert.equal(result.headers?.['x-run402-release-id'], 'rel_old');
+  const hidden = await coreGatewayResponse({ method: 'GET', pathname: `/projects/v1/${project.project_id}/static/hidden/source.js` }, runtime);
+  assert.equal(hidden.status, 404);
+});
