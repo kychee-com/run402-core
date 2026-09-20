@@ -59,6 +59,10 @@ try {
     }
   });
 
+  step("import pure static-cache subpath", () => {
+    run(`node --input-type=module -e "import { isVersionedSiteAsset, isHtmlSitePath } from '@run402/release/static-cache'; if (!isVersionedSiteAsset('/assets/index-2RHH4Euo.js') || isVersionedSiteAsset('/_astro/settings.json') || !isHtmlSitePath('/index.HTM')) process.exit(1);"`, { cwd: installDir });
+  });
+
   step("import app-kit subpath", () => {
     const result = run(
       `node --input-type=module -e "import { buildPortableAppManifest, inlineSqlMigration, localDirSiteReplace, materializeFunctionManifestMap } from '@run402/release/app-kit'; const migration = inlineSqlMigration({ id: '001_init', sql: 'select 1;\\n' }); if (!/^[0-9a-f]{64}$/.test(migration.checksum)) process.exit(1); const manifest = buildPortableAppManifest({ database: { migrations: [migration] }, site: { replace: localDirSiteReplace('dist/client', { rootDir: process.cwd() }) }, functions: { replace: materializeFunctionManifestMap({ api: { source: 'export default () => new Response(\\'ok\\');\\n' } }, { rootDir: process.cwd(), outDir: process.cwd() + '/dist/run402/functions' }).functions } }); if (!manifest.database || !manifest.functions || !manifest.site) process.exit(1); console.log('app-kit smoke OK');"`,

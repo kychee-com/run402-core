@@ -1,0 +1,39 @@
+{
+  "immutable": [
+    "assets/app.0123abcd.js",
+    "assets/app-0123abcdef.css",
+    "assets/vendor_deadbeefcafebabe.mjs",
+    "assets/app.deadbeef.js.map",
+    "deadbeefcafebabe",
+    "assets/index-2RHH4Euo.js",
+    "assets/index-iKsoYUBC.js",
+    "assets/index-D5rtQT2T.css",
+    "assets/index-DXa4poYk.css",
+    "assets/chunk-Abc_12-x.js",
+    "_astro/index.DRf8L97S.js",
+    "_astro/ClientRouter.astro_astro_type_script_index_0_lang.BIYsaiAn.js",
+    "_astro/events-calendar.BGliLLoS.js",
+    "elsewhere/index.BGliLLoS.js"
+  ],
+  "revalidating": [
+    "app.js",
+    "styles.css",
+    "nav-dropdown.css",
+    "_astro/app.js",
+    "_astro/settings.json",
+    "assets/app.settings.js",
+    "assets/app.production.js",
+    "assets/app.20260920.js",
+    "assets/app.deadbeef-debug.js",
+    "assets/app.123abc.js",
+    "assets/app.abcdefgh.js",
+    "assets/app.deadbeef.css.backup",
+    ".deadbeef.js",
+    "assets/.Abc123xy.js",
+    ".hidden/app.deadbeef.js",
+    "index.html",
+    "index.2RHH4Euo.html",
+    "page.2RHH4Euo.HTM",
+    "_astro/index.html"
+  ]
+}

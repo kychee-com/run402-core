@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Consolidate filename inference in the pure `static-cache` subpath. Recognize default Vite/Rollup and Astro base64url fingerprints; keep mutable, hidden, numeric-version and nonterminal false positives revalidating. Preserve explicit/prior mutable policy and retained-public eligibility.
+
+## Unreleased
+
 - Add opt-in `routes[].pricing.receipt: "on_fulfillment"` for priced
   function routes, including strict validation, canonicalization, schemas,
   and diffing.

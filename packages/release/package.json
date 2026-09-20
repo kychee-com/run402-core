@@ -13,6 +13,10 @@
     "./app-kit": {
       "types": "./dist/app-kit.d.ts",
       "import": "./dist/app-kit.js"
+    },
+    "./static-cache": {
+      "types": "./dist/static-cache.d.ts",
+      "import": "./dist/static-cache.js"
     }
   },
   "files": [

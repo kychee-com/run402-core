@@ -68,3 +68,33 @@ Priced function routes may opt into portable merchant-evidence intent with
 use `payment.fulfilled(response)` after its business mutation commits. Omission
 preserves the existing payment behavior. Static and unpriced routes reject
 receipt configuration.
+
+## Static cache classification
+
+The release compiler owns filename inference. Edge-compatible callers import
+`isVersionedSiteAsset` and `isHtmlSitePath` from
+`@run402/release/static-cache`; this subpath has no Node imports or dependencies.
+Use `classifyStaticCacheClass` for manifest metadata, declarations and prior-path
+policy. The historical wire source `inferred_sha_filename` also covers bundler
+fingerprints; it does not assert that the filename is a SHA digest.
+
+Recognized names have a terminal hexadecimal fingerprint of at least eight
+characters (twelve without an extension), containing a hexadecimal letter, or an
+eight-character base64url token containing mixed case or both letters and digits.
+A fingerprint may precede an extension and optional `.map`. Vite/Rollup's
+`index-2RHH4Euo.js` and Astro's `index.DRf8L97S.js` qualify. Hidden path
+segments, numeric dates, ordinary words and an `_astro/` directory alone do not.
+HTML extensions and HTML/XHTML MIME types take precedence. Query/fragment text
+is not part of the filename.
+
+Filename inference is a convention, not cryptographic verification. Ambiguous
+all-lowercase non-hexadecimal hashes and non-default custom hash lengths revalidate.
+Explicit revalidating declarations and previously revalidating paths remain
+authoritative; changed bytes at a previously immutable path still fail the
+existing immutable-path check. Stored manifests are not retroactively rewritten.
+This classifier never gates retained-public continuity eligibility or extends
+the one-hour origin deadline.
+
+Reference formats: [Rollup hash characters](https://rollupjs.org/configuration-options/#output-hashcharacters)
+and [Astro output filenames](https://docs.astro.build/en/recipes/customizing-output-filenames/).
+Regression fixtures live in `test/fixtures/static-cache.json`.

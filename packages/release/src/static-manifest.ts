@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isVersionedSiteAsset, isHtmlSitePath } from "./static-cache.js";
 
 import { STATIC_MANIFEST_VERSION } from "./versions.js";
 import type {
@@ -266,11 +267,11 @@ export function classifyStaticCacheClass(
 ): CacheClassificationResult {
   const contentType = input.contentType ?? "application/octet-stream";
   const warnings: string[] = [];
-  if (isHtmlPathOrContentType(input.path, contentType)) {
+  if (isHtmlSitePath(input.path, contentType)) {
     return { cache_class: "html", cache_class_source: "inferred_html", warnings };
   }
 
-  const fingerprinted = hasVersionedFilename(input.path);
+  const fingerprinted = isVersionedSiteAsset(input.path);
   let cacheClass: StaticCacheClass = fingerprinted
     ? "immutable_versioned"
     : "revalidating_asset";
@@ -349,8 +350,8 @@ export function collectLegacyImmutableRisks(manifest: StaticManifest): LegacyImm
     if (
       entry.cache_class_source === "legacy" &&
       entry.cache_class === "immutable_versioned" &&
-      !hasVersionedFilename(path) &&
-      !isHtmlPathOrContentType(path, entry.content_type)
+      !isVersionedSiteAsset(path) &&
+      !isHtmlSitePath(path, entry.content_type)
     ) {
       out.push({
         path,
@@ -752,17 +753,6 @@ function implicitCompatibilityPublicPaths(assetPath: string): string[] {
     return [path.slice(0, -"index.html".length)];
   }
   return [];
-}
-
-function hasVersionedFilename(path: string): boolean {
-  const lastSlash = path.lastIndexOf("/");
-  const basename = lastSlash >= 0 ? path.slice(lastSlash + 1) : path;
-  return /(?:^|[._-])[0-9a-f]{8,}(?:[._-]|\.)/i.test(basename) ||
-    /(?:^|[._-])[0-9a-f]{12,}$/i.test(basename);
-}
-
-function isHtmlPathOrContentType(path: string, contentType: string): boolean {
-  return path.endsWith(".html") || contentType.toLowerCase().startsWith("text/html");
 }
 
 function guessContentType(path: string): string {
