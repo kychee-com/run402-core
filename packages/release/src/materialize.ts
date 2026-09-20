@@ -224,7 +224,9 @@ export function buildStaticManifestFromPortableState(
         sha256: entry.sha256,
         size: entry.size,
         content_type: entry.content_type,
-        cache_class: entry.cache_class,
+        // Asset inference is not an explicit declaration. Preserve the HTML
+        // marker used to distinguish compatibility aliases from route entries.
+        cache_class: entry.cache_class === "html" ? "html" : undefined,
         authority: "implicit_file_path",
         direct: true,
         response_metadata: entry.response_metadata,
@@ -288,6 +290,7 @@ export function buildStaticManifestFromPortableState(
   }
   const manifest = buildStaticManifestFromEntries(entries, {
     publicPathMode: mode,
+    previousManifest: baseManifest,
     spaFallback: mode === "implicit" && siteByPath.has("index.html") ? "/index.html" : null,
   });
   return {

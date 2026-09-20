@@ -402,6 +402,7 @@ export function buildStaticManifestFromEntries(
   options: {
     publicPathMode?: "implicit" | "explicit";
     spaFallback?: string | null;
+    previousManifest?: StaticManifest | null;
   } = {},
 ): StaticManifest {
   const files: Record<string, StaticManifestFileEntry> = {};
@@ -413,6 +414,7 @@ export function buildStaticManifestFromEntries(
       path: publicPath,
       contentType,
       declaredCacheClass: entry.cache_class ?? null,
+      previous: options.previousManifest?.files[publicPath] ?? null,
     });
     const normalized: StaticManifestFileEntry = {
       sha256: normalizeSha(entry.sha256, `static_manifest.files.${publicPath}.sha256`),

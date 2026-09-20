@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { isVersionedSiteAsset, isHtmlSitePath } from "./static-cache.js";
+import { buildStaticManifestFromPortableState } from "./materialize.js";
 import { classifyStaticCacheClass, buildStaticManifestFromEntries } from "./static-manifest.js";
 const fixtures = JSON.parse(readFileSync(new URL("../test/fixtures/static-cache.json", import.meta.url), "utf8")) as { immutable: string[]; revalidating: string[] };
 describe("canonical static cache classifier", () => {
@@ -26,4 +27,23 @@ describe("canonical static cache classifier", () => {
     assert.equal(classifyStaticCacheClass({ path: "/app-2RHH4Euo.js", previous: { sha256: "a".repeat(64), cache_class: "revalidating_asset" } }).cache_class, "revalidating_asset");
     assert.equal(classifyStaticCacheClass({ path: "/_astro/settings.json", declaredCacheClass: "immutable_versioned" }).cache_class, "revalidating_asset");
   });
+});
+
+// Exercise the actual compiler, not only the classification helper. The live
+// upgrade regression was caused by forgetting to pass the prior entry here.
+describe("compiler preserves prior mutable policy", () => {
+  for (const mode of ["implicit", "explicit"] as const) {
+    it(mode + " public paths retain their previous mutable class", () => {
+      const path = "/assets/index-BBEEV3ml.js";
+      const previous = buildStaticManifestFromEntries([{ public_path: path, asset_path: path.slice(1), sha256: "a".repeat(64), size: 1, cache_class: "revalidating_asset", authority: "explicit_public_path", direct: true }]);
+      const paths = [{ path: path.slice(1), content_sha256: "b".repeat(64), size_bytes: 1, content_type: "application/javascript" }];
+      const routes = { manifest_sha256: null, entries: [] };
+      const spec = mode === "implicit" ? { mode } : { mode, replace: { [path]: { asset: path.slice(1) } } };
+      const result = buildStaticManifestFromPortableState(paths, routes, previous, spec);
+      assert.equal(result.manifest!.files[path]!.cache_class, "revalidating_asset");
+      assert.equal(result.manifest!.files[path]!.cache_class_source, "downgraded");
+      const fresh = buildStaticManifestFromPortableState(paths, routes, null, spec);
+      assert.equal(fresh.manifest!.files[path]!.cache_class, "immutable_versioned");
+    });
+  }
 });
