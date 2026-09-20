@@ -2,13 +2,13 @@
 
 In-function helper library for [Run402](https://run402.com) serverless functions. Imported _inside_ a deployed function — gives you typed access to the caller's database (RLS-respecting) and the project's admin database, the caller's auth, the project's mailbox, AI helpers, runtime asset uploads, and the project's cursored event feed.
 
-Run402's first-class people/agent **control-plane principals** are distinct from the deployed app's tenant callers described in this package. Here, `getUser(req)`, JWT roles, and RLS identify an end user of the application; they do not expose or replace the Run402 organization membership, grant, delegate, or Buzz identity model.
+Run402's first-class people/agent **control-plane principals** are distinct from the deployed app's tenant callers described in this package. Here, `auth.user()`, verified tenant identity, and RLS identify an end user of the application; they do not expose or replace the Run402 organization membership, grant, delegate, or Buzz identity model.
 
 ```ts
-import { db, adminDb, getUser, email, ai, assets } from "@run402/functions";
+import { db, adminDb, auth, email, ai, assets } from "@run402/functions";
 
 export default async (req: Request) => {
-  const user = await getUser(req);
+  const user = await auth.user();
   if (!user) return new Response("unauthorized", { status: 401 });
 
   const mine = await db(req).from("items").select("*").eq("user_id", user.id);
@@ -107,25 +107,30 @@ Returns `AdminSqlResult` (exported type): `{ status, schema, rows, row_count, fi
 
 The result is the **envelope, never a bare row array** — iterating the result itself or reading `.length` on it silently yields nothing; destructure `rows`. A 2xx whose body is not `{ rows: [...] }` throws `R402DbError` with `code: "R402_DB_SQL_RESULT_SHAPE"` rather than resolving. An omitted or **empty** `params` array sends the query as `text/plain` with no parameter binding, so `$1` placeholders fail server-side — pass a non-empty array whenever the query uses placeholders.
 
-## `getUser(req)` — caller identity
+## `auth.user()` — caller identity
 
-Verifies the caller's JWT and returns the user, or `null` for unauthenticated requests.
+Reads the verified request-scoped actor, or returns `null` when unauthenticated. The deployed runtime supplies the context; do not pass a Request.
 
+<!-- auth-identity-example -->
 ```ts
-const user = await getUser(req);
+import { auth } from "@run402/functions";
+
+const user = await auth.user();
 if (!user) return new Response("unauthorized", { status: 401 });
-// user: { id: string, email: string, role: "authenticated" | "project_admin" | ... }
+return Response.json({ id: user.id, email: user.email });
 ```
 
-The function's own `RUN402_PROJECT_ID` is used to scope the verification.
+For required identity, use `await auth.requireUser()` and let the platform handle its refusal. Actor identity is distinct from your application's membership or role: use `auth.requireRole(...)` / `auth.requireMembership(...)` for the supported cookie-session authorization flow, or a declarative function gate for direct API calls.
 
-**Note on `user.role`:** this is the JWT system role (`anon`, `authenticated`, `project_admin`, …) — the same value PostgREST uses to evaluate RLS. It is **not** your application role from a declarative `requireRole` gate (admin/moderator/etc.). For the gate-resolved application role, use `getRole(req)` (see "Function-level auth gates" below). Don't write `getUser(req).role === "admin"` thinking you're checking the gate role — `"admin"` is not a JWT role.
+On tenant SSR routes, identity comes from the verified cookie-session envelope. Direct function invocations also support the project's verified user Bearer token. A browser SPA may use the public token API with an anon key and user access token; that is distinct from same-origin cookie-based SSR. Never put a service key in browser code.
+
+The legacy bare helpers `getUser`, `getUserId`, and `getRole` are throwing sentinels, not compatibility implementations. Calling them raises `R402_AUTH_UNKNOWN_EXPORT`; deploy preflight rejects them too.
 
 ## Function-level auth gates
 
 A function can declare auth requirements directly on its `FunctionSpec`. When you set `requireAuth: true` or `requireRole: { ... }`, the gateway enforces them **before** invoking your function — unauthorized callers get `401` / `403` without your code running, and the gateway injects the resolved identity into request headers your function can trust.
 
-This lets you delete the hand-rolled "fetch JWT, query members table, check role, return 403" boilerplate from every privileged function. Declare the gate in your `FunctionSpec`; read the resolved identity with `getUserId(req)` and `getRole(req)`.
+This lets you delete the hand-rolled "fetch JWT, query members table, check role, return 403" boilerplate from every privileged function. Declare the gate in your `FunctionSpec`; read the verified actor with `auth.user()` and, when a declarative gate ran, its application role from the injected request headers.
 
 ### Declaring a gate (deploy spec)
 
@@ -179,15 +184,15 @@ await project.apply({
 ### Reading the gate result inside your function
 
 ```ts
-import { getUserId, getRole } from "@run402/functions";
+import { auth } from "@run402/functions";
 
 export default async (req: Request): Promise<Response> => {
-  const userId = getUserId(req);  // string | null
-  const role = getRole(req);      // string | null
+  const userId = (await auth.user())?.id ?? null;
+  const role = req.headers.get("x-run402-user-role"); // application role, not JWT role
 
   // For a gated function reached through the gateway, both are guaranteed:
-  //   - getUserId(req) is non-null when requireAuth OR requireRole is on.
-  //   - getRole(req) is non-null when requireRole is on (and is one of `allowed`).
+  //   - x-run402-user-id is set when requireAuth OR requireRole is on.
+  //   - x-run402-user-role is set when requireRole is on (one of allowed).
   // The null case covers local invokes / direct Lambda tests / ungated functions.
 
   if (role === "admin") {
@@ -214,18 +219,9 @@ If a `requireRole` block references a table or column that doesn't exist in the 
 
 Role lookups are cached per `(projectId, userId)` for `cacheTtl` seconds (default 60, max 600). **A demoted user keeps the cached role until the TTL expires** — for high-stakes operations where instant revocation matters, set `cacheTtl: 0` to issue a fresh lookup on every request. The cache is bypassed when no `requireRole` gate runs.
 
-### Relationship to `getUser`
+### Actor identity and application roles
 
-`getUser(req)` decodes the JWT and gives you `{ id, role, email }` where `role` is the JWT system role. The gate-injected headers give you the gate-resolved identity:
-
-| Helper | Source | Role meaning |
-|---|---|---|
-| `getUser(req).id` | JWT `sub` (decoded in-function) | — |
-| `getUser(req).role` | JWT `role` claim | System role (`anon`, `authenticated`, `project_admin`) |
-| `getUserId(req)` | `x-run402-user-id` header (injected by gateway) | — |
-| `getRole(req)` | `x-run402-user-role` header (injected by gateway) | Application role from your `members` table |
-
-For a gated function reached through the gateway, `getUserId(req)` and `getUser(req).id` will agree. The gate-side helpers skip the JWT decode (the gateway already did it), so they're slightly cheaper and stringly-typed against the trusted headers; use them when the gate guarantees the identity.
+`auth.user()` returns the verified actor, not an application role. A declarative gate supplies `x-run402-user-id` and (for `requireRole`) `x-run402-user-role`. Read these only inside the platform-invoked function, where the gateway strips spoofed headers and injects its verified result. Do not infer application authority from a JWT system role.
 
 ## `email.send(...)` — send mail from the project's mailbox
 
@@ -307,14 +303,14 @@ return Response.json({ url: asset.immutableUrl ?? asset.url });
 Use a routed function when the browser should request an image at app runtime. Keep app-level auth/rate limits in your handler before calling `ai.generateImage`, especially for public routes.
 
 ```ts
-import { ai, getUser } from "@run402/functions";
+import { ai, auth } from "@run402/functions";
 
 export default async function handler(req: Request): Promise<Response> {
   if (req.method !== "POST") {
     return new Response("method not allowed", { status: 405 });
   }
 
-  const user = await getUser(req);
+  const user = await auth.user();
   if (!user) return new Response("unauthorized", { status: 401 });
 
   const { prompt } = await req.json() as { prompt?: string };

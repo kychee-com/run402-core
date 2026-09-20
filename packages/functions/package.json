@@ -1,7 +1,7 @@
 {
   "name": "@run402/functions",
   "version": "4.2.0",
-  "description": "In-function helper library for Run402 serverless functions - db, adminDb, getUser, email, ai, assets, verifyWebhook. Auto-bundled into deployed functions; also installable for local TypeScript autocomplete.",
+  "description": "In-function helper library for Run402 serverless functions - db, adminDb, auth, email, ai, assets, verifyWebhook. Auto-bundled into deployed functions; also installable for local TypeScript autocomplete.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

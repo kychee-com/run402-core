@@ -1,5 +1,9 @@
 # `@run402/functions` changelog
 
+## Unreleased
+
+- Correct auth examples to use `auth.user()` and distinguish cookie sessions, direct API tokens and application roles. The tarball smoke executes the packaged README identity example.
+
 ## 4.2.0 (2026-09-17)
 
 ### Fixed

@@ -20,7 +20,7 @@
 //   - The /publish skill's pre-publish smoke section
 
 import { execSync } from "node:child_process";
-import { mkdtempSync, rmSync, mkdirSync, readdirSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -114,6 +114,10 @@ try {
     // `fetch` is stubbed to stand in for the gateway. That is the only fake —
     // the keyset parsing, the single-flight cold-start load, the `kid`
     // selection and the ES256 verification are all the shipped code.
+    const readme = readFileSync(join(installDir, "node_modules/@run402/functions/README.md"), "utf8");
+    const example = readme.match(/<!-- auth-identity-example -->\s*```ts\n([\s\S]*?)```/)?.[1];
+    if (!example) throw new Error("Packaged README identity example missing");
+    const body = example.replace(/^import .*;\s*$/gm, "");
     const result = run(
       `RUN402_PROJECT_ID=prj_smoke RUN402_API_BASE=https://gateway.invalid RUN402_SERVICE_KEY=smoke-service-key node --input-type=module -e "
         import { generateKeyPairSync } from 'node:crypto';
@@ -153,6 +157,10 @@ try {
         const u = await runWithContext(ctx, () => auth.user());
         if (!u || u.id !== 'user_smoke') { console.error('auth.user returned', u); process.exit(1); }
         if (served === 0) { console.error('the keyset was never fetched — verification took some other path'); process.exit(1); }
+        const exampleBody = Buffer.from('${Buffer.from(body).toString("base64")}', 'base64').toString();
+        const documented = new (Object.getPrototypeOf(async function(){}).constructor)('auth', exampleBody);
+        const response = await runWithContext(ctx, () => documented(auth));
+        if ((await response.json()).id !== 'user_smoke') throw new Error('README identity example failed');
         console.log('auth.user OK:', u.id);
       "`,
       { cwd: installDir },
