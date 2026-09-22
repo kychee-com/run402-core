@@ -4,9 +4,9 @@ Run402 Core and Run402 Cloud make different promises.
 
 ## People, agents, and project sovereignty
 
-Run402 Cloud treats people and agents as first-class control-plane principals. Each participant acts through its own authenticator and keeps attributable actions; organization memberships, roles, grants, delegates, freshness, and spend policy determine authority. Founder-agent ownership and human co-ownership are both legitimate.
+Run402 Cloud treats people and agents as first-class control-plane principals. Each participant acts through its own authenticator and keeps attributable actions; organization memberships, roles, grants, grant keys, freshness, and spend policy determine authority. Founder-agent ownership and human co-ownership are both legitimate.
 
-Run402 Core contributes a different part of that sovereignty story. It provides an inspectable runtime, deterministic release semantics, and a verified import path for the supported portable application slice. It does not currently recreate Cloud principals, organization membership, grants/delegates, Buzz identity links, billing authority, or complete action-time history. Equal participant standing is a Run402 product invariant; full control-plane portability is not yet a Core claim.
+Run402 Core contributes a different part of that sovereignty story. It provides an inspectable runtime, deterministic release semantics, and a verified import path for the supported portable application slice. It does not currently recreate Cloud principals, organization membership, grants and grant keys, Buzz identity links, billing authority, or complete action-time history. Equal participant standing is a Run402 product invariant; full control-plane portability is not yet a Core claim.
 
 ## Run402 Core
 
@@ -53,7 +53,7 @@ Run402 Cloud is the managed production service. It can remain proprietary where 
 Cloud-only areas include:
 
 - human/agent principal and authenticator lifecycle
-- organization membership, grants, delegates, and step-up policy
+- organization membership, grants, grant keys, and step-up policy
 - Buzz identity links and community control plane
 - complete managed action-time attribution history
 - multi-tenant allocation
@@ -75,6 +75,6 @@ Open source reduces vendor-lock-in risk for the supported runtime slice. Distinc
 
 ## Run402 Core Scope
 
-This repo does not yet provide a complete production self-hosted Run402 control plane. It includes Docker Compose, local Postgres/PostgREST, Core gateway execution, storage/routing conformance, trusted local functions, single-node scheduled functions, a narrow Astro SSR target, and Core import for verified portable archives. It does not include the managed human/agent principal graph, organization memberships, grants/delegates, Buzz control plane, complete Cloud attribution history, HA scheduler coordination, missed-tick replay, TLS automation, managed backups, monitoring, custom domains, global routing, S3-compatible storage, hostile multi-tenant runtime isolation, or Cloud import back into managed Run402.
+This repo does not yet provide a complete production self-hosted Run402 control plane. It includes Docker Compose, local Postgres/PostgREST, Core gateway execution, storage/routing conformance, trusted local functions, single-node scheduled functions, a narrow Astro SSR target, and Core import for verified portable archives. It does not include the managed human/agent principal graph, organization memberships, grants and grant keys, Buzz control plane, complete Cloud attribution history, HA scheduler coordination, missed-tick replay, TLS automation, managed backups, monitoring, custom domains, global routing, S3-compatible storage, hostile multi-tenant runtime isolation, or Cloud import back into managed Run402.
 
 Run402 Core proves the public/private split with real production-used packages and a runnable local data plane first.

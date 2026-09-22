@@ -2,7 +2,7 @@
 
 In-function helper library for [Run402](https://run402.com) serverless functions. Imported _inside_ a deployed function — gives you typed access to the caller's database (RLS-respecting) and the project's admin database, the caller's auth, the project's mailbox, AI helpers, runtime asset uploads, and the project's cursored event feed.
 
-Run402's first-class people/agent **control-plane principals** are distinct from the deployed app's tenant callers described in this package. Here, `auth.user()`, verified tenant identity, and RLS identify an end user of the application; they do not expose or replace the Run402 organization membership, grant, delegate, or Buzz identity model.
+Run402's first-class people/agent **control-plane principals** are distinct from the deployed app's tenant callers described in this package. Here, `auth.user()`, verified tenant identity, and RLS identify an end user of the application; they do not expose or replace the Run402 organization membership, grant, grant key, or Buzz identity model.
 
 ```ts
 import { db, adminDb, auth, email, ai, assets } from "@run402/functions";
@@ -334,7 +334,7 @@ export default async function handler(req: Request): Promise<Response> {
 
 ## `events.emit(type, payload?, opts?)` — emit into the project's event feed
 
-Write a fact into this project's cursored event feed (the `internal.project_events` outbox) from inside a deployed function. Every existing and future feed consumer — `run402 events`, the MCP `list_project_events` tool, the operator console's Activity view — reads it back for free the moment your code calls `events.emit`.
+Write an event into this project's cursored event feed (the `internal.project_events` outbox) from inside a deployed function. Every existing and future feed consumer — `run402 events`, the MCP `list_project_events` tool, the console's Activity view — reads it back for free the moment your code calls `events.emit`.
 
 ```ts
 import { events } from "@run402/functions";
@@ -346,9 +346,9 @@ await events.emit("signature_completed", { request_id, signer }, {
 
 Read it back with `run402 events --source app --project <project-id>` — app events share the exact cursor/pagination/retention machinery as platform events (deploys, suspensions, transfers), just filtered to `source=app`.
 
-**Vocabulary.** `type` must be flat snake_case matching `/^[a-z][a-z0-9_]{2,63}$/` — no dots, no `app_` prefix. Platform-registered type names (`deploy_activated`, `mailbox_suspended`, ...) are **reserved**: an app cannot impersonate a platform fact. This is enforced **server-side only** — `events.emit` does not pre-validate the grammar or check the reservation list locally; it sends `type` exactly as given. A bad grammar or a reserved name comes back as a thrown `Run402EventsPlatformError` with `code: "INVALID_EVENT_TYPE"` or `code: "RESERVED_EVENT_TYPE"` (both HTTP 400) — never a silently rewritten or dropped call.
+**Vocabulary.** `type` must be flat snake_case matching `/^[a-z][a-z0-9_]{2,63}$/` — no dots, no `app_` prefix. Platform-registered type names (`deploy_activated`, `mailbox_suspended`, ...) are **reserved**: an app cannot impersonate a platform event. This is enforced **server-side only** — `events.emit` does not pre-validate the grammar or check the reservation list locally; it sends `type` exactly as given. A bad grammar or a reserved name comes back as a thrown `Run402EventsPlatformError` with `code: "INVALID_EVENT_TYPE"` or `code: "RESERVED_EVENT_TYPE"` (both HTTP 400) — never a silently rewritten or dropped call.
 
-**Idempotency.** Pass `idempotencyKey` on any code path that might run more than once for the same real-world fact — webhook retries, function-run retries, anything at-least-once. The gateway dedupes on `(project_id, idempotency_key)` **forever**: this is a durable identity for the fact, not a short-lived retry-window token like an HTTP `Idempotency-Key` header. Reusing a key days or years later still replays the *original* stored event (`deduplicated: true` on the response) instead of creating a new one.
+**Idempotency.** Pass `idempotencyKey` on any code path that might run more than once for the same real-world event — webhook retries, function-run retries, anything at-least-once. The gateway dedupes on `(project_id, idempotency_key)` **forever**: this is a durable identity for the event, not a short-lived retry-window token like an HTTP `Idempotency-Key` header. Reusing a key days or years later still replays the *original* stored event (`deduplicated: true` on the response) instead of creating a new one.
 
 **Response shape** — both a fresh emit (`201`) and an idempotent replay (`200`) return this:
 
@@ -366,7 +366,7 @@ Read it back with `run402 events --source app --project <project-id>` — app ev
 }
 ```
 
-`payload` is a compact JSON fact — ids and verdict fields, never bodies or secrets — bounded to 8 KiB server-side (oversize payloads are truncated with `payload_truncated: true` rather than rejected). `next_actions` is always platform-synthesized; there is no way to supply your own drill-downs from the emit call (an app-supplied action would be prompt-injection-by-schema for agents that treat `next_actions` as trusted).
+`payload` is a compact JSON event — ids and verdict fields, never bodies or secrets — bounded to 8 KiB server-side (oversize payloads are truncated with `payload_truncated: true` rather than rejected). `next_actions` is always platform-synthesized; there is no way to supply your own drill-downs from the emit call (an app-supplied action would be prompt-injection-by-schema for agents that treat `next_actions` as trusted).
 
 **Errors.** Non-2xx responses throw `Run402EventsPlatformError` — see [Errors](#errors) below. In practice the two you're most likely to see are `code: "QUOTA_EXCEEDED"` (403, the organization's pooled daily quota is exhausted; `details: {resource: "events_per_day", scope, used, limit}`) and cross-project denials (`code: "FORBIDDEN"`, 403), alongside the two vocabulary errors above.
 
@@ -417,7 +417,7 @@ export default async function handler(req: Request): Promise<Response> {
 
 Request fields:
 - `req.method` is the original browser method. `GET` routes also match `HEAD`; `HEAD` reaches the handler as `HEAD`.
-- `req.url` is the full public URL, including scheme, host, path, and query, on managed subdomains, deployment hosts, and verified custom domains. Derive OAuth callback URLs from `new URL(req.url).origin`.
+- `req.url` is the full public URL, including scheme, host, path, and query, on managed subdomains, hosts, and verified custom domains. Derive OAuth callback URLs from `new URL(req.url).origin`.
 - `req.headers` is a Fetch `Headers` object. Cookie data is available through the `cookie` header.
 - Run402 Cloud priced routes expose a confirmed x402 payment through `getRoutedPaymentContext(req)`, backed by platform-owned `x-run402-payment-*` headers. The helper returns `null` for unpriced routes. Run402 Core does not populate payment context because tenant x402 settlement is a Cloud control-plane feature.
 - The returned payment keeps `paymentId` as the canonical tenant-side dedupe identity and also reports `idempotencyKey` (`null` for proof-keyed requests), `deduplicated`, and `delivery` (`first` or `replay`). Use `paymentId` to make application side effects idempotent; tenant execution remains at-least-once.

@@ -36,7 +36,7 @@ Excluded:
 - hostile multi-tenant code isolation
 - Cloud import back into managed Run402
 - Cloud human/agent principal and authenticator lifecycle
-- organization membership, grants, delegates, and Buzz control-plane state
+- organization membership, grants, grant keys, and Buzz control-plane state
 - complete Cloud action-time attribution history
 
 ## Validation
@@ -70,7 +70,7 @@ These are separate promises and should stay separate in docs, marketing, and age
 
 ## Product Discipline
 
-Do not add a second deployment API to make open source feel complete. The canonical write primitive remains Run402 apply:
+Do not add a second deploy API to make open source feel complete. The canonical write primitive remains Run402 apply:
 
 ```text
 POST /apply/v1/plans

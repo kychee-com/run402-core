@@ -23,7 +23,7 @@ This guide assumes outbound email is already working from `docs/deployment/aws-e
 - A Lambda execution role for `scripts/core-ses-inbound-forwarder.mjs`
 - `aws`, `curl`, `jq`, `zip`, and `docker compose`
 
-Set the operator variables:
+Set the host variables:
 
 ```bash
 export CORE_API_BASE="http://<ec2-public-dns-or-ip>:4020"
@@ -51,7 +51,7 @@ aws s3api put-public-access-block \
     BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
 ```
 
-Expected: both commands return successfully. The bucket is private and operator-owned.
+Expected: both commands return successfully. The bucket is private and host-owned.
 
 ## Deploy The Forwarder
 
@@ -131,7 +131,7 @@ aws sesv2 get-email-identity \
 
 Add the DNS records SES shows for verification. Then add the MX record SES shows for inbound receiving. Use the exact MX target shown in the SES console for your region.
 
-Make sure you add the MX record at the authoritative DNS provider for the domain. A Route53 hosted zone can exist without being authoritative if the registrar delegates the domain to another provider.
+Make sure you add the MX record at the authoritative DNS provider for the domain. A Route53 hosted zone can exist without being authoritative if the registrar grant keys the domain to another provider.
 
 ```bash
 dig +short NS "$CORE_EMAIL_INBOUND_DOMAINS"

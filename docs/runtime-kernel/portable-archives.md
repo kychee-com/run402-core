@@ -4,7 +4,7 @@ Run402 portable archives are the public no-lock-in artifact for the supported Ru
 
 Portable archive v1 exports the supported Run402 Core runtime slice of a Cloud project: active release descriptors, phased Postgres schema/data descriptors, storage/static bytes, trusted-code function artifacts, limited Astro SSR runtime metadata, disabled auth subject stubs, and value-free secret requirements. It does not export an entire Cloud project. Managed Cloud operations, global routing, billing, allowance/spend state, abuse controls, monitoring, compliance, support, logs, diagnostics, credentials, sessions, OAuth tokens, signed URLs, provider IDs, tenant IDs, fleet IDs, and backups are outside this artifact.
 
-The archive also does not recreate Run402 Cloud's people/agent control-plane principals, organization memberships, grants, delegates, Buzz identity links, or complete action-time attribution history. Those remain Cloud authority records. The sovereignty claim here is concrete and narrower: an independently verifiable application-runtime slice can leave Cloud and run in Core without Cloud credentials after download.
+The archive also does not recreate Run402 Cloud's people/agent control-plane principals, organization memberships, grants, grant keys, Buzz identity links, or complete action-time attribution history. Those remain Cloud authority records. The sovereignty claim here is concrete and narrower: an independently verifiable application-runtime slice can leave Cloud and run in Core without Cloud credentials after download.
 
 ## Format
 

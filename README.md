@@ -30,7 +30,7 @@ The setup, conformance and native package examples below intentionally use Docke
 
 ## What Is Not Here Yet
 
-This repo is not a complete production self-hosted Run402 distribution. It does not include Cloud's principal and organization authority graph, human control-plane login, grants/delegates, Buzz control-plane lifecycle, complete action-time attribution history, fleet scheduling, Aurora operations, global routing, Cloud billing operations, managed abuse controls, managed backups, monitoring, compliance automation, TLS automation, HA, custom domains, arbitrary dependency installation, hostile multi-tenant code isolation, or Cloud import back into managed Run402.
+This repo is not a complete production self-hosted Run402 distribution. It does not include Cloud's principal and organization authority graph, human control-plane login, grants and grant keys, Buzz control-plane lifecycle, complete action-time attribution history, fleet scheduling, Aurora operations, global routing, Cloud billing operations, managed abuse controls, managed backups, monitoring, compliance automation, TLS automation, HA, custom domains, arbitrary dependency installation, hostile multi-tenant code isolation, or Cloud import back into managed Run402.
 
 The promise of this slice is smaller and concrete: the supported Core runtime path is public, buildable, testable, and suitable for Run402 Cloud to consume or verify directly.
 
@@ -79,7 +79,7 @@ Current package scope:
 | Canonicalize and digest | Yes |
 | Materialize desired release state | Yes |
 | Compute release diff | Yes |
-| Derive fact and content requirements | Yes |
+| Derive event and content requirements | Yes |
 | Deploy resources | No |
 | Execute migrations | No |
 | Store secrets/content | No |

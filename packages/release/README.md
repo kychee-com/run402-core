@@ -12,7 +12,7 @@ The semantics are participant-neutral: the same reviewed application intent can 
 - JSON Schemas in `schemas/`.
 - Canonicalization rules in `docs/canonicalization.md`.
 - Typed-config descriptor helpers and normalization for SDK/CLI executable configs.
-- Reviewed-plan fingerprint helpers for gateway-approved deployment plans.
+- Reviewed-plan fingerprint helpers for gateway-approved deploy plans.
 - Field support matrix in `docs/field-support.md`.
 - Compatibility policy in `docs/compatibility.md`.
 - App authoring helpers in `docs/app-kit.md` and `@run402/release/app-kit`.

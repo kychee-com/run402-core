@@ -2,7 +2,7 @@
 
 Use this checklist when a Run402 Cloud, SDK, CLI, MCP, or docs change touches behavior that may depend on Run402 Core.
 
-Core is not Cloud. Core should support the shared application/runtime contracts that make Run402 apps understandable and progressively portable. Core should not absorb Cloud billing, allowance, operator, abuse-control, or managed-infrastructure machinery.
+Core is not Cloud. Core should support the shared application/runtime contracts that make Run402 apps understandable and progressively portable. Core should not absorb Cloud billing, allowance, staff, abuse-control, or managed-infrastructure machinery.
 
 The private Run402 OpenSpec repo enforces the Agent DX Benchmark section markers for applicable designs. This Core checklist is the follow-through surface for package boundaries, fixtures, docs, and conformance evidence.
 
@@ -14,11 +14,11 @@ The private Run402 OpenSpec repo enforces the Agent DX Benchmark section markers
 | Apply semantics that do not require Cloud billing/fleet state | yes | Cloud tenant allocation and hosted control-plane policy |
 | Runtime kernel routing, storage serving, function invocation contracts | yes | global routing, custom-domain automation, CDN operations |
 | Static public paths, route manifests, storage visibility | yes | Cloud cache fleet implementation details |
-| Function helper APIs | yes | Cloud-only payment/operator integrations |
+| Function helper APIs | yes | Cloud-only payment/staff integrations |
 | Portable archive inspect/verify/import semantics | yes | Cloud archive export and managed-Cloud import operations |
 | Schemas, fixtures, conformance evidence | yes | no |
 | Billing, x402 allowance, tiers, leases, org payment rails | no | yes |
-| Operator/admin, abuse, compliance, hosted account lifecycle | no | yes |
+| Staff, abuse, compliance, hosted account lifecycle | no | yes |
 
 ## Required Review For Shared Contracts
 
@@ -34,7 +34,7 @@ If a change touches release, runtime, functions, storage, routing, manifest/conf
 | smoke/conformance scripts | proof that Core supports the contract | `core:*` scripts and `core:conformance` |
 | package docs | contributor/user guidance | README/changelog for each touched package |
 
-Mark a surface `N/A` only with a reason. Typical reasons: x402 payment rails, hosted allowance, Cloud billing, Cloud operator controls, Cloud account lifecycle, global routing operations, or managed-Cloud abuse/compliance internals.
+Mark a surface `N/A` only with a reason. Typical reasons: x402 payment rails, hosted allowance, Cloud billing, Cloud staff controls, Cloud account lifecycle, global routing operations, or managed-Cloud abuse/compliance internals.
 
 ## Canonical Agent Contract Addendum
 

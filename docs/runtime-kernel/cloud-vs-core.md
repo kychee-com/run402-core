@@ -4,7 +4,7 @@ Run402 Cloud should be the easiest place to start, not the only place the suppor
 
 Run402 Core exists to remove vendor-lock-in risk. It provides a public, self-hostable runtime boundary for the supported release slice.
 
-Run402 Cloud treats people and agents as first-class control-plane principals with distinct authenticators and explicit authority. Core does not reproduce that principal, organization, grant/delegate, Buzz, billing, or complete attribution graph; its sovereignty claim is the narrower, verifiable runtime boundary described here.
+Run402 Cloud treats people and agents as first-class control-plane principals with distinct authenticators and explicit authority. Core does not reproduce that principal, organization, grant and grant-key, Buzz, billing, or complete attribution graph; its sovereignty claim is the narrower, verifiable runtime boundary described here.
 
 Run402 Cloud can still remain proprietary where it operates managed infrastructure:
 

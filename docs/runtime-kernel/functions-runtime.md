@@ -6,9 +6,9 @@ Run402 Core functions run trusted project-owner code for local development and p
 
 Private Cloud owns these production operations and they must not move into the public Core repo:
 
-- Lambda/ECS function deployment, activation, versioning, aliases, and cleanup
+- Lambda/ECS function deploy, activation, versioning, aliases, and cleanup
 - CloudWatch log retrieval and provider log stream metadata
-- fleet scheduling, quota enforcement, abuse controls, billing, backups, monitoring, compliance, support, and operator tooling
+- fleet scheduling, quota enforcement, abuse controls, billing, backups, monitoring, compliance, support, and staff tooling
 - Cloud global routing, custom domains, CDN invalidation, POP/region metadata, and provider identifiers
 - production secret custody, KMS integrations, and managed environment refresh
 
@@ -54,7 +54,7 @@ The child environment is allowlisted:
 - `RUN402_FUNCTION_NAME`
 - `RUN402_REQUEST_ID`
 
-Gateway secrets, database URLs, host environment variables, npm tokens, and operator credentials are not inherited. Declared app secrets are injected only when they are required by the active release and present in the local Core secret store. Secret values are never returned by read APIs.
+Gateway secrets, database URLs, host environment variables, npm tokens, and your own credentials are not inherited. Declared app secrets are injected only when they are required by the active release and present in the local Core secret store. Secret values are never returned by read APIs.
 
 Current hardening limits:
 
@@ -161,7 +161,7 @@ Boundary scans and code review must check source, package tarballs, source maps,
 
 - private repo paths and private package scopes
 - AWS/Lambda/ECS/CloudWatch/CloudFront/S3 identifiers or SDK imports
-- tenant ids, billing meter names, quota class names, abuse decision ids, fleet states, and operator-only terms
+- tenant ids, billing meter names, quota class names, abuse decision ids, fleet states, and staff-only terms
 - gateway signing keys, service keys, database admin URLs, npm tokens, AWS/GCP credentials, and raw host environment variables
 - request bodies and response bodies in platform diagnostics
 - sensitive headers such as `Authorization`, `Cookie`, `Set-Cookie`, payment headers, service keys, and inbound spoofed `x-run402-*`
