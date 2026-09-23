@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **`adminDb()` uses the project-scoped routes.** `adminDb().from()` calls `/projects/v1/:project_id/rest/*` and `adminDb().sql()` calls `/projects/v1/:project_id/sql`, replacing `/admin/v1/rest/*` and `/projects/v1/admin/:project_id/sql`, which Run402 Cloud is retiring. Both send `Run402-Client: surface="function", function="<name>"` so the platform can tell which function of a project still calls a retiring route. The `adminDb` API is unchanged. Needs a gateway that serves the new routes (Run402 Cloud now; Run402 Core in this release).
 - Correct auth examples to use `auth.user()` and distinguish cookie sessions, direct API tokens and application roles. The tarball smoke executes the packaged README identity example.
 
 ## 4.2.0 (2026-09-17)

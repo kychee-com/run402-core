@@ -6,6 +6,19 @@ interface QueryBuilderOpts {
   apikey: string;
   authorization: string | undefined;
   basePath: string;
+  /** Extra request headers, e.g. `Run402-Client` on the service-key client. */
+  headers?: Record<string, string>;
+}
+
+/**
+ * `Run402-Client` for calls a deployed function makes with its service key:
+ * `surface="function"` plus the function's name, so the gateway can say which
+ * function of a project still calls a route it is retiring.
+ */
+export function functionClientHeader(): Record<string, string> {
+  const raw = process.env.RUN402_FUNCTION_NAME || process.env.AWS_LAMBDA_FUNCTION_NAME || "";
+  const name = raw.replace(/[^A-Za-z0-9._-]/g, "").slice(0, 64);
+  return { "Run402-Client": name ? `surface="function", function="${name}"` : `surface="function"` };
 }
 
 /** Stable SDK-level codes for the `db()` / `adminDb()` throw sites. */
@@ -161,6 +174,7 @@ export class QueryBuilder {
   #apikey: string;
   #authorization: string | undefined;
   #basePath: string;
+  #extraHeaders: Record<string, string>;
   #rowMode: "many" | "single" | "maybeSingle" = "many";
 
   constructor(table: string, opts: QueryBuilderOpts) {
@@ -168,6 +182,7 @@ export class QueryBuilder {
     this.#apikey = opts.apikey;
     this.#authorization = opts.authorization;
     this.#basePath = opts.basePath;
+    this.#extraHeaders = opts.headers ?? {};
   }
 
   select(columns = "*"): this {
@@ -320,6 +335,7 @@ export class QueryBuilder {
     const url = `${config.API_BASE}${this.#basePath}/${this.#table}${qs ? "?" + qs : ""}`;
 
     const headers: Record<string, string> = {
+      ...this.#extraHeaders,
       apikey: this.#apikey,
       "Content-Type": "application/json",
       Prefer: "return=representation",
@@ -509,12 +525,12 @@ interface AdminDbClient {
 
 /**
  * Admin DB client. Uses the project's service_key (role=service_role,
- * BYPASSRLS). Routes through /admin/v1/rest/* at the gateway, which rejects
- * any other caller than service_role. Use for explicit server-side operations
- * that must ignore RLS.
+ * BYPASSRLS). Routes through /projects/v1/:project_id/rest/* at the gateway,
+ * which accepts only the project's own service key. Use for explicit
+ * server-side operations that must ignore RLS.
  *
- * `adminDb().sql()` targets the /projects/v1/admin/:project_id/sql endpoint, which
- * runs arbitrary SQL as a superuser-scoped role on the project schema.
+ * `adminDb().sql()` targets /projects/v1/:project_id/sql, which runs
+ * arbitrary SQL as a superuser-scoped role on the project schema.
  */
 export function adminDb(): AdminDbClient {
   if (!config.SERVICE_KEY) {
@@ -526,15 +542,17 @@ export function adminDb(): AdminDbClient {
       return new QueryBuilder(table, {
         apikey: serviceKey,
         authorization: `Bearer ${serviceKey}`,
-        basePath: "/admin/v1/rest",
+        basePath: `/projects/v1/${config.PROJECT_ID}/rest`,
+        headers: functionClientHeader(),
       });
     },
     async sql(query: string, params?: unknown[]): Promise<AdminSqlResult> {
-      const url = `${config.API_BASE}/projects/v1/admin/${config.PROJECT_ID}/sql`;
+      const url = `${config.API_BASE}/projects/v1/${config.PROJECT_ID}/sql`;
       const hasParams = Array.isArray(params) && params.length > 0;
       const res = await fetch(url, {
         method: "POST",
         headers: {
+          ...functionClientHeader(),
           Authorization: `Bearer ${serviceKey}`,
           "Content-Type": hasParams ? "application/json" : "text/plain",
         },

@@ -32,7 +32,7 @@ function makeRequest(authorization?: string): Request {
   return new Request("https://fn.localhost/", { method: "POST", headers });
 }
 
-describe("adminDb().from() — BYPASSRLS via /admin/v1/rest", () => {
+describe("adminDb().from() — BYPASSRLS via /projects/v1/:project_id/rest", () => {
   let lastFetchUrl: string;
   let lastFetchOpts: RequestInit;
 
@@ -49,12 +49,24 @@ describe("adminDb().from() — BYPASSRLS via /admin/v1/rest", () => {
     });
   });
 
-  it("posts to /admin/v1/rest/<table> with service_key in both apikey and Authorization", async () => {
+  it("posts to /projects/v1/:project_id/rest/<table> with service_key in both apikey and Authorization", async () => {
     await adminDb().from("users").select();
-    assert.equal(lastFetchUrl, "https://test.run402.com/admin/v1/rest/users?select=*");
+    assert.equal(lastFetchUrl, "https://test.run402.com/projects/v1/prj_test/rest/users?select=*");
     const headers = lastFetchOpts.headers as Record<string, string>;
     assert.equal(headers.apikey, "sk_test");
     assert.equal(headers.Authorization, "Bearer sk_test");
+    assert.match(headers["Run402-Client"]!, /^surface="function"/);
+  });
+
+  it("names the function in Run402-Client", async () => {
+    const saved = process.env.RUN402_FUNCTION_NAME;
+    process.env.RUN402_FUNCTION_NAME = "nightly";
+    try {
+      await adminDb().from("users").select();
+      assert.equal((lastFetchOpts.headers as Record<string, string>)["Run402-Client"], 'surface="function", function="nightly"');
+    } finally {
+      if (saved === undefined) delete process.env.RUN402_FUNCTION_NAME; else process.env.RUN402_FUNCTION_NAME = saved;
+    }
   });
 
   it("supports insert/update/delete", async () => {
@@ -98,7 +110,7 @@ describe("adminDb().from() — BYPASSRLS via /admin/v1/rest", () => {
 });
 
 describe("adminDb().sql() — SQL bypass", () => {
-  it("posts to /projects/v1/admin/:project_id/sql with Bearer service_key", async () => {
+  it("posts to /projects/v1/:project_id/sql with Bearer service_key", async () => {
     let capturedUrl = "";
     let capturedOpts: RequestInit = {};
     mock.method(globalThis, "fetch", async (url: string, opts: RequestInit) => {
@@ -108,9 +120,10 @@ describe("adminDb().sql() — SQL bypass", () => {
     });
 
     await adminDb().sql("SELECT * FROM users WHERE id = $1", ["abc"]);
-    assert.equal(capturedUrl, "https://test.run402.com/projects/v1/admin/prj_test/sql");
+    assert.equal(capturedUrl, "https://test.run402.com/projects/v1/prj_test/sql");
     const headers = capturedOpts.headers as Record<string, string>;
     assert.equal(headers.Authorization, "Bearer sk_test");
+    assert.match(headers["Run402-Client"]!, /^surface="function"/);
     assert.equal(headers["Content-Type"], "application/json");
     assert.equal(
       capturedOpts.body,

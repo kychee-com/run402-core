@@ -42,7 +42,7 @@ const [created] = await db(req).from("items").insert({ title: "New", done: false
 
 ### `adminDb().from(table)` — bypass RLS
 
-Uses the project's `service_key`. Returns *all* rows regardless of RLS. Routes to `/admin/v1/rest/*` (the gateway rejects `role=service_role` on `/rest/v1/*`, so bypass traffic lives on its own surface).
+Uses the project's `service_key`. Returns *all* rows regardless of RLS. Routes to `/projects/v1/:project_id/rest/*` (the gateway rejects `role=service_role` on `/rest/v1/*`, so bypass traffic lives on its own surface), and `adminDb().sql()` to `/projects/v1/:project_id/sql`. Both send `Run402-Client: surface="function", function="<name>"`.
 
 Use only when the function acts on behalf of the **platform**, not the **caller** — audit logs, cron cleanup, webhook handlers, fan-out writes after a Stripe event.
 

@@ -1261,6 +1261,58 @@ test("admin SQL compatibility is service-key only and project scoped", async () 
   assert.equal(crossSchemaRejected.status, 403);
 });
 
+test("project-scoped SQL and service REST routes serve the same handlers and check the path's project", async () => {
+  const catalog = new MemoryProjectCatalog();
+  const project = await catalog.create({ name: "successor app" });
+  const other = { project_id: "prj_0000000000000009" };
+  const projectSql = new MemoryProjectSql();
+  const calls: Array<{ url: string }> = [];
+  const runtime = {
+    projects: catalog,
+    projectKeys: catalog,
+    projectSql,
+    postgrestUrl: "http://postgrest.local",
+    jwtSecret: "successor-secret",
+    fetch: async (url: RequestInfo | URL) => {
+      calls.push({ url: String(url) });
+      return new Response(JSON.stringify([{ id: 1 }]), { status: 200, headers: { "content-type": "application/json" } });
+    },
+  };
+
+  const sql = await coreGatewayResponse({
+    method: "POST",
+    pathname: `/projects/v1/${project.project_id}/sql`,
+    headers: { apikey: project.service_key },
+    body: "SELECT key FROM site_config",
+  }, runtime);
+  assert.equal(sql.status, 200);
+  assert.equal(projectSql.last?.project.project_id, project.project_id);
+
+  const sqlOtherProject = await coreGatewayResponse({
+    method: "POST",
+    pathname: `/projects/v1/${other.project_id}/sql`,
+    headers: { apikey: project.service_key },
+    body: "SELECT 1",
+  }, runtime);
+  assert.equal(sqlOtherProject.status, 404);
+
+  const rest = await coreGatewayResponse({
+    method: "GET",
+    pathname: `/projects/v1/${project.project_id}/rest/site_config?select=*`,
+    headers: { apikey: project.service_key, authorization: `Bearer ${project.service_key}` },
+  }, runtime);
+  assert.equal(rest.status, 200);
+  assert.equal(calls[0]?.url, "http://postgrest.local/site_config?select=*");
+
+  const restOtherProject = await coreGatewayResponse({
+    method: "GET",
+    pathname: `/projects/v1/${other.project_id}/rest/site_config?select=*`,
+    headers: { apikey: project.service_key, authorization: `Bearer ${project.service_key}` },
+  }, runtime);
+  assert.equal(restOtherProject.status, 403);
+  assert.equal(calls.length, 1);
+});
+
 test("storage routes upload, serve, sign, preserve immutable versions, delete, and paginate", async () => {
   const catalog = new MemoryProjectCatalog();
   const project = await catalog.create({ name: "storage app" });

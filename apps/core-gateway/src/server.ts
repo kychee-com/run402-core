@@ -793,7 +793,22 @@ export async function coreGatewayResponse(
     });
   }
 
-  const adminSqlMatch = /^\/projects\/v1\/admin\/([^/]+)\/sql$/.exec(pathname);
+  // The project-scoped service REST route (the successor of /admin/v1/rest/*):
+  // the path names the project, and it must be the service key's project.
+  const projectRestMatch = /^\/projects\/v1\/([^/]+)\/rest(\/.*)?$/.exec(pathname);
+  if (projectRestMatch) {
+    return await proxyServiceRest(runtime, {
+      method,
+      pathname: `/admin/v1/rest${projectRestMatch[2] ?? ""}`,
+      rawSearch: url.search,
+      headers,
+      body: request.body,
+    }, projectRestMatch[1]);
+  }
+
+  // Raw SQL: /projects/v1/:project_id/sql (the successor) and the older
+  // /projects/v1/admin/:project_id/sql run the same handler.
+  const adminSqlMatch = /^\/projects\/v1\/(?:admin\/)?([^/]+)\/sql$/.exec(pathname);
   if (method === "POST" && adminSqlMatch) {
     const auth = await requireProjectService(runtime, adminSqlMatch[1], headers);
     if ("status" in auth) return auth;
@@ -2074,9 +2089,16 @@ async function proxyCallerRest(
 async function proxyServiceRest(
   runtime: CoreGatewayRuntime,
   input: RestProxyInput,
+  pathProjectId?: string,
 ): Promise<CoreGatewayResult> {
   const resolved = await resolveProjectFromApiKey(runtime, input.headers, "service");
   if ("status" in resolved) return resolved;
+  if (pathProjectId !== undefined && pathProjectId !== resolved.project.project_id) {
+    return {
+      status: 403,
+      body: { error: "project_mismatch", message: "The service key belongs to a different project than the path names." },
+    };
+  }
   const token = signJwt({
     iss: "run402-core",
     project_id: resolved.project.project_id,
@@ -2464,7 +2486,7 @@ async function readRequestBody(req: IncomingMessage, pathnameWithQuery: string):
   const contentType = Array.isArray(req.headers["content-type"])
     ? req.headers["content-type"][0] ?? ""
     : req.headers["content-type"] ?? "";
-  if (/^\/projects\/v1\/admin\/[^/]+\/sql(?:\?|$)/.test(pathnameWithQuery)) {
+  if (/^\/projects\/v1\/(?:admin\/)?[^/]+\/sql(?:\?|$)/.test(pathnameWithQuery)) {
     const raw = await readRequestText(req);
     if (contentType.includes("application/json")) {
       return raw.trim() ? JSON.parse(raw) as unknown : {};
