@@ -482,7 +482,7 @@ export default async function handler(req: Request): Promise<Response> {
 ```
 
 - The tool name is the function name. The function needs exactly one exact `POST` route in the release (for example `/api/cancel`); `tools/call` sends the arguments to that route as the JSON body, through the same pipeline as a browser request.
-- The platform reads the declaration at deploy and never runs it, so it must be a literal: strings, numbers, booleans, `null`, arrays, and objects, with `satisfies` or a type annotation allowed. `description` is 1-1024 characters, `title` at most 128, `input` a JSON Schema whose `type` is `"object"`. Deploy fails with `MCP_TOOL_NOT_STATIC`, `MCP_TOOL_SCHEMA_INVALID`, `MCP_TOOL_TOO_LARGE`, `MCP_TOOL_ROUTE_REQUIRED`, or `MCP_TOOL_ROUTE_AMBIGUOUS`.
+- The platform reads the declaration at deploy and never runs it, so it must be a literal: strings, numbers, booleans, `null`, arrays, and objects, with `satisfies` or a type annotation allowed. `description` is 1-1024 characters, `title` at most 128, `input` a JSON Schema whose `type` is `"object"`. Deploy fails with `MCP_TOOL_NOT_STATIC`, `MCP_TOOL_SCHEMA_INVALID` (including a declaration over 64 KiB), `MCP_TOOL_NAME_INVALID` (the function name is not `[A-Za-z0-9_.-]{1,128}`), `MCP_TOOL_ROUTE_MISSING`, or `MCP_TOOL_ROUTE_AMBIGUOUS`.
 - Auth gates carry over. A tool whose function declares `requireAuth` / `requireRole` is called as the signed-in user of the app: the MCP client connects through the host's own OAuth sign-in and consent, and `auth.user()` and `db(req)` see that user.
 - `ToolDeclaration`, `ToolInputSchema`, and `ToolAnnotations` are type-only exports; nothing runs at runtime.
 
