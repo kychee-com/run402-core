@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **`ToolDeclaration` type.** Type-only exports `ToolDeclaration`, `ToolInputSchema`, and `ToolAnnotations` describe the static `export const tool = { description, title?, input, annotations? }` that makes a routed function an MCP tool of its app on Run402 Cloud (`https://<host>/_run402/mcp`). The README documents the declaration, its deploy-time rules and error codes, and how auth gates carry over. Run402 Core does not serve the endpoint yet (#7, #8).
 - **`adminDb()` uses the project-scoped routes.** `adminDb().from()` calls `/projects/v1/:project_id/rest/*` and `adminDb().sql()` calls `/projects/v1/:project_id/sql`, replacing `/admin/v1/rest/*` and `/projects/v1/admin/:project_id/sql`, which Run402 Cloud is retiring. Both send `Run402-Client: surface="function", function="<name>"` so the platform can tell which function of a project still calls a retiring route. The `adminDb` API is unchanged. Needs a gateway that serves the new routes (Run402 Cloud now; Run402 Core in this release).
 - Correct auth examples to use `auth.user()` and distinguish cookie sessions, direct API tokens and application roles. The tarball smoke executes the packaged README identity example.
 

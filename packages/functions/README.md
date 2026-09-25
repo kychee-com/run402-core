@@ -457,6 +457,37 @@ The raw `run402.routed_http.v1` envelope is an internal gateway transport. Low-l
 
 Runtime route failure codes to branch on: `ROUTE_MANIFEST_LOAD_FAILED` (manifest/propagation), `ROUTED_INVOKE_WORKER_SECRET_MISSING` (custom-domain Worker secret), `ROUTED_INVOKE_AUTH_FAILED` (internal invoke signature), `ROUTED_ROUTE_STALE` (selected route failed release revalidation), `ROUTE_METHOD_NOT_ALLOWED` (method mismatch), and `ROUTED_RESPONSE_TOO_LARGE` (body over 6 MiB).
 
+## MCP tools (`export const tool`)
+
+On Run402 Cloud, every app host serves an MCP endpoint at `https://<host>/_run402/mcp`. A routed function becomes one of its tools when it exports a static `tool` declaration next to its handler:
+
+```ts
+import type { ToolDeclaration } from "@run402/functions";
+
+export const tool = {
+  description: "Cancel one of the signed-in user's bookings.",
+  input: {
+    type: "object",
+    properties: { booking_id: { type: "string" } },
+    required: ["booking_id"],
+  },
+  annotations: { destructiveHint: true, idempotentHint: true },
+} satisfies ToolDeclaration;
+
+export default async function handler(req: Request): Promise<Response> {
+  const { booking_id } = await req.json();
+  // ...
+  return Response.json({ cancelled: booking_id });
+}
+```
+
+- The tool name is the function name. The function needs exactly one exact `POST` route in the release (for example `/api/cancel`); `tools/call` sends the arguments to that route as the JSON body, through the same pipeline as a browser request.
+- The platform reads the declaration at deploy and never runs it, so it must be a literal: strings, numbers, booleans, `null`, arrays, and objects, with `satisfies` or a type annotation allowed. `description` is 1-1024 characters, `title` at most 128, `input` a JSON Schema whose `type` is `"object"`. Deploy fails with `MCP_TOOL_NOT_STATIC`, `MCP_TOOL_SCHEMA_INVALID`, `MCP_TOOL_TOO_LARGE`, `MCP_TOOL_ROUTE_REQUIRED`, or `MCP_TOOL_ROUTE_AMBIGUOUS`.
+- Auth gates carry over. A tool whose function declares `requireAuth` / `requireRole` is called as the signed-in user of the app: the MCP client connects through the host's own OAuth sign-in and consent, and `auth.user()` and `db(req)` see that user.
+- `ToolDeclaration`, `ToolInputSchema`, and `ToolAnnotations` are type-only exports; nothing runs at runtime.
+
+Run402 Core does not serve `/_run402/mcp` yet; the export is inert there ([#7](https://github.com/kychee-com/run402-core/issues/7), [#8](https://github.com/kychee-com/run402-core/issues/8)).
+
 ## Scheduled functions
 
 Run402 Cloud and Run402 Core both use release manifest `functions.replace.<name>.triggers[]` entries for cron-style schedule triggers. A schedule trigger creates a durable function run, so handler code can use the same `defineFunctionRuns(...)` path for delayed work, webhook redrive, and scheduled sweeps. In Run402 Core this is a single-node gateway scheduler, not a managed distributed jobs system.
