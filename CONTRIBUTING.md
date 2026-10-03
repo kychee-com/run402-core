@@ -8,6 +8,7 @@ This repository owns the public functions helper, release compiler, runtime kern
 
 ```bash
 npm ci
+npm run lint    # tsc per package, then type-aware ESLint bug rules
 npm run build
 npm test
 npm run test:functions:smoke

@@ -1,5 +1,6 @@
 export { db, adminDb, QueryBuilder, R402DbError } from "./db.js";
 export type { R402DbErrorCode, AdminSqlResult } from "./db.js";
+// eslint-disable-next-line @typescript-eslint/no-deprecated -- trap exports: they throw R402_AUTH_UNKNOWN_EXPORT with a fix-it
 export { getUser, getUserId, getRole } from "./auth.js";
 export type { User } from "./auth.js";
 
@@ -43,6 +44,7 @@ export {
 // catching the case where `run402 doctor` and the ESLint rule didn't run
 // (e.g. agent paste straight into a route handler). Excluded from public
 // docs intentionally — they exist to fail loudly, not as API.
+// eslint-disable-next-line @typescript-eslint/no-deprecated -- trap exports, as above
 export { getSession, currentUser, getCurrentUser, getServerSession } from "./auth/index.js";
 export { email } from "./email.js";
 export type { EmailSendOptions, EmailRawOptions, EmailTemplateOptions, EmailSendResult } from "./email.js";

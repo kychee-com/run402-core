@@ -23,11 +23,12 @@
     "test:release:smoke": "node packages/release/test/smoke-tarball.mjs",
     "test:runtime-kernel": "npm run test -w packages/runtime-kernel",
     "test:core-gateway": "npm run test -w apps/core-gateway",
-    "lint": "npm run lint:functions && npm run build:functions && npm run lint:release && npm run build:release && npm run lint:runtime-kernel && npm run build:runtime-kernel && npm run lint:core-gateway",
+    "lint": "npm run lint:functions && npm run build:functions && npm run lint:release && npm run build:release && npm run lint:runtime-kernel && npm run build:runtime-kernel && npm run lint:core-gateway && npm run lint:eslint",
     "lint:functions": "tsc --noEmit -p packages/functions/tsconfig.json",
     "lint:release": "npm run lint -w packages/release",
     "lint:runtime-kernel": "npm run lint -w packages/runtime-kernel",
     "lint:core-gateway": "npm run lint -w apps/core-gateway",
+    "lint:eslint": "eslint",
     "pack:release": "npm pack -w packages/release --dry-run",
     "clean:release": "npm run clean -w packages/release",
     "core:health": "node scripts/core-health.mjs",
@@ -46,6 +47,9 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.71.0",
+    "@typescript-eslint/parser": "^8.71.0",
+    "eslint": "^10.12.0",
     "tsx": "^4.20.0",
     "typescript": "^5.7.0"
   },
