@@ -1,11 +1,11 @@
 {
   "owner": "core",
   "repository": "kychee-com/run402-core",
-  "revision": "4006882eda3a2300c7b5ae5a099e14ed3a95e17d",
+  "revision": "06ae8328fe26525b3aa4561f377d8c384acc52d5",
   "sources": [
     {
       "source": "packages/functions/src/auth/errors.ts",
-      "sourceDigest": "7213af5dc71af080ab7fbe90e0f7bc21e03edc85d56de187f96ed5ea8526c763",
+      "sourceDigest": "ee86600c02455a4ebb24102fb883a5411a3926e5d8a2cc6ded87bb9861c9319a",
       "codes": [
         "R402_AUTH_FETCH_ABSOLUTE_URL",
         "R402_AUTH_FRESHNESS_REQUIRED",
@@ -30,7 +30,7 @@
     },
     {
       "source": "packages/functions/src/auth/index.ts",
-      "sourceDigest": "a53638cb789831eaf919c3d77a2e2dd22ab98d7348a0efa2825336aacac11fa8",
+      "sourceDigest": "ac55719eb0ff95549aee256d28b4dd0fbc13825857d6fb4b88bca6eda85e8160",
       "codes": [
         "R402_AUTH_FRESHNESS_REQUIRED"
       ]
