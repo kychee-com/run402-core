@@ -668,3 +668,138 @@ describe("assets.fromRef — re-hydrate a stored AssetRef", () => {
     assert.throws(() => assets.fromRef("not an object" as unknown), /plain object/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// assets.list URL fields + assets.delete (kychee-com/run402-private#814)
+// ---------------------------------------------------------------------------
+
+describe("assets.list — URL fields on each row", () => {
+  const thumb = {
+    kind: "thumb",
+    format: "webp",
+    width_px: 320,
+    height_px: 180,
+    sha256: "9b21fa00",
+    url: "https://pr-aaaaaa.run402.com/_blob/m/hero-3a7fc02e-v1-thumb-9b21fa00.webp",
+    immutable_url: "https://pr-aaaaaa.run402.com/_blob/m/hero-3a7fc02e-v1-thumb-9b21fa00.webp",
+    cdn_url: "https://pr-aaaaaa.run402.com/_blob/m/hero-3a7fc02e-v1-thumb-9b21fa00.webp",
+    cdn_immutable_url: "https://pr-aaaaaa.run402.com/_blob/m/hero-3a7fc02e-v1-thumb-9b21fa00.webp",
+  };
+  const base = {
+    size_bytes: 1,
+    content_type: "image/jpeg",
+    sha256: "3a7fc02e",
+    visibility: "public",
+    immutable_suffix: "3a7fc02e",
+    created_at: "2026-10-06T10:00:00.000Z",
+    updated_at: "2026-10-06T10:00:00.000Z",
+    metadata: null,
+  };
+  beforeEach(() => {
+    mock.method(globalThis, "fetch", async () =>
+      new Response(
+        JSON.stringify({
+          blobs: [
+            {
+              ...base,
+              key: "m/hero.jpg",
+              immutable: true,
+              url: "https://pr-aaaaaa.run402.com/_blob/m/hero.jpg",
+              immutable_url: "https://pr-aaaaaa.run402.com/_blob/m/hero-3a7fc02e.jpg",
+              cdn_url: "https://pr-aaaaaa.run402.com/_blob/m/hero.jpg",
+              cdn_immutable_url: "https://pr-aaaaaa.run402.com/_blob/m/hero-3a7fc02e.jpg",
+              variant_spec_version: "v1",
+              display_url: "https://pr-aaaaaa.run402.com/_blob/m/hero.jpg",
+              display_immutable_url: "https://pr-aaaaaa.run402.com/_blob/m/hero-3a7fc02e.jpg",
+              variants: { thumb },
+              blurhash_data_url: "data:image/png;base64,AAAA",
+              asset_schema: "v1.54",
+            },
+            { ...base, key: "legacy.bin" },
+          ],
+          next_cursor: null,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ));
+  });
+
+  it("passes url, immutable_url, cdn fields and variants through", async () => {
+    const { blobs } = await assets.list({});
+    const row = blobs[0]!;
+    assert.equal(row.immutable, true);
+    assert.equal(row.url, "https://pr-aaaaaa.run402.com/_blob/m/hero.jpg");
+    assert.equal(row.cdn_url, "https://pr-aaaaaa.run402.com/_blob/m/hero.jpg");
+    assert.equal(row.immutable_url, "https://pr-aaaaaa.run402.com/_blob/m/hero-3a7fc02e.jpg");
+    assert.equal(row.cdn_immutable_url, "https://pr-aaaaaa.run402.com/_blob/m/hero-3a7fc02e.jpg");
+    assert.equal(row.variant_spec_version, "v1");
+    assert.equal(row.display_url, "https://pr-aaaaaa.run402.com/_blob/m/hero.jpg");
+    assert.deepEqual(row.variants?.thumb, thumb);
+    assert.equal(row.blurhash_data_url, "data:image/png;base64,AAAA");
+    assert.equal(row.asset_schema, "v1.54");
+  });
+
+  it("omits URL fields a gateway did not send", async () => {
+    const { blobs } = await assets.list({});
+    const row = blobs[1]!;
+    for (const field of ["immutable", "url", "cdn_url", "variants", "variant_spec_version"]) {
+      assert.equal(field in row, false, field);
+    }
+  });
+});
+
+describe("assets.delete", () => {
+  let captured: { url: string; init: RequestInit } | null = null;
+  let response: Response;
+  beforeEach(() => {
+    captured = null;
+    response = new Response(
+      JSON.stringify({
+        deleted: true,
+        key: "media/a b.jpg",
+        revoked_immutable_refs: 4,
+        cache_invalidation: { status: "submitted", paths: ["/_blob/media/a b.jpg"], invalidation_id: "I1" },
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+    mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
+      captured = { url, init };
+      return response;
+    });
+  });
+
+  it("issues DELETE /storage/v1/blob/:key with the service key, segments encoded", async () => {
+    await assets.delete("media/a b.jpg");
+    assert.equal(captured!.url, "https://test.run402.com/storage/v1/blob/media/a%20b.jpg");
+    assert.equal(captured!.init.method, "DELETE");
+    assert.equal((captured!.init.headers as Record<string, string>).apikey, "sk_test");
+  });
+
+  it("returns the gateway's delete result", async () => {
+    const result = await assets.delete("media/a b.jpg");
+    assert.deepEqual(result, {
+      deleted: true,
+      key: "media/a b.jpg",
+      revoked_immutable_refs: 4,
+      cache_invalidation: { status: "submitted", paths: ["/_blob/media/a b.jpg"], invalidation_id: "I1" },
+    });
+  });
+
+  it("returns a null cache_invalidation for a private key", async () => {
+    response = new Response(
+      JSON.stringify({ deleted: true, key: "p.bin", revoked_immutable_refs: 0, cache_invalidation: null }),
+      { status: 200 },
+    );
+    const result = await assets.delete("p.bin");
+    assert.equal(result.cache_invalidation, null);
+  });
+
+  it("throws with the status on a missing key", async () => {
+    response = new Response(JSON.stringify({ error: "Blob not found" }), { status: 404 });
+    await assert.rejects(() => assets.delete("nope.bin"), /Asset delete failed \(404\): Blob not found/);
+  });
+
+  it("rejects an empty key before any HTTP call", async () => {
+    await assert.rejects(() => assets.delete(""), /key must be a non-empty string/);
+    assert.equal(captured, null);
+  });
+});

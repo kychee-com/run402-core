@@ -242,6 +242,30 @@ function normalizeSource(source: AssetPutSourceInput): Uint8Array {
   );
 }
 
+function widenVariants(input: unknown): AssetRef["variants"] {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
+  const src = input as Record<string, unknown>;
+  const variants: NonNullable<AssetRef["variants"]> = {};
+  for (const kind of ["thumb", "medium", "large", "display_jpeg"] as const) {
+    const v = src[kind];
+    if (v && typeof v === "object" && !Array.isArray(v)) {
+      const variantRaw = v as Record<string, unknown>;
+      variants[kind] = {
+        kind,
+        format: (variantRaw.format === "jpeg" ? "jpeg" : "webp"),
+        width_px: Number(variantRaw.width_px ?? 0),
+        height_px: Number(variantRaw.height_px ?? 0),
+        sha256: String(variantRaw.sha256 ?? ""),
+        url: (variantRaw.url as string | null) ?? null,
+        immutable_url: (variantRaw.immutable_url as string | null) ?? null,
+        cdn_url: (variantRaw.cdn_url as string | null) ?? null,
+        cdn_immutable_url: (variantRaw.cdn_immutable_url as string | null) ?? null,
+      };
+    }
+  }
+  return Object.keys(variants).length === 0 ? undefined : variants;
+}
+
 function widenAssetRef(raw: Record<string, unknown>): AssetRef {
   const url = (raw.url as string | null) ?? null;
   const immutableUrl = (raw.immutable_url as string | null) ?? null;
@@ -268,29 +292,7 @@ function widenAssetRef(raw: Record<string, unknown>): AssetRef {
       ? null
       : undefined;
 
-  let variants: AssetRef["variants"];
-  if (raw.variants && typeof raw.variants === "object" && !Array.isArray(raw.variants)) {
-    const src = raw.variants as Record<string, unknown>;
-    variants = {};
-    for (const kind of ["thumb", "medium", "large", "display_jpeg"] as const) {
-      const v = src[kind];
-      if (v && typeof v === "object" && !Array.isArray(v)) {
-        const variantRaw = v as Record<string, unknown>;
-        variants[kind] = {
-          kind,
-          format: (variantRaw.format === "jpeg" ? "jpeg" : "webp"),
-          width_px: Number(variantRaw.width_px ?? 0),
-          height_px: Number(variantRaw.height_px ?? 0),
-          sha256: String(variantRaw.sha256 ?? ""),
-          url: (variantRaw.url as string | null) ?? null,
-          immutable_url: (variantRaw.immutable_url as string | null) ?? null,
-          cdn_url: (variantRaw.cdn_url as string | null) ?? null,
-          cdn_immutable_url: (variantRaw.cdn_immutable_url as string | null) ?? null,
-        };
-      }
-    }
-    if (Object.keys(variants).length === 0) variants = undefined;
-  }
+  const variants = widenVariants(raw.variants);
 
   return {
     key: String(raw.key ?? ""),
@@ -617,8 +619,52 @@ export const assets = {
         image_exif: (row.image_exif as Record<string, unknown> | null) ?? null,
         image_exif_policy:
           (row.image_exif_policy as "keep" | "strip" | null) ?? null,
+        ...listRowUrls(row),
       })),
       next_cursor: json.next_cursor,
+    };
+  },
+
+  /**
+   * Delete a blob by key from the function's own project.
+   *
+   * Calls `DELETE /storage/v1/blob/:key` with the service key, the same
+   * route as the owner-side `r.assets.rm`. The gateway removes the key,
+   * revokes its immutable URLs (the source's and every image variant's),
+   * and queues a CDN invalidation of the mutable URL for a public key. The
+   * content bytes are reaped by the platform once nothing references them.
+   *
+   * Throws when the key does not exist (`Asset delete failed (404)`).
+   */
+  async delete(key: string): Promise<AssetDeleteResult> {
+    if (typeof key !== "string" || key === "") {
+      throw new Error("assets.delete: key must be a non-empty string");
+    }
+    const res = await fetch(
+      config.API_BASE + "/storage/v1/blob/" + key.split("/").map(encodeURIComponent).join("/"),
+      {
+        method: "DELETE",
+        headers: { apikey: config.SERVICE_KEY },
+      },
+    );
+    if (!res.ok) {
+      throw new Error(
+        "Asset delete failed (" + res.status + "): " + (await readErrorMessage(res)),
+      );
+    }
+    const raw = (await res.json()) as Record<string, unknown>;
+    const inv = raw.cache_invalidation as Record<string, unknown> | null | undefined;
+    return {
+      deleted: raw.deleted === true,
+      key: String(raw.key ?? key),
+      revoked_immutable_refs: Number(raw.revoked_immutable_refs ?? 0),
+      cache_invalidation: inv
+        ? {
+            status: inv.status === "submitted" ? "submitted" : "queued",
+            paths: Array.isArray(inv.paths) ? inv.paths.map(String) : [],
+            invalidation_id: (inv.invalidation_id as string | null) ?? null,
+          }
+        : null,
     };
   },
 
@@ -718,6 +764,66 @@ export interface AssetListRow {
   image_info: ImageInfo | null;
   image_exif: Record<string, unknown> | null;
   image_exif_policy: "keep" | "strip" | null;
+
+  // URL fields, built by the gateway with the same rule as the AssetRef
+  // `put` returns, so a listed key reports the URLs its upload returned.
+  // Public URL fields are `null` for private keys.
+
+  /** `true` when the key has a content-hashed immutable URL. */
+  immutable?: boolean;
+  url?: string | null;
+  immutable_url?: string | null;
+  cdn_url?: string | null;
+  cdn_immutable_url?: string | null;
+  /** Present for image sources with encoded variants. */
+  variant_spec_version?: string;
+  /** Browser-renderable URL (the JPEG transcode for HEIC sources). */
+  display_url?: string | null;
+  display_immutable_url?: string | null;
+  /** Encoded image variants, keyed by kind. Absent for non-images. */
+  variants?: AssetRef["variants"];
+  blurhash_data_url?: string | null;
+  asset_schema?: "v1.49" | "v1.50" | "v1.54" | null;
+}
+
+/** Result of `assets.delete(key)`. */
+export interface AssetDeleteResult {
+  deleted: boolean;
+  key: string;
+  /** Immutable URLs revoked: the source's plus each image variant's. */
+  revoked_immutable_refs: number;
+  /** CDN invalidation of the mutable URL; `null` for a private key. */
+  cache_invalidation: {
+    status: "submitted" | "queued";
+    paths: string[];
+    invalidation_id: string | null;
+  } | null;
+}
+
+/** URL fields of a list row, omitted when the gateway did not send them. */
+function listRowUrls(row: Record<string, unknown>): Partial<AssetListRow> {
+  const out: Partial<AssetListRow> = {};
+  if (typeof row.immutable === "boolean") out.immutable = row.immutable;
+  for (const field of [
+    "url",
+    "immutable_url",
+    "cdn_url",
+    "cdn_immutable_url",
+    "display_url",
+    "display_immutable_url",
+    "blurhash_data_url",
+  ] as const) {
+    if (row[field] !== undefined) out[field] = (row[field] as string | null) ?? null;
+  }
+  if (typeof row.variant_spec_version === "string") {
+    out.variant_spec_version = row.variant_spec_version;
+  }
+  const variants = widenVariants(row.variants);
+  if (variants !== undefined) out.variants = variants;
+  if (row.asset_schema !== undefined) {
+    out.asset_schema = row.asset_schema as AssetListRow["asset_schema"];
+  }
+  return out;
 }
 
 export interface AssetsListResult {

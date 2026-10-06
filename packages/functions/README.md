@@ -298,6 +298,28 @@ return Response.json({ url: asset.immutableUrl ?? asset.url });
 
 `source` can be a string, `Uint8Array`, `{ content: string }`, or `{ bytes: Uint8Array }`. The returned `AssetRef` includes both snake_case wire fields (`immutable_url`, `size_bytes`, `content_type`) and SDK-style camelCase aliases (`immutableUrl`, `size`, `contentType`).
 
+### `assets.list(...)` and `assets.delete(key)` — a media library
+
+`assets.list` pages through the project's blobs (`prefix`, `limit`, `cursor`, `sort`, `filter`). Each row carries the same URL fields as the `AssetRef` `put` returned (`url`, `cdn_url`, `immutable_url`, `cdn_immutable_url`, and for encoded images `display_url` and `variants`), so a function can render a thumbnail grid without rebuilding URLs. Public URL fields are `null` for private keys. `assets.delete(key)` removes a key, revokes its immutable URLs (including every image variant's), and queues a CDN invalidation for a public key; a missing key throws.
+
+```ts
+import { assets } from "@run402/functions";
+
+const { blobs, next_cursor } = await assets.list({
+  prefix: "media/",
+  sort: "createdAt:desc",
+  filter: { is_image: true },
+  limit: 40,
+});
+const grid = blobs.map((b) => ({
+  key: b.key,
+  thumb: b.variants?.thumb?.cdn_url ?? b.display_url ?? b.cdn_url,
+  full: b.cdn_immutable_url ?? b.cdn_url,
+}));
+
+const { revoked_immutable_refs } = await assets.delete("media/old-banner.jpg");
+```
+
 ### Routed image generation example
 
 Use a routed function when the browser should request an image at app runtime. Keep app-level auth/rate limits in your handler before calling `ai.generateImage`, especially for public routes.
