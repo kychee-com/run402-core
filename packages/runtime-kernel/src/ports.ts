@@ -63,7 +63,8 @@ export interface CoreApplyPlan {
   storage_effects?: CoreStorageApplyEffects;
   function_effects?: CoreFunctionApplyEffects;
   noop: boolean;
-  status: "planned" | "committed";
+  /** `committing`: a commit holds the claim (`ApplyPlanStorePort.claimCommit`) and is running. */
+  status: "planned" | "committing" | "committed";
   created_at: string;
 }
 
@@ -106,6 +107,15 @@ export interface ApplyPlanStorePort {
   create(input: Omit<StoredCoreApplyPlan, "plan_id" | "created_at" | "status">): Promise<StoredCoreApplyPlan>;
   get(planId: string): Promise<StoredCoreApplyPlan | null>;
   markCommitted(planId: string): Promise<void>;
+  /**
+   * Atomically take the right to run this plan's commit (`planned` → `committing`).
+   * Of concurrent commits of one plan exactly one gets `true`; the others are
+   * refused `commit_in_progress` instead of running the lifecycle a second time.
+   * A store without it commits unguarded.
+   */
+  claimCommit?(planId: string): Promise<boolean>;
+  /** Give the claim back (`committing` → `planned`) after a commit that failed or deferred, so the plan can be committed again. */
+  releaseCommitClaim?(planId: string): Promise<void>;
 }
 
 export interface ContentStorePort {

@@ -41,7 +41,7 @@ interface PlanRow {
   storage_effects: StoredCoreApplyPlan["storage_effects"] | null;
   function_effects: StoredCoreApplyPlan["function_effects"] | null;
   noop: boolean;
-  status: "planned" | "committed";
+  status: "planned" | "committing" | "committed";
   created_at: Date;
 }
 
@@ -129,7 +129,7 @@ export class PostgresApplyStore implements ReleaseStatePort, ApplyPlanStorePort,
         storage_effects jsonb,
         function_effects jsonb,
         noop boolean NOT NULL,
-        status text NOT NULL DEFAULT 'planned' CHECK (status IN ('planned', 'committed')),
+        status text NOT NULL DEFAULT 'planned' CHECK (status IN ('planned', 'committing', 'committed')),
         created_at timestamptz NOT NULL DEFAULT now(),
         committed_at timestamptz
       );
@@ -139,6 +139,13 @@ export class PostgresApplyStore implements ReleaseStatePort, ApplyPlanStorePort,
 
       ALTER TABLE internal.core_apply_plans
         ADD COLUMN IF NOT EXISTS function_effects jsonb;
+
+      ALTER TABLE internal.core_apply_plans
+        DROP CONSTRAINT IF EXISTS core_apply_plans_status_check;
+
+      ALTER TABLE internal.core_apply_plans
+        ADD CONSTRAINT core_apply_plans_status_check
+        CHECK (status IN ('planned', 'committing', 'committed'));
 
       CREATE TABLE IF NOT EXISTS internal.core_function_bundles (
         project_id text NOT NULL REFERENCES internal.core_projects(project_id) ON DELETE CASCADE,
@@ -380,6 +387,30 @@ export class PostgresApplyStore implements ReleaseStatePort, ApplyPlanStorePort,
         UPDATE internal.core_apply_plans
         SET status = 'committed', committed_at = now()
         WHERE plan_id = $1
+      `,
+      [planId],
+    );
+  }
+
+  async claimCommit(planId: string): Promise<boolean> {
+    const result = await this.#pool.query(
+      `
+        UPDATE internal.core_apply_plans
+        SET status = 'committing'
+        WHERE plan_id = $1 AND status = 'planned'
+        RETURNING plan_id
+      `,
+      [planId],
+    );
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  async releaseCommitClaim(planId: string): Promise<void> {
+    await this.#pool.query(
+      `
+        UPDATE internal.core_apply_plans
+        SET status = 'planned'
+        WHERE plan_id = $1 AND status = 'committing'
       `,
       [planId],
     );

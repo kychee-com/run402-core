@@ -16,6 +16,7 @@ import {
 import type {
   CoreApplyCommitContext,
   CoreApplyPlan,
+  StoredCoreApplyPlan,
   CoreAssetPut,
   CoreStorageApplyEffects,
   RuntimeKernelPorts,
@@ -148,16 +149,48 @@ export async function commitApplyPlan(
   const spec = parseReleaseSpec(plan.spec);
   validateSupportedSpec(spec, ports);
 
-  if (plan.status === "committed") {
-    return {
-      plan_id: plan.plan_id,
-      project_id: plan.project_id,
-      release_id: plan.target_release_id,
-      release_digest: plan.target_release_digest,
-      status: plan.noop ? "noop" : "committed",
-    };
-  }
+  if (plan.status === "committed") return committedResult(plan);
 
+  // One commit per plan at a time. A client re-sends a commit whose response
+  // was lost while the first may still be running; only the claim's winner
+  // runs the lifecycle. The others get the stored result once it committed,
+  // and a retryable commit_in_progress until then.
+  if (ports.plans.claimCommit && !(await ports.plans.claimCommit(plan.plan_id))) {
+    const current = await ports.plans.get(plan.plan_id);
+    if (current?.status === "committed") return committedResult(current);
+    throw new ApplyInvariantError(
+      "commit_in_progress",
+      `Another commit of apply plan ${plan.plan_id} is running; re-send this commit to get its result once it finishes.`,
+    );
+  }
+  let result: CoreApplyCommitResult;
+  try {
+    result = await runClaimedCommit(ports, plan, spec);
+  } catch (error) {
+    // Hand the plan back so a retry can commit it; the original error is the answer.
+    await ports.plans.releaseCommitClaim?.(plan.plan_id).catch(() => undefined);
+    throw error;
+  }
+  // A deferred commit finishes on a later commit of the same plan.
+  if (result.status === "deferred") await ports.plans.releaseCommitClaim?.(plan.plan_id);
+  return result;
+}
+
+function committedResult(plan: CoreApplyPlan): CoreApplyCommitResult {
+  return {
+    plan_id: plan.plan_id,
+    project_id: plan.project_id,
+    release_id: plan.target_release_id,
+    release_digest: plan.target_release_digest,
+    status: plan.noop ? "noop" : "committed",
+  };
+}
+
+async function runClaimedCommit(
+  ports: RuntimeKernelPorts,
+  plan: StoredCoreApplyPlan,
+  spec: ReturnType<typeof parseReleaseSpec>,
+): Promise<CoreApplyCommitResult> {
   const current = await ports.releases.getBase(plan.project_id, "current");
   if (current.release_id !== plan.base_release_id) {
     throw new ApplyInvariantError("stale_plan", "Apply plan base release no longer matches the active release.");

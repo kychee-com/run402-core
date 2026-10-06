@@ -288,6 +288,73 @@ test("commit apply plan can defer during lifecycle without marking plan committe
   ]);
 });
 
+test("a second commit of a plan while the first runs is refused, then replays the first result", async () => {
+  const order: string[] = [];
+  let reachedStage!: () => void;
+  const staged = new Promise<void>((resolve) => { reachedStage = resolve; });
+  let finishStage!: () => void;
+  const stageHeld = new Promise<void>((resolve) => { finishStage = resolve; });
+  const ports = new MemoryRuntimePorts({
+    order,
+    lifecycle: {
+      async stage() {
+        if (order.includes("stage")) throw new Error("a second commit ran the lifecycle");
+        order.push("stage");
+        reachedStage();
+        await stageHeld;
+      },
+      async activate() {
+        order.push("activate");
+        return { status: "activated" };
+      },
+    },
+  });
+
+  const plan = await createApplyPlan(ports, { spec: supportedMigrationSpec() });
+  const first = commitApplyPlan(ports, { plan_id: plan.plan_id });
+  await staged;
+  await assert.rejects(
+    commitApplyPlan(ports, { plan_id: plan.plan_id }),
+    (error) => error instanceof ApplyInvariantError && error.code === "commit_in_progress" && error.status === 409,
+  );
+
+  finishStage();
+  const winner = await first;
+  assert.equal(winner.status, "committed");
+  const replay = await commitApplyPlan(ports, { plan_id: plan.plan_id });
+  assert.deepEqual(replay, winner);
+  assert.equal(order.filter((step) => step === "stage").length, 1, "the lifecycle runs once");
+  assert.equal(order.filter((step) => step === "migration.apply").length, 1);
+});
+
+test("concurrent commits of one plan run the lifecycle once", async () => {
+  const order: string[] = [];
+  const ports = new MemoryRuntimePorts({
+    order,
+    lifecycle: {
+      async activate() {
+        order.push("activate");
+        return { status: "activated" };
+      },
+    },
+  });
+
+  const plan = await createApplyPlan(ports, { spec: supportedMigrationSpec() });
+  const outcomes = await Promise.allSettled([
+    commitApplyPlan(ports, { plan_id: plan.plan_id }),
+    commitApplyPlan(ports, { plan_id: plan.plan_id }),
+  ]);
+
+  const committed = outcomes.filter((o) => o.status === "fulfilled");
+  const refused = outcomes.filter(
+    (o) => o.status === "rejected" && o.reason instanceof ApplyInvariantError && o.reason.code === "commit_in_progress",
+  );
+  assert.equal(committed.length + refused.length, 2);
+  assert.ok(committed.length >= 1);
+  assert.equal(order.filter((step) => step === "activate").length, 1);
+  assert.equal((await ports.plans.get(plan.plan_id))?.status, "committed");
+});
+
 test("commit apply plan verifies static content before provider staging", async () => {
   const order: string[] = [];
   const ports = new MemoryRuntimePorts({
@@ -1303,6 +1370,16 @@ class MemoryRuntimePorts implements RuntimeKernelPorts {
         if (!plan) return;
         this.#plans.set(planId, { ...plan, status: "committed" });
         this.#order.push("plan.markCommitted");
+      },
+      claimCommit: async (planId) => {
+        const plan = this.#plans.get(planId);
+        if (!plan || plan.status !== "planned") return false;
+        this.#plans.set(planId, { ...plan, status: "committing" });
+        return true;
+      },
+      releaseCommitClaim: async (planId) => {
+        const plan = this.#plans.get(planId);
+        if (plan?.status === "committing") this.#plans.set(planId, { ...plan, status: "planned" });
       },
     };
     this.content = {
