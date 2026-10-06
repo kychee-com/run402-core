@@ -83,6 +83,7 @@ import {
   PrerenderedError,
   RenamedExportError,
   RoleGateNotConfiguredError,
+  SessionBridgeUnverifiedError,
   TenantSubjectInvalidError,
   UnknownExportError,
 } from "./errors.js";
@@ -518,19 +519,39 @@ function escapeHtml(s: string): string {
 async function createResponseFromIdentity(
   opts: CreateResponseFromIdentityOptions,
 ): Promise<Response> {
-  const ctx = requireActiveContext("auth.sessions.createResponseFromIdentity");
-  const origin = `https://${ctx.host}`;
-  // Delegate to the platform route. The route verifies the proof
-  // against the project's registered verifier (wallet/oidc/custom) and
-  // mints the session via the internal-only primitive. The Response
-  // already carries Set-Cookie and the canonical {ok, user} body.
-  const res = await fetch(`${origin}/auth/v1/sessions/from-identity`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(opts),
-    redirect: "manual",
+  requireActiveContext("auth.sessions.createResponseFromIdentity");
+  // Federated sign-in between Run402 apps (pattern B, like the tenant
+  // assertion below): the gateway verifies the id_token, resolves the user,
+  // and mints the host-bound cookie when it sees this directive.
+  if (opts?.provider !== "oidc") {
+    throw new SessionBridgeUnverifiedError({
+      reason: 'only provider "oidc" is supported: an id_token from a Run402 app',
+    });
+  }
+  const token = opts.proof?.kind === "oidc_jwt" && typeof opts.proof.token === "string" ? opts.proof.token : "";
+  if (!token) {
+    throw new SessionBridgeUnverifiedError({ reason: 'proof must be { kind: "oidc_jwt", token: <id_token> }' });
+  }
+  if (opts.returnTo !== undefined && (typeof opts.returnTo !== "string" || !opts.returnTo.startsWith("/") || opts.returnTo.startsWith("//"))) {
+    throw new SessionBridgeUnverifiedError({ reason: "returnTo must be a same-origin path starting with /" });
+  }
+  const directive = {
+    v: 1 as const,
+    kind: "identity" as const,
+    provider: "oidc" as const,
+    token,
+    ...(opts.proof.nonce ? { nonce: opts.proof.nonce } : {}),
+    createUser: opts.createUser === true,
+    ...(opts.returnTo ? { returnTo: opts.returnTo } : {}),
+  };
+  taintCacheBypass();
+  return new Response(JSON.stringify({ ok: true }), {
+    status: 200,
+    headers: {
+      "content-type": "application/json",
+      [MINT_DIRECTIVE_HEADER]: Buffer.from(JSON.stringify(directive), "utf8").toString("base64url"),
+    },
   });
-  return res;
 }
 
 /** Header on the function's RETURNED Response that the gateway's routed-invoke

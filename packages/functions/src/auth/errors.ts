@@ -225,7 +225,7 @@ export class SessionBridgeUnverifiedError extends Run402AuthError {
       status: 401,
       message: `Session bridge refused unverified proof: ${opts.reason}`,
       details: { reason: opts.reason },
-      suggestedFix: "Pass a verifiable proof to auth.sessions.createResponseFromIdentity({provider, subject, proof, amr, createUser?}).",
+      suggestedFix: 'Pass an id_token from a Run402 app: auth.sessions.createResponseFromIdentity({ provider: "oidc", proof: { kind: "oidc_jwt", token }, createUser? }).',
       docs: "https://run402.com/errors/#R402_AUTH_SESSION_BRIDGE_UNVERIFIED",
     });
     this.name = "SessionBridgeUnverifiedError";

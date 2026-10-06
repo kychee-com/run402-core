@@ -48,15 +48,24 @@ export type IdentityProof =
   | { kind: "oidc_jwt"; token: string; nonce?: string }
   | { kind: "custom"; payload: unknown; nonce?: string };
 
+/**
+ * Sign a user in to THIS app with their identity from another Run402 app
+ * (federated sign-in). `proof.token` is the id_token app A's token endpoint
+ * returned to this app's OAuth client; its audience must be a client metadata
+ * document URL on this app's host. The platform verifies it, keys the user by
+ * (A's issuer, A's user id), and never links to an existing user by email.
+ */
 export interface CreateResponseFromIdentityOptions {
-  provider: "wallet" | "oidc" | "custom";
-  subject: string;
-  proof: IdentityProof;
-  amr: string[];
-  /** When `false` (default), unknown identities cause
-   *  `R402_AUTH_UNKNOWN_IDENTITY`. When `true`, the platform creates the
-   *  user + identity link in the same transaction as the session. */
+  provider: "oidc";
+  proof: { kind: "oidc_jwt"; token: string; nonce?: string };
+  /** When `false` (default), an unlinked identity is
+   *  `R402_AUTH_UNKNOWN_IDENTITY`. When `true`, the platform creates the user
+   *  (it needs the `email` scope's verified email) in the same transaction as
+   *  the session. */
   createUser?: boolean;
+  /** A same-origin path: answer 303 there with the session cookie instead of
+   *  `{ ok, user }`, e.g. back into a pending `/_run402/oauth/authorize`. */
+  returnTo?: string;
 }
 
 export interface IdentityLinkOptions {

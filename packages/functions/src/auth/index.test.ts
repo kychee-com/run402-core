@@ -697,6 +697,36 @@ describe("auth.invalidCredentials (Section 5, D9)", () => {
   });
 });
 
+describe("auth.sessions.createResponseFromIdentity (federated sign-in between Run402 apps)", () => {
+  it("emits an identity mint directive carrying the id_token, nonce, createUser, and returnTo", async () => {
+    const res = await inContext({ invocationKind: "routed_http" }, () =>
+      auth.sessions.createResponseFromIdentity({
+        provider: "oidc",
+        proof: { kind: "oidc_jwt", token: "header.payload.sig", nonce: "n-1" },
+        createUser: true,
+        returnTo: "/_run402/oauth/authorize?x=1",
+      }),
+    );
+    const directive = JSON.parse(Buffer.from(res.headers.get(MINT_DIRECTIVE_HEADER)!, "base64url").toString("utf8"));
+    assert.deepEqual(directive, {
+      v: 1, kind: "identity", provider: "oidc", token: "header.payload.sig", nonce: "n-1", createUser: true, returnTo: "/_run402/oauth/authorize?x=1",
+    });
+  });
+
+  it("refuses another provider, a missing token, and an off-origin returnTo", async () => {
+    for (const opts of [
+      { provider: "wallet", proof: { kind: "oidc_jwt", token: "t" } },
+      { provider: "oidc", proof: { kind: "oidc_jwt", token: "" } },
+      { provider: "oidc", proof: { kind: "oidc_jwt", token: "t" }, returnTo: "//evil.example/" },
+    ]) {
+      await assert.rejects(
+        () => inContext({}, () => auth.sessions.createResponseFromIdentity(opts as never)),
+        (err: unknown) => (err as { code?: string }).code === "R402_AUTH_SESSION_BRIDGE_UNVERIFIED",
+      );
+    }
+  });
+});
+
 describe("auth.sessions.createResponseFromTenantAssertion (Section 5, D6)", () => {
   const goodUser = { id: "u_42", email: "u42@example.com", emailVerified: true };
 
