@@ -1,5 +1,9 @@
 # `@run402/functions` changelog
 
+## Unreleased
+
+- **`snapshots` namespace (kychee-com/run402-private#801).** `snapshots.create({ label, metadata })`, `list`, `get`, `delete`, `restorePlan(id, { release })`, `restore(id, confirm, { release })`, and `getRestore(snapshotId, restoreId)` manage the function's own project's restore points with its service key. `restore` returns the restore handle without waiting (a restore can outlast a function's timeout) and never restores auth identities; labels and metadata live outside the project's database, so the list survives restores. Failures throw the new `R402SnapshotsError` with the gateway `code` and `next_actions`; label and metadata are validated before any request. Needs Run402 Cloud with snapshot service-key access; Run402 Core answers `SNAPSHOTS_UNSUPPORTED` (#9).
+
 ## 4.4.0 (2026-09-25)
 
 - **`ToolDeclaration` type.** Type-only exports `ToolDeclaration`, `ToolInputSchema`, and `ToolAnnotations` describe the static `export const tool = { description, title?, input, annotations? }` that makes a routed function an MCP tool of its app on Run402 Cloud (`https://<host>/_run402/mcp`). The README documents the declaration, its deploy-time rules and error codes, and how auth gates carry over. Run402 Core does not serve the endpoint yet (#7, #8).

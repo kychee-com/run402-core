@@ -332,6 +332,32 @@ export default async function handler(req: Request): Promise<Response> {
 }
 ```
 
+## `snapshots.*` — restore points for your own project
+
+Take named restore points and restore them from inside your app, authorized by the function's service key. Every call targets the function's own project; there is no project id or credential argument. Labels and metadata are stored outside the project's database, so `snapshots.list()` stays a complete ledger of restore points after a restore. Run402 Cloud only: on a host without snapshots (Run402 Core) every call throws `R402SnapshotsError` with `code: "SNAPSHOTS_UNSUPPORTED"`.
+
+```ts
+import { snapshots, R402SnapshotsError } from "@run402/functions";
+
+// Before a risky change:
+const point = await snapshots.create({ label: "before re-import", metadata: { source: "csv" } });
+
+// Later, from your admin UI (decide in your app who may do this):
+const plan = await snapshots.restorePlan(point.snapshot_id, { release: "snapshot" });
+// Show plan.data_loss_statement and plan.release (restorable, warnings) to the admin, then:
+const handle = await snapshots.restore(point.snapshot_id, plan.confirm.token, { release: "snapshot" });
+// The restore runs on the gateway; poll for the outcome.
+const status = await snapshots.getRestore(point.snapshot_id, handle.restore_id);
+```
+
+- `create({ label?, metadata? })` — a manual snapshot. `label` is 1–120 characters with no control characters; `metadata` is a flat object of string, number, boolean, or string[] values, at most 4 KB. Both are immutable. Never put secrets in metadata: anyone who can read the project's snapshots can read it. Manual snapshots are capped at 20 per project.
+- `list({ limit?, after?, kind? })`, `get(snapshotId)`, `delete(snapshotId)` — `delete` works on manual snapshots only; platform snapshots (`pre_migration`, `pre_restore`, `scheduled`) expire on their own and are refused `SNAPSHOT_KIND_NOT_DELETABLE_BY_SERVICE_KEY`.
+- `restorePlan(snapshotId, { release? })` — no mutation. Returns the data-loss statement, the release line, and a confirm token. Pass the same `release` to `restore`.
+- `restore(snapshotId, confirm, { release? })` — restores app data and returns the handle (`restore_id`, `status: "running"`) at once, because a restore can outlast a function's timeout. A `pre_restore` snapshot is taken first, so every restore can be undone. Restoring auth identities is refused (`SNAPSHOT_AUTH_RESTORE_REQUIRES_PRINCIPAL`); an org admin does that with the CLI. One restore runs per project at a time (`SNAPSHOT_RESTORE_IN_PROGRESS`).
+- `getRestore(snapshotId, restoreId)` — `status` is `running`, `ready` (with the full `result`), or `failed` (with `error`).
+
+`release: "snapshot"` re-activates the release that was live when the snapshot was taken, in the same transaction as the data: the live release pointer, static site, routes, and subdomains move back. Function code does not: functions are not versioned per release and keep running their current code, which the plan lists in `release.warnings` as `FUNCTION_VERSION_MISMATCH`. A restore is destructive; gate the route that calls it with your own admin check.
+
 ## `events.emit(type, payload?, opts?)` — emit into the project's event feed
 
 Write an event into this project's cursored event feed (the `internal.project_events` outbox) from inside a deployed function. Every existing and future feed consumer — `run402 events`, the MCP `list_project_events` tool, the console's Activity view — reads it back for free the moment your code calls `events.emit`.
@@ -575,6 +601,10 @@ try {
   throw err;
 }
 ```
+
+### `R402SnapshotsError` — `snapshots.*` failures
+
+`snapshots.*` throws `R402SnapshotsError` (exported) with `code` (the gateway's, e.g. `SNAPSHOT_MANUAL_CAP_EXCEEDED`, `STALE_RESTORE_CONFIRMATION`, `SNAPSHOT_RELEASE_NOT_RESTORABLE`; `VALIDATION_FAILED` with `field` for input checked before any request; `SNAPSHOTS_UNSUPPORTED` on a host without snapshots; `PROJECT_ID_MISSING` outside a function), `status`, `details`, `next_actions`, and `body`.
 
 Other helpers still throw plain `Error` whose message includes the HTTP status and the response body so you can branch on `code` / `category` / `retryable` (the v1.34+ agent-operable error envelope).
 

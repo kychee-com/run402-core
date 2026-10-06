@@ -58,6 +58,24 @@ export type {
   ModerateResult,
 } from "./ai.js";
 export { assets } from "./assets.js";
+// `snapshots.*` — the function's own project's restore points, authorized by
+// its service key. `restore` returns a handle; poll `getRestore`.
+export { snapshots, R402SnapshotsError } from "./snapshots.js";
+export type {
+  Snapshot,
+  SnapshotCreateOptions,
+  SnapshotKind,
+  SnapshotList,
+  SnapshotListOptions,
+  SnapshotMetadata,
+  SnapshotNextAction,
+  SnapshotReleaseMode,
+  SnapshotRestoreHandle,
+  SnapshotRestoreOptions,
+  SnapshotRestorePlan,
+  SnapshotRestoreResult,
+  SnapshotRestoreStatus,
+} from "./snapshots.js";
 // The static `tool` export that makes a routed function an MCP tool of its
 // app (`https://<host>/_run402/mcp`). Type-only.
 export type { ToolDeclaration, ToolInputSchema, ToolAnnotations } from "./tool.js";
