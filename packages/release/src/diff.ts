@@ -20,6 +20,7 @@ import type {
   RouteEntry,
 } from "./types.js";
 import { SUPPORTED_HTTP_METHODS } from "./types.js";
+import { isVersionedSiteAsset } from "./static-cache.js";
 
 export const PLAN_BUCKET_DEFAULT_CAP = 1_000;
 export const RELEASE_DIFF_BUCKET_DEFAULT_CAP = 1_000;
@@ -340,13 +341,23 @@ export function deriveCoreWarnings(input: {
       affected: input.diff.secrets.removed,
     });
   }
-  if (isBulkSiteRemoval(input.from, input.diff)) {
+  const bulkSiteRemoval = classifySiteBulkRemoval(
+    input.from.site.paths.map((entry) => entry.path),
+    input.to.site.paths.map((entry) => entry.path),
+  );
+  if (bulkSiteRemoval) {
+    const { affected, ...details } = bulkSiteRemoval;
     add({
       code: "RUN402_CORE_DESTRUCTIVE_SITE_BULK_REMOVAL",
       severity: "high",
       requires_confirmation: true,
-      message: "This release removes more than ten percent of current site paths.",
-      affected: input.diff.site.removed,
+      message:
+        `This release removes ${details.counted_removed} of ${details.base_paths} current site paths, more than ten percent` +
+        (details.replaced_fingerprinted > 0
+          ? ` (${details.replaced_fingerprinted} fingerprinted build assets replaced by this build are not counted).`
+          : "."),
+      affected,
+      details,
     });
   }
   const entrypointsRemoved = input.diff.site.removed.filter(
@@ -866,10 +877,94 @@ function commonSummaryParts(
   return parts;
 }
 
-function isBulkSiteRemoval(base: PortableReleaseState, diff: Pick<PlanDiffEnvelope | ReleaseDiffEnvelope, "site">): boolean {
-  const baseCount = base.site.paths.length;
-  if (baseCount === 0) return false;
-  return diff.site.removed.length / baseCount > SITE_BULK_REMOVAL_THRESHOLD;
+/**
+ * Bulk site removal classification. A rebuild renames its fingerprinted
+ * bundles, so a plain removed/base ratio fires on every routine redeploy. A
+ * removed fingerprinted path (the `immutable_versioned` filename rule) is
+ * REPLACED when the release adds a fingerprinted path in the same directory
+ * with the same extension, and is not counted. Pairing is by count per
+ * (directory, extension), not by name stem, because bundlers rename chunks
+ * between builds; dropping a build's assets without new ones still counts
+ * every unreplaced removal. Computed from the full path sets, never the
+ * (truncating) diff buckets.
+ */
+export interface SiteBulkRemoval {
+  base_paths: number;
+  removed: number;
+  replaced_fingerprinted: number;
+  counted_removed: number;
+  threshold: number;
+  /** Counted (unreplaced) removals per top-level directory (`/` = root). */
+  counted_removed_by_dir: Record<string, number>;
+  /** Counted removals, sorted, capped at the release diff bucket cap. */
+  affected: string[];
+}
+
+export function classifySiteBulkRemoval(
+  basePaths: ReadonlyArray<string>,
+  toPaths: ReadonlyArray<string>,
+): SiteBulkRemoval | null {
+  if (basePaths.length === 0) return null;
+  const toSet = new Set(toPaths);
+  const baseSet = new Set(basePaths);
+  const removed = basePaths.filter((path) => !toSet.has(path));
+
+  const addedFingerprinted = new Map<string, number>();
+  for (const path of toPaths) {
+    if (baseSet.has(path) || !isVersionedSiteAsset(path)) continue;
+    const key = fingerprintGroup(path);
+    addedFingerprinted.set(key, (addedFingerprinted.get(key) ?? 0) + 1);
+  }
+
+  const counted: string[] = [];
+  let replaced = 0;
+  for (const path of [...removed].sort(compareAscii)) {
+    if (isVersionedSiteAsset(path)) {
+      const key = fingerprintGroup(path);
+      const available = addedFingerprinted.get(key) ?? 0;
+      if (available > 0) {
+        addedFingerprinted.set(key, available - 1);
+        replaced += 1;
+        continue;
+      }
+    }
+    counted.push(path);
+  }
+
+  if (counted.length / basePaths.length <= SITE_BULK_REMOVAL_THRESHOLD) return null;
+
+  const byDir: Record<string, number> = {};
+  for (const path of counted) {
+    const dir = topLevelSiteDir(path);
+    byDir[dir] = (byDir[dir] ?? 0) + 1;
+  }
+  return {
+    base_paths: basePaths.length,
+    removed: removed.length,
+    replaced_fingerprinted: replaced,
+    counted_removed: counted.length,
+    threshold: SITE_BULK_REMOVAL_THRESHOLD,
+    counted_removed_by_dir: Object.fromEntries(
+      Object.entries(byDir).sort(([a], [b]) => compareAscii(a, b)),
+    ),
+    affected: counted.slice(0, RELEASE_DIFF_BUCKET_DEFAULT_CAP),
+  };
+}
+
+/** `<directory>\0<extension>`; the extension keeps a trailing `.map`. */
+function fingerprintGroup(path: string): string {
+  const normalized = path.replace(/^\/+/, "");
+  const slash = normalized.lastIndexOf("/");
+  const dir = slash === -1 ? "" : normalized.slice(0, slash);
+  const basename = normalized.slice(slash + 1);
+  const ext = /\.[a-zA-Z][a-zA-Z0-9]*(?:\.map)?$/.exec(basename)?.[0] ?? "";
+  return `${dir}\0${ext.toLowerCase()}`;
+}
+
+function topLevelSiteDir(path: string): string {
+  const normalized = path.replace(/^\/+/, "");
+  const slash = normalized.indexOf("/");
+  return slash === -1 ? "/" : `/${normalized.slice(0, slash)}/`;
 }
 
 function collectRouteCoreWarnings(input: {
