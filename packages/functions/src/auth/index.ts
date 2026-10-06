@@ -20,6 +20,8 @@
  *     auth.sessions.createResponseFromIdentity({ ... }) → Response
  *     auth.sessions.createResponseFromTenantAssertion({ tenant, user, method }) → Response
  *     auth.sessions.endResponse()          → Response
+ *     auth.grants.list()                   → AuthGrant[] (connected AI assistants)
+ *     auth.grants.revoke(id)               → { revoked } (disconnect one)
  *     auth.invalidCredentials()            → InvalidCredentialsError (throw it)
  *
  * Behaviour notes baked into the helpers:
@@ -90,6 +92,7 @@ import {
 import type {
   AccountSecurity,
   Actor,
+  AuthGrant,
   CreateResponseFromIdentityOptions,
   CreateResponseFromTenantAssertionOptions,
   IdentityLinkOptions,
@@ -803,7 +806,7 @@ async function accountAdvancedFetch(
     throw new AuthRequiredError();
   }
   if (!res.ok) {
-    throw new Error(`auth.account.* request to ${path} failed: ${res.status}`);
+    throw new Error(`auth request to ${path} failed: ${res.status}`);
   }
   return (await res.json().catch(() => ({}))) as unknown;
 }
@@ -904,6 +907,59 @@ const accountSessions = {
     });
   },
 };
+
+// ---------------------------------------------------------------------------
+// The signed-in user's connected AI assistants: the OAuth grants MCP clients
+// hold on this app (`/_run402/oauth/*`). Same actor channel as the advanced
+// tier; a user only ever sees and revokes their own grants in this project.
+// ---------------------------------------------------------------------------
+
+/** List the signed-in user's connected AI assistants, most recently
+ *  approved first. Throws AuthRequiredError when anonymous. */
+async function listGrants(): Promise<AuthGrant[]> {
+  const out = (await accountAdvancedFetch("/auth/v1/account/grants", { method: "GET" })) as {
+    grants?: AuthGrant[];
+  };
+  return out.grants ?? [];
+}
+
+/** Disconnect one assistant: its refresh token and every access token it
+ *  holds stop working on its next request, which answers the MCP sign-in
+ *  challenge (401 + WWW-Authenticate). `revoked` is false for an id that is
+ *  not a live grant of this user. */
+async function revokeGrant(id: string): Promise<{ revoked: boolean }> {
+  if (typeof id !== "string" || id.length === 0) {
+    throw new Error("auth.grants.revoke: a grant id from auth.grants.list() is required");
+  }
+  const out = (await accountAdvancedFetch("/auth/v1/account/grants/revoke", {
+    method: "POST",
+    body: { grant_id: id },
+  })) as { revoked?: boolean };
+  return { revoked: out.revoked === true };
+}
+
+const GRANTS_HALLUCINATED_NAMES: Record<string, string> = {
+  delete: "auth.grants.revoke(id)",
+  remove: "auth.grants.revoke(id)",
+  disconnect: "auth.grants.revoke(id)",
+  get: "auth.grants.list()",
+  all: "auth.grants.list()",
+};
+
+const grants: AuthNamespace["grants"] = new Proxy(
+  { list: listGrants, revoke: revokeGrant },
+  {
+    get(target, prop, receiver) {
+      if (typeof prop === "string" && !(prop in target)) {
+        throw new UnknownExportError({
+          attemptedName: `auth.grants.${prop}`,
+          canonicalName: GRANTS_HALLUCINATED_NAMES[prop] ?? "auth.grants.list() / auth.grants.revoke(id)",
+        });
+      }
+      return Reflect.get(target, prop, receiver);
+    },
+  },
+);
 
 /** `auth.account.*` proxy — `getSecurity`/`requireSecurity` (everyday read) +
  *  the §4.4 advanced mutation members (`setPassword`, `passkeys`, `identities`,
@@ -1049,6 +1105,13 @@ interface AuthNamespace {
   identities: {
     link(opts: IdentityLinkOptions): Promise<void>;
   };
+  /** The AI assistants (MCP clients) the signed-in user connected to this
+   *  app. Build a "connected assistants" list with a Disconnect button, or
+   *  link to the hosted page `/_run402/account/connections`. */
+  grants: {
+    list(): Promise<AuthGrant[]>;
+    revoke(id: string): Promise<{ revoked: boolean }>;
+  };
   sessions: {
     createResponseFromIdentity(opts: CreateResponseFromIdentityOptions): Promise<Response>;
     createResponseFromTenantAssertion(
@@ -1107,6 +1170,7 @@ const baseAuth: AuthNamespace = {
   identities: {
     link: linkIdentity,
   },
+  grants,
   sessions,
 };
 
@@ -1201,6 +1265,7 @@ export type {
   TenantUser,
   CreateResponseFromTenantAssertionOptions,
   AccountSecurity,
+  AuthGrant,
   Run402Identity,
   TenantAssertionRef,
 } from "./types.js";

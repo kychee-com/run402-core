@@ -18,6 +18,7 @@ export type {
   TenantUser,
   CreateResponseFromTenantAssertionOptions,
   AccountSecurity,
+  AuthGrant,
   Run402Identity,
   TenantAssertionRef,
 } from "./auth/index.js";

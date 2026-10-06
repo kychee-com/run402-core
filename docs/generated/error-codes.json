@@ -1,7 +1,7 @@
 {
   "owner": "core",
   "repository": "kychee-com/run402-core",
-  "revision": "06ae8328fe26525b3aa4561f377d8c384acc52d5",
+  "revision": "19427d718b9d51000269b75fcc52ae922b2335fa",
   "sources": [
     {
       "source": "packages/functions/src/auth/errors.ts",
@@ -30,7 +30,7 @@
     },
     {
       "source": "packages/functions/src/auth/index.ts",
-      "sourceDigest": "ac55719eb0ff95549aee256d28b4dd0fbc13825857d6fb4b88bca6eda85e8160",
+      "sourceDigest": "285268b5e0afaadbcc7b06130adb05cec59344724e1c1cc6436789fab2265d5d",
       "codes": [
         "R402_AUTH_FRESHNESS_REQUIRED"
       ]

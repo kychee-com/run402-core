@@ -1211,6 +1211,84 @@ describe("auth.account advanced tier (§4.4 / §7.7)", () => {
   });
 });
 
+describe("auth.grants (connected AI assistants, run402-private#820)", () => {
+  const grant = {
+    id: "11111111-1111-4111-8111-111111111111",
+    client_id: "https://chatgpt.com/oauth/client.json",
+    client_name: "ChatGPT",
+    verified_host: "chatgpt.com",
+    created_at: "2026-10-01T00:00:00.000Z",
+    last_used_at: "2026-10-05T12:00:00.000Z",
+    expires_at: "2026-12-30T00:00:00.000Z",
+    scopes: ["tools"],
+  };
+
+  it("list GETs /auth/v1/account/grants with the actor Bearer and returns the grants", async () => {
+    let seenUrl = "";
+    let seenMethod = "";
+    let seenAuth = "";
+    const out = await inContext({}, () =>
+      withMockFetch(
+        (url, init) => {
+          seenUrl = url;
+          seenMethod = String((init as { method?: string }).method);
+          seenAuth = ((init as { headers?: Record<string, string> }).headers ?? {}).authorization ?? "";
+          return new Response(JSON.stringify({ grants: [grant] }), { status: 200 });
+        },
+        () => auth.grants.list(),
+      ),
+    );
+    assert.match(seenUrl, /\/auth\/v1\/account\/grants$/);
+    assert.equal(seenMethod, "GET");
+    assert.match(seenAuth, /^Bearer /);
+    assert.deepEqual(out, [grant]);
+  });
+
+  it("revoke POSTs grant_id and reports whether a live grant ended", async () => {
+    let seenBody = "";
+    const out = await inContext({}, () =>
+      withMockFetch(
+        (url, init) => {
+          assert.match(url, /\/auth\/v1\/account\/grants\/revoke$/);
+          seenBody = String((init as { body?: unknown }).body ?? "");
+          return new Response(JSON.stringify({ ok: true, revoked: true }), { status: 200 });
+        },
+        () => auth.grants.revoke(grant.id),
+      ),
+    );
+    assert.deepEqual(JSON.parse(seenBody), { grant_id: grant.id });
+    assert.deepEqual(out, { revoked: true });
+    const notMine = await inContext({}, () =>
+      withMockFetch(
+        () => new Response(JSON.stringify({ ok: true, revoked: false }), { status: 200 }),
+        () => auth.grants.revoke(grant.id),
+      ),
+    );
+    assert.deepEqual(notMine, { revoked: false });
+  });
+
+  it("revoke without an id throws before any request", async () => {
+    await assert.rejects(
+      () => inContext({}, () => auth.grants.revoke("")),
+      /grant id from auth\.grants\.list\(\) is required/,
+    );
+  });
+
+  it("anonymous callers get AuthRequiredError", async () => {
+    await assert.rejects(
+      () => inContext({ actor: null }, () => auth.grants.list()),
+      (err: unknown) => err instanceof AuthRequiredError,
+    );
+  });
+
+  it("guessed names point at the canonical methods", () => {
+    assert.throws(
+      () => (auth.grants as unknown as Record<string, unknown>).disconnect,
+      (err: unknown) => err instanceof UnknownExportError && err.canonicalName === "auth.grants.revoke(id)",
+    );
+  });
+});
+
 /**
  * The rescue path end to end, through the public surface.
  *

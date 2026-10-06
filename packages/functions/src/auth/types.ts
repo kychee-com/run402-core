@@ -143,3 +143,29 @@ export interface CreateResponseFromTenantAssertionOptions {
   /** Escape hatch for arbitrary amr values — agents should not need this. */
   advanced?: { amr: string[] };
 }
+
+/** An AI assistant (MCP client) the signed-in user connected to this app
+ *  through its OAuth server (`/_run402/oauth/*`), from `auth.grants.list()`.
+ *  No token or secret material. */
+export interface AuthGrant {
+  /** Pass to `auth.grants.revoke(id)`. */
+  id: string;
+  /** A client metadata document URL (`https://chatgpt.com/…`) or a
+   *  registered `cl_…` id. */
+  client_id: string;
+  /** The client's display name at approval. For a registered client (no
+   *  `verified_host`) it is self-declared: show it as unverified. */
+  client_name: string | null;
+  /** The host of the client_id URL for a metadata-document client, whose
+   *  document the platform fetched; null for a registered client. */
+  verified_host: string | null;
+  /** When the user approved it (ISO 8601). */
+  created_at: string;
+  /** The client's last MCP request with this grant (one-minute resolution),
+   *  or null when it has not called since approval. */
+  last_used_at: string | null;
+  /** When the grant ends and the user must approve the client again. */
+  expires_at: string;
+  /** Granted scopes, e.g. `["tools"]` or `["tools", "openid", "email"]`. */
+  scopes: string[];
+}

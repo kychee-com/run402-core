@@ -514,6 +514,31 @@ export default async function handler(req: Request): Promise<Response> {
 
 Run402 Core does not serve `/_run402/mcp` yet; the export is inert there ([#7](https://github.com/kychee-com/run402-core/issues/7), [#8](https://github.com/kychee-com/run402-core/issues/8)).
 
+### Connected assistants: `auth.grants`
+
+A person who connects an MCP client (ChatGPT, Claude, Codex) to your app approves an OAuth grant. Show them what is connected and let them disconnect it:
+
+```ts
+import { auth } from "@run402/functions";
+
+// /api/connections: the signed-in person's connected assistants
+export default async function handler(req: Request): Promise<Response> {
+  if (req.method === "POST") {
+    const { id } = await req.json();
+    const { revoked } = await auth.grants.revoke(id); // false: not a live grant of this person
+    return Response.json({ revoked });
+  }
+  const grants = await auth.grants.list();
+  // [{ id, client_id, client_name, verified_host, created_at, last_used_at, expires_at, scopes }]
+  return Response.json({ grants });
+}
+```
+
+- Both act only on the signed-in person's own grants in this project, and throw `AuthRequiredError` for an anonymous caller.
+- `verified_host` (for example `chatgpt.com`) is set when the client identified itself with a metadata document the platform fetched; when it is `null`, `client_name` is self-declared, so label it unverified.
+- After `revoke`, the client's next tool call answers HTTP 401 with `WWW-Authenticate`, so it asks the person to sign in again.
+- Without building a page, link to the hosted one at `/_run402/account/connections` (Run402 Cloud). It follows your release's `site.sign_in_path` for signed-out visitors.
+
 ## Scheduled functions
 
 Run402 Cloud and Run402 Core both use release manifest `functions.replace.<name>.triggers[]` entries for cron-style schedule triggers. A schedule trigger creates a durable function run, so handler code can use the same `defineFunctionRuns(...)` path for delayed work, webhook redrive, and scheduled sweeps. In Run402 Core this is a single-node gateway scheduler, not a managed distributed jobs system.
