@@ -6,6 +6,7 @@ export * from "./facts.js";
 export * from "./materialize.js";
 export * from "./normalize.js";
 export * from "./plan-fingerprint.js";
+export * from "./route-discovery.js";
 export * from "./routes.js";
 export * from "./static-manifest.js";
 export * from "./typed-config.js";

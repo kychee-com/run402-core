@@ -18,7 +18,9 @@ import type {
   PortableReleaseState,
   ReleaseSpec,
   RouteEntry,
+  RoutePricingDiscovery,
 } from "./types.js";
+import { canonicalizeJson } from "./canonical-json.js";
 import { SUPPORTED_HTTP_METHODS } from "./types.js";
 import { isVersionedSiteAsset } from "./static-cache.js";
 
@@ -756,7 +758,8 @@ function samePricing(a: RouteEntry["pricing"], b: RouteEntry["pricing"]): boolea
     a.mode !== b.mode ||
     a.amount_usd_micros !== b.amount_usd_micros ||
     a.pay_to !== b.pay_to ||
-    a.receipt !== b.receipt
+    a.receipt !== b.receipt ||
+    !sameDiscovery(a.discovery, b.discovery)
   ) {
     return false;
   }
@@ -764,6 +767,11 @@ function samePricing(a: RouteEntry["pricing"], b: RouteEntry["pricing"]): boolea
   const bNetworks = b.networks ?? [];
   if (aNetworks.length !== bNetworks.length) return false;
   return aNetworks.every((network, index) => network === bNetworks[index]);
+}
+
+function sameDiscovery(a: RoutePricingDiscovery | undefined, b: RoutePricingDiscovery | undefined): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  return canonicalizeJson(a) === canonicalizeJson(b);
 }
 
 function groupRoutesByPattern(entries: readonly RouteEntry[]): Map<string, RouteEntry[]> {

@@ -150,6 +150,31 @@ export interface RoutePricingSpec {
   pay_to: "org_default_payout";
   networks?: RoutePricingNetwork[];
   receipt?: "on_fulfillment";
+  /** Opt-in x402 Bazaar discovery metadata for this priced route. */
+  discovery?: RoutePricingDiscovery;
+}
+
+export type RouteDiscoveryBodyType = "json" | "form-data" | "text";
+
+/**
+ * What a caller sends. A GET/HEAD/DELETE route describes query parameters;
+ * a POST/PUT/PATCH route describes its body (`body_type` required).
+ */
+export interface RoutePricingDiscoveryInput {
+  query_params_schema?: Record<string, unknown>;
+  body_type?: RouteDiscoveryBodyType;
+  body_schema?: Record<string, unknown>;
+  example?: unknown;
+}
+
+export interface RoutePricingDiscovery {
+  description: string;
+  mime_type?: string;
+  service_name?: string;
+  tags?: string[];
+  icon_url?: string;
+  input?: RoutePricingDiscoveryInput;
+  output?: { example?: unknown; schema?: Record<string, unknown> };
 }
 
 export interface FunctionRouteTarget {

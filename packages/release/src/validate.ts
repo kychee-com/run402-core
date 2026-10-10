@@ -1,9 +1,11 @@
 import { ReleaseSpecValidationError } from "./errors.js";
+import { validateRouteDiscovery } from "./route-discovery.js";
 import {
   SUPPORTED_HTTP_METHODS,
   SUPPORTED_ROUTE_PRICING_NETWORKS,
   type ContentRefHex,
   type FunctionSpec,
+  type HttpMethod,
   type I18nSpec,
   type ReleaseSpec,
   type RoleGateSpec,
@@ -407,13 +409,18 @@ function validateRouteSpec(route: RouteSpec, resource: string): void {
   } else {
     throw invalid(`${resource}.target.type`, "route target type must be function or static");
   }
-  validateRoutePricing(route.pricing, `${resource}.pricing`);
+  validateRoutePricing(route.pricing, `${resource}.pricing`, route, resource);
 }
 
-function validateRoutePricing(pricing: unknown, resource: string): void {
+function validateRoutePricing(pricing: unknown, resource: string, route: RouteSpec, routeResource: string): void {
   if (pricing === undefined) return;
   if (!isRecord(pricing)) throw invalid(resource, "route pricing must be an object");
-  rejectUnknownKeys(pricing, resource, ["mode", "amount_usd_micros", "pay_to", "networks", "receipt"]);
+  rejectUnknownKeys(pricing, resource, ["mode", "amount_usd_micros", "pay_to", "networks", "receipt", "discovery"]);
+  validateRouteDiscovery(pricing.discovery, `${resource}.discovery`, {
+    pattern: route.pattern,
+    methods: route.methods === undefined ? null : route.methods.map((method) => method.toUpperCase() as HttpMethod),
+    methodsResource: `${routeResource}.methods`,
+  });
   if (pricing.mode !== "always") {
     throw invalid(`${resource}.mode`, "route pricing mode must be always");
   }
