@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 
+import { canonicalizeJson } from "./canonical-json.js";
 import { ReleaseSpecValidationError } from "./errors.js";
+import { validateRouteDiscovery, type RouteDiscoveryContext } from "./route-discovery.js";
 import {
   SUPPORTED_HTTP_METHODS,
   SUPPORTED_ROUTE_PRICING_NETWORKS,
@@ -87,7 +89,11 @@ function routeEntryFromSpec(spec: RouteSpec, resource: string): RouteEntry {
   const pattern = validateAndNormalizePattern(raw.pattern, `${resource}.pattern`);
   const target = validateTarget(raw.target, `${resource}.target`);
   const methods = normalizeMethods(raw.methods, `${resource}.methods`, target);
-  const pricing = validateRoutePricing(raw.pricing, `${resource}.pricing`, target);
+  const pricing = validateRoutePricing(raw.pricing, `${resource}.pricing`, target, {
+    pattern,
+    methods,
+    methodsResource: `${resource}.methods`,
+  });
   const kind: RouteEntry["kind"] = pattern.endsWith("/*") ? "prefix" : "exact";
   if (target.type === "static" && kind !== "exact") {
     throw routeError(`${resource}.pattern`, "static route aliases must use exact path patterns; prefix /* patterns are not supported");
@@ -216,7 +222,12 @@ function normalizeMethods(methods: unknown, resource: string, target: RouteTarge
   return normalized;
 }
 
-function validateRoutePricing(pricing: unknown, resource: string, target: RouteTarget): RoutePricingSpec | undefined {
+function validateRoutePricing(
+  pricing: unknown,
+  resource: string,
+  target: RouteTarget,
+  discoveryContext: RouteDiscoveryContext,
+): RoutePricingSpec | undefined {
   if (pricing === undefined) return undefined;
   if (target.type !== "function") {
     throw routeError(resource, "route pricing is only supported on function routes");
@@ -224,13 +235,14 @@ function validateRoutePricing(pricing: unknown, resource: string, target: RouteT
   if (!pricing || typeof pricing !== "object" || Array.isArray(pricing)) {
     throw routeError(resource, "route pricing must be an object");
   }
-  rejectUnknownKeys(pricing as Record<string, unknown>, resource, ["mode", "amount_usd_micros", "pay_to", "networks", "receipt"]);
+  rejectUnknownKeys(pricing as Record<string, unknown>, resource, ["mode", "amount_usd_micros", "pay_to", "networks", "receipt", "discovery"]);
   const raw = pricing as {
     mode?: unknown;
     amount_usd_micros?: unknown;
     pay_to?: unknown;
     networks?: unknown;
     receipt?: unknown;
+    discovery?: unknown;
   };
   if (raw.mode !== "always") {
     throw routeError(`${resource}.mode`, "route pricing mode must be 'always'");
@@ -245,12 +257,14 @@ function validateRoutePricing(pricing: unknown, resource: string, target: RouteT
   if (raw.receipt !== undefined && raw.receipt !== "on_fulfillment") {
     throw routeError(`${resource}.receipt`, "route pricing receipt must be 'on_fulfillment'");
   }
+  const discovery = validateRouteDiscovery(raw.discovery, `${resource}.discovery`, discoveryContext);
   return {
     mode: "always",
     amount_usd_micros: amount,
     pay_to: "org_default_payout",
     networks: normalizePricingNetworks(raw.networks, `${resource}.networks`),
     ...(raw.receipt === "on_fulfillment" ? { receipt: raw.receipt } : {}),
+    ...(discovery ? { discovery } : {}),
   };
 }
 
@@ -310,6 +324,7 @@ function stableRoutePricing(pricing: RoutePricingSpec): unknown {
     pay_to: pricing.pay_to,
     networks: pricing.networks ?? [...DEFAULT_ROUTE_PRICING_NETWORKS],
     ...(pricing.receipt ? { receipt: pricing.receipt } : {}),
+    ...(pricing.discovery ? { discovery: JSON.parse(canonicalizeJson(pricing.discovery)) as unknown } : {}),
   };
 }
 
