@@ -170,7 +170,7 @@ export function runtimeCapabilities(version = "0.1.1"): RuntimeCapabilityDocumen
       },
       functions: {
         name: "@run402/functions",
-        version: "3.5.1",
+        version: "4.8.0",
       },
     },
     functions_runtime: coreFunctionRuntimeCapability(),
