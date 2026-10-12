@@ -398,6 +398,14 @@ Read it back with `run402 events --source app --project <project-id>` — app ev
 
 **Idempotency.** Pass `idempotencyKey` on any code path that might run more than once for the same real-world event — webhook retries, function-run retries, anything at-least-once. The gateway dedupes on `(project_id, idempotency_key)` **forever**: this is a durable identity for the event, not a short-lived retry-window token like an HTTP `Idempotency-Key` header. Reusing a key days or years later still replays the *original* stored event (`deduplicated: true` on the response) instead of creating a new one.
 
+**Severity.** Pass `severity` to say how significant the event is — `info` (routine), `notice` (unusual but not known to be wrong), `warn` (probably wrong), `critical` (wrong now):
+
+```ts
+await events.emit("payment_failed", { order_id }, { severity: "critical" });
+```
+
+It is your judgement and is sent unchanged: omitted is stored as `info`, and the platform never infers or raises it. It is what a person's alert rule filters on (`min_severity`), and what reduces to one message per window or pages the escalation ladder — so declare it here instead of writing your own throttling or paging branch. The response echoes the stored `severity` (on a replay, the original's). Needs Run402 Cloud; Run402 Core ignores the field.
+
 **Response shape** — both a fresh emit (`201`) and an idempotent replay (`200`) return this:
 
 ```ts

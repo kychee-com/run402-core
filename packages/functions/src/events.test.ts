@@ -251,3 +251,21 @@ describe("events.emit — grammar is NOT validated client-side", () => {
     assert.deepEqual(JSON.parse(sentBody), { event_type: "deploy_activated" });
   });
 });
+
+describe("events.emit — severity (event-attention-rules)", () => {
+  it("sends the declared severity unchanged, and nothing when omitted", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    mock.method(globalThis, "fetch", async (_url: unknown, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(JSON.stringify({ cursor: "evc_1", event_type: "mcp_tool_called", class: "app", source: "app", severity: "notice", payload: {}, occurred_at: "2026-10-12T12:04:17.000Z", deduplicated: false, next_actions: [] }), {
+        status: 201,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    const result = await events.emit("mcp_tool_called", { tool: "ddd__no_such_tool" }, { severity: "notice" });
+    await events.emit("mcp_tool_called", { tool: "run402_quickstart" });
+    assert.equal(bodies[0]!.severity, "notice");
+    assert.equal("severity" in bodies[1]!, false, "the runtime never defaults or infers a severity");
+    assert.equal(result.severity, "notice");
+  });
+});

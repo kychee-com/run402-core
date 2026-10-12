@@ -36,10 +36,20 @@
  * the ORIGINAL stored event (`deduplicated: true`) instead of creating a
  * new one.
  *
+ * **Severity.** Pass `severity` to say how significant this fact is:
+ * `info` (routine), `notice` (unusual but not known to be wrong), `warn`
+ * (probably wrong), `critical` (wrong now). It is YOUR judgement — the
+ * platform never infers or raises it (omitted is stored as `info`) — and it
+ * is what a person's alert rule filters on, so declare it here instead of
+ * writing your own throttling or paging branch.
+ *
  * @see openspec/changes/app-events-emit-lane/design.md (Canonical Agent Contract)
  */
 
 import { config } from "./config.js";
+
+/** How significant an event is, ascending. */
+export type EventSeverity = "info" | "notice" | "warn" | "critical";
 
 export interface EventEmitOptions {
   /**
@@ -50,6 +60,11 @@ export interface EventEmitOptions {
    * retries, anything that might re-execute for the same occurrence).
    */
   idempotencyKey?: string;
+  /**
+   * How significant this fact is — your judgement, sent unchanged. Omitted is
+   * stored as `info`. Routing rules filter on it (`min_severity`).
+   */
+  severity?: EventSeverity;
 }
 
 /** A `next_actions[]` entry — platform-synthesized drill-down. Shape is
@@ -73,6 +88,8 @@ export interface EventEmitResult {
   class: string;
   /** Always `"app"` for events emitted through this namespace. */
   source: string;
+  /** The STORED severity: what you passed, or `"info"`; on a replay, the original row's. */
+  severity: EventSeverity;
   payload: Record<string, unknown>;
   /** Present (and `true`) only when the payload exceeded the 8 KiB bound
    *  and was truncated at write time; omitted otherwise. */
@@ -188,6 +205,8 @@ export const events = {
    *   rejected.
    * @param opts.idempotencyKey - durable dedup identity; see the namespace
    *   doc comment. Strongly recommended on at-least-once code paths.
+   * @param opts.severity - how significant this fact is; see the namespace
+   *   doc comment. Validated server-side only.
    */
   async emit(
     type: string,
@@ -197,6 +216,7 @@ export const events = {
     const body: Record<string, unknown> = { event_type: type };
     if (payload !== undefined) body.payload = payload;
     if (opts?.idempotencyKey !== undefined) body.idempotency_key = opts.idempotencyKey;
+    if (opts?.severity !== undefined) body.severity = opts.severity;
 
     const res = await fetch(
       `${config.API_BASE}/projects/v1/${config.PROJECT_ID}/events`,
