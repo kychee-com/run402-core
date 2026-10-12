@@ -12,6 +12,12 @@ export interface RoutedHttpPaymentContextV1 {
   /** Whether this is the first tenant invocation for the payment or a safe replay. */
   delivery: "first" | "replay";
   amountUsdMicros: number;
+  /**
+   * The amount in millisatoshis for a Lightning (`lnbtc`) payment; absent on an
+   * EVM payment. The ledger amount is `amountUsdMicros` either way.
+   */
+  amountMsat?: number;
+  /** The verified payer. A Lightning payment has none: the value is null. */
   payer: string | null;
   network: string;
   asset: string | null;
@@ -226,6 +232,8 @@ function normalizePaymentContext(value: unknown): RoutedHttpPaymentContextV1 | n
   ) {
     return null;
   }
+  const amountMsat = positiveSafeInteger(value.amountMsat);
+  if (value.amountMsat !== undefined && value.amountMsat !== null && amountMsat === null) return null;
   return {
     scheme: "x402",
     paymentId,
@@ -233,6 +241,7 @@ function normalizePaymentContext(value: unknown): RoutedHttpPaymentContextV1 | n
     deduplicated,
     delivery,
     amountUsdMicros,
+    ...(amountMsat === null ? {} : { amountMsat }),
     payer: nullableString(value.payer),
     network,
     asset: nullableString(value.asset),
@@ -241,6 +250,10 @@ function normalizePaymentContext(value: unknown): RoutedHttpPaymentContextV1 | n
     settledAt,
     ...(contextExpiresAt ? { contextExpiresAt } : {}),
   };
+}
+
+function positiveSafeInteger(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null;
 }
 
 function paymentContextFromHeaders(
@@ -277,6 +290,10 @@ function paymentContextFromHeaders(
   if (!Number.isSafeInteger(amountUsdMicros) || amountUsdMicros <= 0) {
     return null;
   }
+  // Lightning only: the gateway sends the invoice amount in millisatoshis.
+  const amountMsatRaw = nonEmpty(get("x-run402-payment-amount-msat"));
+  const amountMsat = amountMsatRaw === null ? null : positiveSafeInteger(Number(amountMsatRaw));
+  if (amountMsatRaw !== null && amountMsat === null) return null;
   return {
     scheme: "x402",
     paymentId,
@@ -284,6 +301,7 @@ function paymentContextFromHeaders(
     deduplicated: deduplicatedRaw === "true",
     delivery,
     amountUsdMicros,
+    ...(amountMsat === null ? {} : { amountMsat }),
     payer: nonEmpty(get("x-run402-payment-payer")),
     network,
     asset: nonEmpty(get("x-run402-payment-asset")),

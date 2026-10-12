@@ -477,6 +477,7 @@ Request fields:
 - `req.headers` is a Fetch `Headers` object. Cookie data is available through the `cookie` header.
 - Run402 Cloud priced routes expose a confirmed x402 payment through `getRoutedPaymentContext(req)`, backed by platform-owned `x-run402-payment-*` headers. The helper returns `null` for unpriced routes. Run402 Core does not populate payment context because tenant x402 settlement is a Cloud control-plane feature.
 - The returned payment keeps `paymentId` as the canonical tenant-side dedupe identity and also reports `idempotencyKey` (`null` for proof-keyed requests), `deduplicated`, and `delivery` (`first` or `replay`). Use `paymentId` to make application side effects idempotent; tenant execution remains at-least-once.
+- A Lightning payment (a route priced on `lightning` or `lightning-testnet`, settled over x402 `exact` on `lnbtc`) carries `amountMsat`, the invoice amount in millisatoshis, beside `amountUsdMicros`; its `payer` is `null` because a Lightning payment has no payer address. An EVM payment has no `amountMsat`.
 - Paid direct invocations and durable function runs expose the platform idempotency key on `x-run402-idempotency-key`; `getRun402Context(req).idempotencyKey` returns that value or `null`. Sellers with external side effects should also accept their own business-level dedupe token when they need guarantees beyond Run402 billing idempotency.
 - `await req.text()`, `await req.json()`, and `await req.arrayBuffer()` read the buffered request body, capped at 6 MiB.
 

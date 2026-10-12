@@ -165,6 +165,47 @@ describe("routed HTTP helpers", () => {
     });
   });
 
+  it("reads a Lightning payment: amount in millisatoshis, the payment hash, and no payer (tenant-lnbtc-priced-routes)", () => {
+    const hash = "dc47a53f308b3a39893bcab8fe206df6b5df6d32e8d7156c5a877d75cbcb89cb";
+    const context = getRoutedPaymentContext([
+      ["x-run402-payment-id", "pay_ln_1"],
+      ["x-run402-payment-scheme", "x402"],
+      ["x-run402-payment-amount-usd-micros", "20000000"],
+      ["x-run402-payment-amount-msat", "100000000"],
+      ["x-run402-payment-network", "lnbtc:000000000019d6689c085ae165831e93"],
+      ["x-run402-payment-asset", "BTC"],
+      ["x-run402-payment-pay-to", "02" + "ab".repeat(32)],
+      ["x-run402-payment-transaction", hash],
+      ["x-run402-payment-settled-at", "2026-10-12T10:00:01.000Z"],
+      ["x-run402-payment-deduplicated", "false"],
+      ["x-run402-payment-delivery", "first"],
+    ]);
+    assert.ok(context);
+    assert.equal(context.amountMsat, 100000000);
+    assert.equal(context.amountUsdMicros, 20000000);
+    assert.equal(context.payer, null);
+    assert.equal(context.transaction, hash);
+    assert.equal(context.asset, "BTC");
+    // The envelope form carries the same field through normalization.
+    const normalized = getRoutedPaymentContext({
+      version: "run402.routed_http.v1",
+      context: { payment: { ...context } },
+    } as never);
+    assert.equal(normalized?.amountMsat, 100000000);
+    // A malformed msat header is refused rather than silently dropped.
+    assert.equal(getRoutedPaymentContext([
+      ["x-run402-payment-id", "pay_ln_2"],
+      ["x-run402-payment-scheme", "x402"],
+      ["x-run402-payment-amount-usd-micros", "20000000"],
+      ["x-run402-payment-amount-msat", "lots"],
+      ["x-run402-payment-network", "lnbtc:000000000019d6689c085ae165831e93"],
+      ["x-run402-payment-pay-to", "02" + "ab".repeat(32)],
+      ["x-run402-payment-settled-at", "2026-10-12T10:00:01.000Z"],
+      ["x-run402-payment-deduplicated", "false"],
+      ["x-run402-payment-delivery", "first"],
+    ]), null);
+  });
+
   it("returns null for unpriced or malformed payment context", () => {
     assert.equal(getRoutedPaymentContext(baseEnvelope({})), null);
     assert.equal(getRoutedPaymentContext(new Headers()), null);
