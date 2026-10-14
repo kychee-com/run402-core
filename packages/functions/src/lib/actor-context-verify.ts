@@ -40,7 +40,7 @@
  * logs `R402_AUTH_ACTOR_HEADER_SPOOF` so spoofs / replays are visible
  * in observability.
  *
- * @see openspec/changes/auth-aware-ssr/specs/routed-http-functions/spec.md
+ * @see the routed-http-functions spec (auth-aware-ssr change)
  */
 
 import crypto from "node:crypto";

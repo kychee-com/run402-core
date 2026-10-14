@@ -23,8 +23,8 @@
  * its final value to the gateway in the Lambda response metadata envelope
  * (NOT via in-process ALS — the gateway runs in a different process).
  *
- * @see openspec/changes/astro-ssr-runtime/specs/functions-sdk-auth-model/spec.md
- * @see openspec/changes/astro-ssr-runtime/specs/routed-http-functions/spec.md
+ * @see the functions-sdk-auth-model spec (astro-ssr-runtime change)
+ * @see the routed-http-functions spec (astro-ssr-runtime change)
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -332,7 +332,7 @@ export function taintCacheBypass(): void {
  * To add a new payment primitive: append to this set AND ensure the
  * function's implementation calls `taintCacheBypass()` on every entry.
  *
- * @see openspec/changes/astro-ssr-runtime/specs/functions-sdk-auth-model/spec.md
+ * @see the functions-sdk-auth-model spec (astro-ssr-runtime change)
  */
 export const PAYMENT_PRIMITIVES: ReadonlySet<string> = new Set([
   "payment.fulfilled",

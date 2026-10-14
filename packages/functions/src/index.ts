@@ -9,7 +9,7 @@ export type { User } from "./auth.js";
 // / `auth.requireMembership(...)` / `auth.requireFresh({...})` /
 // `auth.fetch(...)` / `auth.csrfField()` / `auth.sessions.*` /
 // `auth.identities.link(...)` are the only documented identity surfaces.
-// See openspec/changes/auth-aware-ssr/specs/auth-sdk-namespace/spec.md.
+// See the auth-sdk-namespace spec (auth-aware-ssr change).
 export { auth } from "./auth/index.js";
 export type {
   Actor,

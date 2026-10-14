@@ -43,7 +43,7 @@
  * is what a person's alert rule filters on, so declare it here instead of
  * writing your own throttling or paging branch.
  *
- * @see openspec/changes/app-events-emit-lane/design.md (Canonical Agent Contract)
+ * @see the app-events-emit-lane design (Canonical Agent Contract)
  */
 
 import { config } from "./config.js";

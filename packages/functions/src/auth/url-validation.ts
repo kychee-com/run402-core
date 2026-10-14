@@ -15,7 +15,7 @@
  * Same-origin normalisation: scheme, host, and default-port comparisons
  * use `URL.origin`, which strips `:80` for http and `:443` for https.
  *
- * @see openspec/changes/auth-aware-ssr/specs/auth-sdk-namespace/spec.md
+ * @see the auth-sdk-namespace spec (auth-aware-ssr change)
  */
 
 export interface UrlValidationContext {

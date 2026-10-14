@@ -25,7 +25,7 @@
  *
  * Tag-based invalidation is NOT in v1; future v1.5 work.
  *
- * @see openspec/changes/astro-ssr-runtime/specs/ssr-isr-cache/spec.md
+ * @see the ssr-isr-cache spec (astro-ssr-runtime change)
  */
 
 import { config } from "./config.js";
