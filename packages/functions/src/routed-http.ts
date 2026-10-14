@@ -2,8 +2,11 @@ import { Buffer } from "node:buffer";
 
 export type RoutedHttpHeaderList = Array<[string, string]>;
 
+/** The protocol that paid: x402 (`exact` on EVM or Lightning) or MPP (a Tempo charge in pathUSD). */
+export type RoutedHttpPaymentScheme = "x402" | "mpp";
+
 export interface RoutedHttpPaymentContextV1 {
-  scheme: "x402";
+  scheme: RoutedHttpPaymentScheme;
   paymentId: string;
   /** Caller-owned business key accepted by Run402, or null for proof-keyed requests. */
   idempotencyKey: string | null;
@@ -207,7 +210,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function normalizePaymentContext(value: unknown): RoutedHttpPaymentContextV1 | null {
   if (!isRecord(value)) return null;
-  if (value.scheme !== "x402") return null;
+  const scheme = paymentScheme(value.scheme);
+  if (scheme === null) return null;
   const paymentId = nonEmptyString(value.paymentId);
   const idempotencyKey = nullableString(value.idempotencyKey);
   const deduplicated = value.deduplicated;
@@ -235,7 +239,7 @@ function normalizePaymentContext(value: unknown): RoutedHttpPaymentContextV1 | n
   const amountMsat = positiveSafeInteger(value.amountMsat);
   if (value.amountMsat !== undefined && value.amountMsat !== null && amountMsat === null) return null;
   return {
-    scheme: "x402",
+    scheme,
     paymentId,
     idempotencyKey,
     deduplicated,
@@ -252,6 +256,10 @@ function normalizePaymentContext(value: unknown): RoutedHttpPaymentContextV1 | n
   };
 }
 
+function paymentScheme(value: unknown): RoutedHttpPaymentScheme | null {
+  return value === "x402" || value === "mpp" ? value : null;
+}
+
 function positiveSafeInteger(value: unknown): number | null {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null;
 }
@@ -261,7 +269,8 @@ function paymentContextFromHeaders(
 ): RoutedHttpPaymentContextV1 | null {
   const get = headerGetter(source);
   if (!get) return null;
-  if (nonEmpty(get("x-run402-payment-scheme")) !== "x402") return null;
+  const scheme = paymentScheme(nonEmpty(get("x-run402-payment-scheme")));
+  if (scheme === null) return null;
   const paymentId = nonEmpty(get("x-run402-payment-id"));
   const idempotencyKeyRaw = get("x-run402-payment-idempotency-key");
   const idempotencyKey = nonEmpty(idempotencyKeyRaw);
@@ -295,7 +304,7 @@ function paymentContextFromHeaders(
   const amountMsat = amountMsatRaw === null ? null : positiveSafeInteger(Number(amountMsatRaw));
   if (amountMsatRaw !== null && amountMsat === null) return null;
   return {
-    scheme: "x402",
+    scheme,
     paymentId,
     idempotencyKey,
     deduplicated: deduplicatedRaw === "true",

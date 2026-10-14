@@ -206,6 +206,34 @@ describe("routed HTTP helpers", () => {
     ]), null);
   });
 
+  it("reads an MPP Tempo payment: scheme mpp, the Tempo network, pathUSD, and the transaction hash (tenant-mpp-priced-routes)", () => {
+    const tx = "0x" + "ab".repeat(32);
+    const headers: Array<[string, string]> = [
+      ["x-run402-payment-id", "pay_mpp_1"],
+      ["x-run402-payment-scheme", "mpp"],
+      ["x-run402-payment-amount-usd-micros", "20000"],
+      ["x-run402-payment-network", "eip155:42431"],
+      ["x-run402-payment-asset", "0x20c0000000000000000000000000000000000000"],
+      ["x-run402-payment-payer", "0x000000000000000000000000000000000000b0b0"],
+      ["x-run402-payment-pay-to", "0x000000000000000000000000000000000000cafe"],
+      ["x-run402-payment-transaction", tx],
+      ["x-run402-payment-settled-at", "2026-10-14T10:00:01.000Z"],
+      ["x-run402-payment-deduplicated", "false"],
+      ["x-run402-payment-delivery", "first"],
+    ];
+    const context = getRoutedPaymentContext(headers);
+    assert.ok(context);
+    assert.equal(context.scheme, "mpp");
+    assert.equal(context.network, "eip155:42431");
+    assert.equal(context.transaction, tx);
+    assert.equal(context.amountUsdMicros, 20000);
+    const normalized = getRoutedPaymentContext({
+      version: "run402.routed_http.v1",
+      context: { payment: { ...context } },
+    } as never);
+    assert.equal(normalized?.scheme, "mpp");
+  });
+
   it("returns null for unpriced or malformed payment context", () => {
     assert.equal(getRoutedPaymentContext(baseEnvelope({})), null);
     assert.equal(getRoutedPaymentContext(new Headers()), null);
