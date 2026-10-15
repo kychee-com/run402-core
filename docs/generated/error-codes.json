@@ -1,7 +1,7 @@
 {
   "owner": "core",
   "repository": "kychee-com/run402-core",
-  "revision": "19427d718b9d51000269b75fcc52ae922b2335fa",
+  "revision": "70509e9fbe4d190a13f32d35670d11eb1480f546",
   "sources": [
     {
       "source": "packages/functions/src/auth/errors.ts",
@@ -37,7 +37,7 @@
     },
     {
       "source": "packages/functions/src/cache.ts",
-      "sourceDigest": "c334d178b3e446d6bf5d89bebf0ea23c86b9f4b2b076cb7a574ab8cb733c8536",
+      "sourceDigest": "f2d1e2ae6b59824be4b2741a7cb5b27cc750552c40e1d0525dc79fde4f90c38f",
       "codes": [
         "R402_CACHE_INVALIDATION_HOST_FORBIDDEN",
         "R402_CACHE_INVALIDATION_HOST_REQUIRED"
@@ -73,7 +73,7 @@
     },
     {
       "source": "packages/functions/src/runtime-context.ts",
-      "sourceDigest": "54863840d958cb4bc9bdb8806c42ba8cf22060a9cdfbd3d2441fb37530ceb891",
+      "sourceDigest": "5a96d82892bc7a758d6020e98c927cd9900fdea944cadf6b0e6875268c8bcf6e",
       "codes": [
         "R402_AUTH_ACTOR_HEADER_SPOOF",
         "R402_SDK_OUTSIDE_REQUEST_CONTEXT"
