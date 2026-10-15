@@ -49,11 +49,11 @@
     "core:static-continuity": "node scripts/core-static-continuity-smoke.mjs"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
-    "@typescript-eslint/eslint-plugin": "^8.71.0",
+    "@types/node": "^22.20.5",
+    "@typescript-eslint/eslint-plugin": "^8.71.1",
     "@typescript-eslint/parser": "^8.71.0",
     "eslint": "^10.12.0",
-    "tsx": "^4.20.0",
+    "tsx": "^4.23.15",
     "typescript": "^6.0.3"
   },
   "overrides": {
