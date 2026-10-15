@@ -491,7 +491,7 @@ export class PostgresCoreFunctionRunStore implements CoreFunctionRunStorePort {
       if (existing.rows[0]) {
         const digest = digestFromRow(existing.rows[0].submitted_intent_sha256);
         if (!digest || !digest.equals(normalized.submittedIntentDigest)) {
-          throw new CoreFunctionRunError("function_run_idempotency_conflict", 409, "idempotency_key already belongs to a different function run", {
+          throw new CoreFunctionRunError("IDEMPOTENCY_KEY_REUSED", 409, "idempotency_key already belongs to a different function run", {
             next_actions: [{ type: "get", href: `/functions/v1/runs/${existing.rows[0].id}` }],
           });
         }
