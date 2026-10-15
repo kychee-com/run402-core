@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "description": "Open-source Run402 server/runtime core.",
+  "engines": {
+    "node": ">=22"
+  },
   "workspaces": [
     "packages/functions",
     "packages/release",
@@ -12,7 +15,7 @@
   ],
   "scripts": {
     "build": "npm run build:functions && npm run build:release && npm run build:runtime-kernel && npm run build:core-gateway",
-    "test": "npm run build:functions && npm run build:release && npm run build:runtime-kernel && npm run test:functions && npm run test:release && npm run test:runtime-kernel && npm run test:core-gateway",
+    "test": "node --test scripts/types-node-engines.test.mjs && npm run build:functions && npm run build:release && npm run build:runtime-kernel && npm run test:functions && npm run test:release && npm run test:runtime-kernel && npm run test:core-gateway",
     "build:functions": "npm run build -w packages/functions",
     "build:release": "npm run build -w packages/release",
     "build:runtime-kernel": "npm run build -w packages/runtime-kernel",
@@ -51,7 +54,7 @@
     "@typescript-eslint/parser": "^8.71.0",
     "eslint": "^10.12.0",
     "tsx": "^4.20.0",
-    "typescript": "^5.7.0"
+    "typescript": "^6.0.3"
   },
   "overrides": {
     "esbuild": "0.28.1"
