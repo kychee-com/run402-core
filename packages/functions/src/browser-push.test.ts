@@ -58,6 +58,8 @@ interface PageOptions {
   subscribed?: { endpoint: string; key: string | null };
   storage?: Record<string, string>;
   storageThrows?: boolean;
+  /** `navigator.userActivation.isActive`: the call runs inside a tap or click. Absent when undefined. */
+  userActivation?: boolean;
   respond?: (url: string, init: RequestInit) => Response;
 }
 
@@ -171,6 +173,7 @@ function makePage(opts: PageOptions = {}) {
     maxTouchPoints: opts.maxTouchPoints ?? 0,
   };
   if (opts.standalone !== undefined) navigator.standalone = opts.standalone;
+  if (opts.userActivation !== undefined) navigator.userActivation = { isActive: opts.userActivation, hasBeenActive: opts.userActivation };
   if (opts.serviceWorker !== false) navigator.serviceWorker = serviceWorker;
 
   const sandbox: Record<string, unknown> = {
@@ -467,6 +470,18 @@ describe("Run402Push.subscribe() — at start-up for a signed-in user", () => {
       storage: { "run402.push.confirmed": JSON.stringify({ endpoint: ENDPOINT, at: Date.now() }) },
     });
     assert.equal((await page.api.subscribe()).confirmed, true);
+  });
+
+  it("a tap re-confirms within 24 hours, so a replaced phone comes back from the app's button", async () => {
+    const fresh = { "run402.push.confirmed": JSON.stringify({ endpoint: ENDPOINT, at: Date.now() }) };
+    const tap = makePage({ permission: "granted", existingWorker: "ours", subscribed: { endpoint: ENDPOINT, key: VAPID_KEY }, storage: fresh, userActivation: true });
+    assert.equal((await tap.api.subscribe()).confirmed, true);
+    assert.equal(tap.calls.fetch.filter((call) => call.method === "POST").length, 1);
+    assert.equal(tap.calls.requestPermission, 0, "permission already granted: no prompt");
+
+    const startUp = makePage({ permission: "granted", existingWorker: "ours", subscribed: { endpoint: ENDPOINT, key: VAPID_KEY }, storage: fresh, userActivation: false });
+    assert.equal((await startUp.api.subscribe()).confirmed, false, "no gesture: the daily skip holds");
+    assert.equal(startUp.calls.fetch.filter((call) => call.method === "POST").length, 0);
   });
 
   it("works when storage throws (confirms every time)", async () => {

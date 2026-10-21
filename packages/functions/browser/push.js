@@ -12,7 +12,8 @@
  *     decided (call it from a tap the first time; iPhone only prompts from a
  *     tap), subscribes this browser and records the subscription for the
  *     signed-in user. Called again at start-up it never prompts and
- *     re-confirms with the server at most once a day.
+ *     re-confirms with the server at most once a day; called from a tap it
+ *     always re-confirms.
  *   - `unsubscribe({ accessToken })` removes this browser's subscription.
  *
  * Failures reject with an Error whose `.code` says what to do next:
@@ -276,6 +277,9 @@
     if (!isSupported()) throw fail("unsupported", "This browser does not support web push notifications.");
     var Notification = window.Notification;
     var grantedAtStart = Notification.permission === "granted";
+    // A tap or click always re-confirms; only a start-up call takes the daily
+    // skip. Read it now: the activation is spent by the awaits below.
+    var fromGesture = Boolean(navigator.userActivation && navigator.userActivation.isActive);
     if (Notification.permission === "denied") {
       throw fail("permission_denied", "Notifications are blocked for this site in the browser's settings.");
     }
@@ -315,7 +319,7 @@
     }
 
     var id = await subscriptionId(subscription.endpoint);
-    if (grantedAtStart && recentlyConfirmed(subscription.endpoint, accessToken)) {
+    if (grantedAtStart && !fromGesture && recentlyConfirmed(subscription.endpoint, accessToken)) {
       return { status: "subscribed", subscription_id: id, confirmed: false };
     }
 

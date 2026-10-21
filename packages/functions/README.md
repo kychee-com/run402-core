@@ -464,11 +464,12 @@ Every app host serves a browser helper at `/_run402/push.js` (same origin as you
     Run402Push.subscribe().catch((err) => console.warn(err.code));
 
   // At start-up, for a signed-in user: never prompts, re-confirms at most once a day.
+  // (A call from a tap always re-confirms.)
   if (signedIn) Run402Push.subscribe().catch(() => {});
 </script>
 ```
 
-- `Run402Push.subscribe({ accessToken? })` registers the worker when the app has none, asks for permission when it has not been decided, subscribes the browser, and records the subscription for the signed-in user (the hosted-auth cookie, or `accessToken` as a Bearer token). It resolves `{ subscription_id, user_id, status: "subscribed", replaced_subscription_id, confirmed: true }`, or `{ status: "subscribed", subscription_id, confirmed: false }` when permission was already granted and the server confirmed this subscription in the last 24 hours. Call it from a "Notify me" tap the first time, and again at start-up for a signed-in user so the subscription stays current.
+- `Run402Push.subscribe({ accessToken? })` registers the worker when the app has none, asks for permission when it has not been decided, subscribes the browser, and records the subscription for the signed-in user (the hosted-auth cookie, or `accessToken` as a Bearer token). It resolves `{ subscription_id, user_id, status: "subscribed", replaced_subscription_id, confirmed: true }`, or `{ status: "subscribed", subscription_id, confirmed: false }` when permission was already granted, the call did not come from a tap or click, and the server confirmed this subscription in the last 24 hours. A call from a tap always re-confirms, so a phone replaced by its user's 11th signs back up from the "Notify me" button at once, and from start-up within a day. Call it from a "Notify me" tap the first time, and again at start-up for a signed-in user so the subscription stays current.
 - Rejections carry `err.code`: `unsupported`, `needs_install` (iPhone, not the Home Screen app), `permission_denied`, `needs_user_gesture` (call it from a tap), `worker_missing_snippet` (see below), `sign_in_required` (no signed-in user), or the server's code (`R402_AUTH_CSRF_ORIGIN_MISMATCH`, `VALIDATION_FAILED`) with `err.status` and `err.next_actions`.
 - `Run402Push.status()` resolves `"unsupported" | "needs_install" | "default" | "denied" | "subscribed"` without prompting; use it to decide whether to show the button.
 - `Run402Push.unsubscribe({ accessToken? })` removes this browser's subscription and resolves `{ status: "unsubscribed", subscription_id }` (or `{ status: "not_subscribed" }`). Call it before signing a user out, so a shared phone stops receiving their notifications.
