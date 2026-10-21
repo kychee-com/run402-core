@@ -9,11 +9,14 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    }
+    },
+    "./browser/push.js": "./browser/push.js",
+    "./browser/push-sw.js": "./browser/push-sw.js"
   },
   "files": [
     "dist",
     "!dist/*.test.*",
+    "browser",
     "README.md"
   ],
   "scripts": {

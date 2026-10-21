@@ -1,6 +1,6 @@
 # @run402/functions
 
-In-function helper library for [Run402](https://run402.com) serverless functions. Imported _inside_ a deployed function — gives you typed access to the caller's database (RLS-respecting) and the project's admin database, the caller's auth, the project's mailbox, AI helpers, runtime asset uploads, and the project's cursored event feed.
+In-function helper library for [Run402](https://run402.com) serverless functions. Imported _inside_ a deployed function — gives you typed access to the caller's database (RLS-respecting) and the project's admin database, the caller's auth, the project's mailbox, AI helpers, runtime asset uploads, the project's cursored event feed, and web push notifications to the app's users' phones.
 
 Run402's first-class people/agent **control-plane principals** are distinct from the deployed app's tenant callers described in this package. Here, `auth.user()`, verified tenant identity, and RLS identify an end user of the application; they do not expose or replace the Run402 organization membership, grant, grant key, or Buzz identity model.
 
@@ -428,6 +428,61 @@ It is your judgement and is sent unchanged: omitted is stored as `info`, and the
 
 **Always `await` it (and every other side-channel call).** The function's sandbox freezes the moment your handler's response is returned — a fire-and-forget `void events.emit(...)` (or any un-awaited `fetch` to a webhook, analytics endpoint, etc.) is silently killed mid-flight and the event never lands. There is no error, no log, nothing: the request just evaporates with the freeze. If you don't want the caller's latency to include the emit, bound it instead of detaching it — `await` with a short `AbortSignal.timeout(...)` on hand-rolled calls — but never let the handler return before the side effect settles.
 
+## `push.send(...)` — web push notifications to your users' phones
+
+Send a notification to the phones and browsers signed up to your app, from inside a deployed function. Needs Run402 Cloud: on a host without the push routes (Run402 Core) it throws `Run402PushError` with `code: "PUSH_UNSUPPORTED"`.
+
+```ts
+import { push } from "@run402/functions";
+
+const sent = await push.send({
+  title: "Your order shipped",     // required, 1–100 characters
+  body: "Arrives Thursday",        // optional, ≤ 1000
+  url: "/orders/123",              // optional path on the app the tap opens, default "/"
+  tag: "order-123",                // optional, ≤ 64: a newer message with the same tag replaces the older one
+  to: { user_id: order.user_id },  // optional: omit to reach every phone signed up to the project
+});
+// { message_id, status: "queued", devices: 2, next_actions: [...] }
+```
+
+`send` queues the message and returns at once: `status: "queued"` (HTTP 202) with `devices`, the number of subscriptions it will reach, or `status: "no_subscribers"` (HTTP 200, `devices: 0`) when nobody it addresses has a phone signed up. The platform then encrypts the message for each device, hands it to each browser's push service, and drops subscriptions the push service says are gone. `url` is resolved against the origin each phone signed up on, so one message works across the app's subdomain and custom domains. Field limits are checked by the gateway, not locally.
+
+Each organization has a daily delivery cap, counted per phone a message reaches and reset at midnight UTC: **100** on prototype, **1,000** on hobby, **10,000** on team. A message that does not fit in what is left is refused whole, never sent to some of its phones: `send` throws `QUOTA_EXCEEDED` (403, with `details.used`, `limit`, `resets_at` and an upgrade next action) below the top tier, and `RATE_LIMITED` (429, with `Retry-After`) on team.
+
+Only a signed-in user can sign a phone up. A user holds up to 10 phones (a phone is one browser on one device); signing up an 11th replaces the one that re-confirmed longest ago.
+
+### Signing a phone up: `/_run402/push.js`
+
+Every app host serves a browser helper at `/_run402/push.js` (same origin as your pages) and its service worker at `/_run402/push-sw.js`. Both ship in this package under `browser/`.
+
+```html
+<script src="/_run402/push.js"></script>
+<button id="notify">Notify me</button>
+<script>
+  // First time: from a tap, so the browser may ask for permission.
+  document.getElementById("notify").onclick = () =>
+    Run402Push.subscribe().catch((err) => console.warn(err.code));
+
+  // At start-up, for a signed-in user: never prompts, re-confirms at most once a day.
+  if (signedIn) Run402Push.subscribe().catch(() => {});
+</script>
+```
+
+- `Run402Push.subscribe({ accessToken? })` registers the worker when the app has none, asks for permission when it has not been decided, subscribes the browser, and records the subscription for the signed-in user (the hosted-auth cookie, or `accessToken` as a Bearer token). It resolves `{ subscription_id, user_id, status: "subscribed", replaced_subscription_id, confirmed: true }`, or `{ status: "subscribed", subscription_id, confirmed: false }` when permission was already granted and the server confirmed this subscription in the last 24 hours. Call it from a "Notify me" tap the first time, and again at start-up for a signed-in user so the subscription stays current.
+- Rejections carry `err.code`: `unsupported`, `needs_install` (iPhone, not the Home Screen app), `permission_denied`, `needs_user_gesture` (call it from a tap), `worker_missing_snippet` (see below), `sign_in_required` (no signed-in user), or the server's code (`R402_AUTH_CSRF_ORIGIN_MISMATCH`, `VALIDATION_FAILED`) with `err.status` and `err.next_actions`.
+- `Run402Push.status()` resolves `"unsupported" | "needs_install" | "default" | "denied" | "subscribed"` without prompting; use it to decide whether to show the button.
+- `Run402Push.unsubscribe({ accessToken? })` removes this browser's subscription and resolves `{ status: "unsubscribed", subscription_id }` (or `{ status: "not_subscribed" }`). Call it before signing a user out, so a shared phone stops receiving their notifications.
+
+**An app with its own service worker** adds one line to it, and `subscribe()` uses that worker instead of registering its own:
+
+```js
+importScripts("/_run402/push-sw.js");
+```
+
+`subscribe()` never registers over an app's worker: without that line it rejects `worker_missing_snippet` with `err.fix` set to the line to add.
+
+**iPhone and iPad.** Web push needs iOS 16.4 or later and works only from the Home Screen app (Share, then Add to Home Screen; the site needs a web app manifest with `"display": "standalone"`), so in a Safari tab `status()` is `"needs_install"`. The permission prompt appears only from a tap. A denial can be undone only by removing the Home Screen icon and adding it again.
+
 ## Static-site generation (build-time use)
 
 The same library works at build time for static-site generation if you set `RUN402_SERVICE_KEY` and `RUN402_PROJECT_ID` in your `.env`:
@@ -662,6 +717,29 @@ try {
 ### `R402SnapshotsError` — `snapshots.*` failures
 
 `snapshots.*` throws `R402SnapshotsError` (exported) with `code` (the gateway's, e.g. `SNAPSHOT_MANUAL_CAP_EXCEEDED`, `STALE_RESTORE_CONFIRMATION`, `SNAPSHOT_RELEASE_NOT_RESTORABLE`; `VALIDATION_FAILED` with `field` for input checked before any request; `SNAPSHOTS_UNSUPPORTED` on a host without snapshots; `PROJECT_ID_MISSING` outside a function), `status`, `details`, `next_actions`, and `body`.
+
+### `Run402PushError` — `push.send()` failures
+
+`push.send()` throws `Run402PushError` (exported) with `code`, `status`, `details`, `next_actions`, and `body`, passed through from the gateway:
+
+- `VALIDATION_FAILED` (400) — a field is missing, empty, or too long.
+- `QUOTA_EXCEEDED` (403) — the organization's daily delivery cap is reached; `details` is `{ resource: "push_deliveries_per_day", used, limit, resets_at }`.
+- `RATE_LIMITED` (429) — the daily delivery cap is reached on the top tier, where no upgrade raises it; retry after `Retry-After`.
+- `AUTH_REQUIRED` (401) / `FORBIDDEN` (403) — the service key is missing or not this project's.
+- `PUSH_UNSUPPORTED` — the host does not serve the push routes (Run402 Core); push notifications need Run402 Cloud.
+- `PROJECT_ID_MISSING` — outside a deployed function with no `RUN402_PROJECT_ID`; no request is made and `status` is `null`.
+
+```ts
+import { push, Run402PushError } from "@run402/functions";
+
+try {
+  await push.send({ title: "Reminder", to: { user_id } });
+} catch (err) {
+  if (err instanceof Run402PushError && err.code === "QUOTA_EXCEEDED") {
+    // err.details.resets_at says when sending works again
+  } else throw err;
+}
+```
 
 Other helpers still throw plain `Error` whose message includes the HTTP status and the response body so you can branch on `code` / `category` / `retryable` (the v1.34+ agent-operable error envelope).
 

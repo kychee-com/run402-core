@@ -198,3 +198,8 @@ export { ensureProjectJwtKeysLoaded } from "./lib/project-jwt-keys.js";
 // policy, this namespace is a dumb pipe plus idempotency-key ergonomics.
 export { events, Run402EventsPlatformError } from "./events.js";
 export type { EventEmitOptions, EventEmitResult, EventNextAction } from "./events.js";
+// `push.send({ title, body?, url?, tag?, to? })` — queue a web push
+// notification for the project's subscribed phones (Run402 Cloud; Core
+// answers `PUSH_UNSUPPORTED`). Browsers sign up through `/_run402/push.js`.
+export { push, Run402PushError } from "./push.js";
+export type { PushSendOptions, PushSendResult, PushNextAction } from "./push.js";

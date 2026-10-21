@@ -74,12 +74,35 @@ try {
     run(`npm install --before=9999-12-31 "${tarball}" jsonwebtoken@^9`, { cwd: installDir });
   });
 
-  step("import resolves: @run402/functions exposes db, adminDb, QueryBuilder, auth, runWithContext, email, ai, routed HTTP helpers, legacy sentinels", () => {
+  step("import resolves: @run402/functions exposes db, adminDb, QueryBuilder, auth, runWithContext, email, ai, push, routed HTTP helpers, legacy sentinels", () => {
     const result = run(
-      `node --input-type=module -e "import * as m from '@run402/functions'; const need = ['db','adminDb','QueryBuilder','auth','runWithContext','getUser','getUserId','getRole','getSession','currentUser','getCurrentUser','getServerSession','email','ai','assets','cache','verifyWebhook','getRun402Context','routedHttp','text','json','bytes','isRequest','getRoutedPaymentContext']; const missing = need.filter(n => !(n in m)); if (missing.length) { console.error('missing:', missing); process.exit(1); } console.log('exports OK');"`,
+      `node --input-type=module -e "import * as m from '@run402/functions'; const need = ['db','adminDb','QueryBuilder','auth','runWithContext','getUser','getUserId','getRole','getSession','currentUser','getCurrentUser','getServerSession','email','ai','assets','cache','push','Run402PushError','verifyWebhook','getRun402Context','routedHttp','text','json','bytes','isRequest','getRoutedPaymentContext']; const missing = need.filter(n => !(n in m)); if (missing.length) { console.error('missing:', missing); process.exit(1); } console.log('exports OK');"`,
       { cwd: installDir },
     );
     if (!result.includes("exports OK")) throw new Error("export check produced unexpected output: " + result);
+  });
+
+  step("browser push files ship in the tarball and resolve through the package exports", () => {
+    // A server serves these at /_run402/push.js and /_run402/push-sw.js by
+    // resolving them from the installed package and reading the bytes.
+    const listing = run(`tar -tzf "${tarball}"`);
+    for (const file of ["package/browser/push.js", "package/browser/push-sw.js"]) {
+      if (!listing.split("\n").includes(file)) throw new Error(`tarball is missing ${file}`);
+    }
+    const result = run(
+      `node --input-type=module -e "
+        import { createRequire } from 'node:module';
+        import { readFileSync } from 'node:fs';
+        const require = createRequire(process.cwd() + '/index.js');
+        const page = readFileSync(require.resolve('@run402/functions/browser/push.js'), 'utf8');
+        const worker = readFileSync(require.resolve('@run402/functions/browser/push-sw.js'), 'utf8');
+        if (!page.includes('window.Run402Push')) { console.error('push.js does not define Run402Push'); process.exit(1); }
+        if (!worker.includes('run402-push-pong')) { console.error('push-sw.js does not answer the ping'); process.exit(1); }
+        console.log('browser files OK');
+      "`,
+      { cwd: installDir },
+    );
+    if (!result.includes("browser files OK")) throw new Error("browser file check produced unexpected output: " + result);
   });
 
   step("legacy sentinels throw R402_AUTH_UNKNOWN_EXPORT when called", () => {

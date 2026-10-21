@@ -39,6 +39,7 @@ Current Core capability table:
 | Single-node scheduled functions | Yes |
 | Astro SSR | Yes |
 | Portable archive inspect/verify/import | Yes |
+| Web push notifications (`push.send`, `/_run402/push.js`) | No, Cloud only (`PUSH_UNSUPPORTED`) |
 | Cloud principal/org authority graph | No |
 | Buzz identity and community control plane | No |
 | Complete Cloud action-time attribution history | No |

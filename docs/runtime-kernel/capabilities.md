@@ -57,6 +57,7 @@ Unsupported required capabilities fail with `unsupported_capability`.
 - `database.migrations[].sql_ref`
 - `site.patch`
 - hosted OAuth
+- web push notifications (`push.send` throws `PUSH_UNSUPPORTED`; `/_run402/push*` is not served)
 - managed subdomains and custom domains
 - Cloud archive export creation
 - Cloud import
