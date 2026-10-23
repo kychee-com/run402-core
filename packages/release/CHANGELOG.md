@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `computeReleaseDiff` states public path changes: both envelopes carry `public_paths: { mode_old, mode_new, added, removed, changed, totals? }`, and a change to `site.public_paths` alone (a path added, removed or pointed at another asset, or a mode switch) is no longer a noop and is named in the summary. A file reachable by its own name in implicit mode stays in the `site` diff only.
+
 - Wire prior mutable-path protection through actual implicit and explicit manifest compilation. Inferred classes are no longer mistaken for explicit immutable declarations during materialization.
 
 - Consolidate filename inference in the pure `static-cache` subpath. Recognize default Vite/Rollup and Astro base64url fingerprints; keep mutable, hidden, numeric-version and nonterminal false positives revalidating. Preserve explicit/prior mutable policy and retained-public eligibility.

@@ -6,6 +6,7 @@ import {
   detectPreviousImmutableViolations,
   isDirectStaticManifestEntry,
   staticManifestEntryAssetPath,
+  staticManifestEntryAuthority,
   staticManifestPublicPathMode,
 } from "./static-manifest.js";
 import {
@@ -50,6 +51,7 @@ export interface PlanDiffEnvelope {
   secrets: SecretsDiff;
   subdomains: SubdomainsDiff;
   routes: RoutesDiff;
+  public_paths: PublicPathsDiff;
   static_assets: StaticAssetsDiff;
 }
 
@@ -65,6 +67,7 @@ export interface ReleaseDiffEnvelope {
   secrets: SecretsDiff;
   subdomains: SubdomainsDiff;
   routes: RoutesDiff;
+  public_paths: PublicPathsDiff;
   static_assets: StaticAssetsDiff;
 }
 
@@ -83,6 +86,20 @@ export interface SiteDiff {
     content_type_new: string;
     content_type_inferred?: true;
   }>;
+  totals?: { added: number; removed: number; changed: number };
+}
+
+/**
+ * Which browser URLs serve which release asset. A public path whose asset is
+ * a site path the same diff adds or removes under implicit (filename-derived)
+ * reachability is already stated by `site` and is left out here.
+ */
+export interface PublicPathsDiff {
+  mode_old: "implicit" | "explicit";
+  mode_new: "implicit" | "explicit";
+  added: Array<{ public_path: string; asset_path: string }>;
+  removed: string[];
+  changed: Array<{ public_path: string; asset_path_old: string; asset_path_new: string }>;
   totals?: { added: number; removed: number; changed: number };
 }
 
@@ -183,14 +200,16 @@ export function computeReleaseDiff(
   const subdomains = computeSubdomainsDiff(from, to);
   const routes = computeRoutesDiff(from, to);
   const staticAssets = computeStaticAssetsDiff(from, to);
+  const publicPaths = computePublicPathsDiff(from, to, siteCap);
 
-  const isNoop = isDiffNoop(site, functions, secrets, subdomains, routes);
+  const isNoop = isDiffNoop(site, functions, secrets, subdomains, routes, publicPaths);
   const base = {
     site,
     functions,
     secrets,
     subdomains,
     routes,
+    public_paths: publicPaths,
     static_assets: staticAssets,
   };
 
@@ -199,7 +218,7 @@ export function computeReleaseDiff(
       isNoop && options.plan_migrations.new.length === 0;
     const envelope: PlanDiffEnvelope = {
       is_noop: isNoopWithMigrations,
-      summary: renderSummary(options.plan_migrations, site, functions, secrets, subdomains, routes),
+      summary: renderSummary(options.plan_migrations, site, functions, secrets, subdomains, routes, publicPaths),
       warnings: [],
       migrations: options.plan_migrations,
       ...base,
@@ -218,7 +237,7 @@ export function computeReleaseDiff(
   const isNoopWithMigrations = isNoop && appliedBetween.length === 0;
   const envelope: ReleaseDiffEnvelope = {
     is_noop: isNoopWithMigrations,
-    summary: renderSummaryReleaseDiff(appliedBetween.length, site, functions, secrets, subdomains, routes),
+    summary: renderSummaryReleaseDiff(appliedBetween.length, site, functions, secrets, subdomains, routes, publicPaths),
     warnings: [],
     migrations: { applied_between_releases: appliedBetween },
     ...base,
@@ -542,6 +561,68 @@ function computeSiteDiff(
   };
 }
 
+function directPublicPaths(
+  state: PortableReleaseState,
+): { mode: "implicit" | "explicit"; entries: Map<string, { asset_path: string; implicit: boolean }> } {
+  const manifest =
+    state.static_manifest ?? buildStaticManifestFromPortableState(state.site.paths, state.routes, null, undefined).manifest;
+  const entries = new Map<string, { asset_path: string; implicit: boolean }>();
+  for (const [publicPath, entry] of Object.entries(manifest?.files ?? {})) {
+    if (!isDirectStaticManifestEntry(entry)) continue;
+    entries.set(publicPath, {
+      asset_path: staticManifestEntryAssetPath(publicPath, entry),
+      implicit: staticManifestEntryAuthority(entry) === "implicit_file_path",
+    });
+  }
+  return { mode: staticManifestPublicPathMode(manifest), entries };
+}
+
+function computePublicPathsDiff(
+  from: PortableReleaseState,
+  to: PortableReleaseState,
+  cap: number,
+): PublicPathsDiff {
+  const before = directPublicPaths(from);
+  const after = directPublicPaths(to);
+  const fromSitePaths = new Set(from.site.paths.map((path) => path.path));
+  const toSitePaths = new Set(to.site.paths.map((path) => path.path));
+
+  const added: PublicPathsDiff["added"] = [];
+  const removed: string[] = [];
+  const changed: PublicPathsDiff["changed"] = [];
+  for (const [publicPath, entry] of after.entries) {
+    const previous = before.entries.get(publicPath);
+    if (!previous) {
+      // A new file reachable by its own name is the site diff's addition.
+      if (entry.implicit && !fromSitePaths.has(entry.asset_path)) continue;
+      added.push({ public_path: publicPath, asset_path: entry.asset_path });
+    } else if (previous.asset_path !== entry.asset_path) {
+      changed.push({ public_path: publicPath, asset_path_old: previous.asset_path, asset_path_new: entry.asset_path });
+    }
+  }
+  for (const [publicPath, entry] of before.entries) {
+    if (after.entries.has(publicPath)) continue;
+    if (entry.implicit && !toSitePaths.has(entry.asset_path)) continue;
+    removed.push(publicPath);
+  }
+
+  added.sort((a, b) => compareAscii(a.public_path, b.public_path));
+  removed.sort(compareAscii);
+  changed.sort((a, b) => compareAscii(a.public_path, b.public_path));
+
+  return {
+    mode_old: before.mode,
+    mode_new: after.mode,
+    added: added.slice(0, cap),
+    removed: removed.slice(0, cap),
+    changed: changed.slice(0, cap),
+    totals:
+      added.length > cap || removed.length > cap || changed.length > cap
+        ? { added: added.length, removed: removed.length, changed: changed.length }
+        : undefined,
+  };
+}
+
 function computeStaticAssetsDiff(
   from: PortableReleaseState,
   to: PortableReleaseState,
@@ -810,8 +891,13 @@ function isDiffNoop(
   secrets: SecretsDiff,
   subdomains: SubdomainsDiff,
   routes: RoutesDiff,
+  publicPaths: PublicPathsDiff,
 ): boolean {
   return (
+    publicPaths.mode_old === publicPaths.mode_new &&
+    publicPaths.added.length === 0 &&
+    publicPaths.removed.length === 0 &&
+    publicPaths.changed.length === 0 &&
     site.added.length === 0 &&
     site.removed.length === 0 &&
     site.changed.length === 0 &&
@@ -835,8 +921,9 @@ function renderSummary(
   secrets: SecretsDiff,
   subdomains: SubdomainsDiff,
   routes: RoutesDiff,
+  publicPaths: PublicPathsDiff,
 ): string {
-  const parts = commonSummaryParts(site, functions, secrets, subdomains, routes, "required");
+  const parts = commonSummaryParts(site, functions, secrets, subdomains, routes, publicPaths, "required");
   if (migrations.new.length > 0) {
     parts.unshift(`${migrations.new.length} migration${migrations.new.length === 1 ? "" : "s"} new`);
   }
@@ -851,8 +938,9 @@ function renderSummaryReleaseDiff(
   secrets: SecretsDiff,
   subdomains: SubdomainsDiff,
   routes: RoutesDiff,
+  publicPaths: PublicPathsDiff,
 ): string {
-  const parts = commonSummaryParts(site, functions, secrets, subdomains, routes, "added");
+  const parts = commonSummaryParts(site, functions, secrets, subdomains, routes, publicPaths, "added");
   if (migrationsAppliedBetween > 0) {
     parts.unshift(`${migrationsAppliedBetween} migration${migrationsAppliedBetween === 1 ? "" : "s"} applied between releases`);
   }
@@ -866,6 +954,7 @@ function commonSummaryParts(
   secrets: SecretsDiff,
   subdomains: SubdomainsDiff,
   routes: RoutesDiff,
+  publicPaths: PublicPathsDiff,
   secretAddedVerb: "added" | "required",
 ): string[] {
   const parts: string[] = [];
@@ -882,6 +971,11 @@ function commonSummaryParts(
   if (routes.added.length > 0) parts.push(`${routes.added.length} route${routes.added.length === 1 ? "" : "s"} added`);
   if (routes.changed.length > 0) parts.push(`${routes.changed.length} route${routes.changed.length === 1 ? "" : "s"} changed`);
   if (routes.removed.length > 0) parts.push(`${routes.removed.length} route${routes.removed.length === 1 ? "" : "s"} removed`);
+  if (publicPaths.mode_old !== publicPaths.mode_new) parts.push(`public path mode ${publicPaths.mode_old} to ${publicPaths.mode_new}`);
+  const pp = publicPaths.totals ?? { added: publicPaths.added.length, removed: publicPaths.removed.length, changed: publicPaths.changed.length };
+  if (pp.added > 0) parts.push(`${pp.added} public path${pp.added === 1 ? "" : "s"} added`);
+  if (pp.changed > 0) parts.push(`${pp.changed} public path${pp.changed === 1 ? "" : "s"} changed`);
+  if (pp.removed > 0) parts.push(`${pp.removed} public path${pp.removed === 1 ? "" : "s"} removed`);
   return parts;
 }
 
