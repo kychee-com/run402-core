@@ -42,6 +42,9 @@ jobs:
       - name: Release tarball smoke
         run: npm run test:release:smoke
 
+      - name: NWC tarball smoke
+        run: npm run test:nwc:smoke
+
       - name: Core boundary check
         run: npm run core:boundary
 

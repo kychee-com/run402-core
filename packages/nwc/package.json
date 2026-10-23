@@ -1,0 +1,58 @@
+{
+  "name": "@run402/nwc",
+  "version": "0.1.0",
+  "description": "Nostr Wallet Connect (NIP-47) client: pairing URIs, NIP-44 v2 encryption, signed request events, and a standing relay connection that says which side went quiet.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "lint": "tsc --noEmit",
+    "test": "node --test --import tsx 'src/**/*.test.ts'",
+    "smoke:tarball": "node test/smoke-tarball.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@noble/curves": "^2.0.1",
+    "@noble/hashes": "^2.0.1"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.1",
+    "ws": "^8.21.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kychee-com/run402-core.git",
+    "directory": "packages/nwc"
+  },
+  "homepage": "https://run402.com",
+  "bugs": "https://github.com/kychee-com/run402-core/issues",
+  "author": "Kychee Technologies",
+  "license": "Apache-2.0",
+  "keywords": [
+    "run402",
+    "nostr",
+    "nwc",
+    "nip-47",
+    "nip-44",
+    "lightning"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

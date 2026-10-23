@@ -4,7 +4,7 @@ Run402 Core is the public home for production-used server/runtime code that is s
 
 ## Current Boundary
 
-Core includes `@run402/functions`, `@run402/release`, `@run402/runtime-kernel` and the local Core gateway. See [Cloud vs Core](CLOUD_VS_CORE.md) for the current supported subset.
+Core includes `@run402/functions`, `@run402/nwc`, `@run402/release`, `@run402/runtime-kernel` and the local Core gateway. See [Cloud vs Core](CLOUD_VS_CORE.md) for the current supported subset.
 
 `@run402/functions` is the deployed application helper library.
 

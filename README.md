@@ -20,6 +20,7 @@ The setup, conformance and native package examples below intentionally use Docke
 ## What Is Here Today
 
 - `packages/functions` - `@run402/functions`, the helper library for deployed Run402 functions.
+- `packages/nwc` - `@run402/nwc`, the Nostr Wallet Connect (NIP-47) client.
 - `packages/release` - `@run402/release`, the release manifest semantics package.
 - `packages/runtime-kernel` - public Core runtime contracts and application services.
 - `apps/core-gateway` - public Core gateway composition root.
@@ -41,6 +42,7 @@ Run402 Core is an open-source ratchet. Public-safe, production-used runtime code
 | Extracted surface | Current status |
 | --- | --- |
 | `@run402/functions` | Public package consumed by Cloud |
+| `@run402/nwc` | Public NIP-47 client consumed by Cloud and `@run402/sdk` |
 | `@run402/release` | Public release/apply semantics package |
 | `@run402/runtime-kernel` | Public Core runtime contracts and services |
 | Core gateway + Compose | self-hosted local runtime |
@@ -87,6 +89,14 @@ Current package scope:
 | Run a local control plane | No |
 | Export/import a Cloud project | No |
 
+### `@run402/nwc`
+
+Nostr Wallet Connect (NIP-47) client: pairing URIs, NIP-44 v2 encryption, signed request events, and a standing relay connection whose errors say whether the relay or the wallet went quiet. Run402 Cloud mints invoices on an organization's node with it; `@run402/sdk` pays them with it. See [packages/nwc/README.md](packages/nwc/README.md).
+
+```bash
+npm install @run402/nwc
+```
+
 ### `@run402/runtime-kernel`
 
 Public Core runtime contracts, capability document, project services, and apply plan/commit services.
@@ -121,6 +131,7 @@ npm run build
 npm test
 npm run test:functions:smoke
 npm run test:release:smoke
+npm run test:nwc:smoke
 npm run core:boundary
 docker compose up -d --build core
 npm run core:health
