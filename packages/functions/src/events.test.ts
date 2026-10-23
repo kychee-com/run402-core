@@ -269,3 +269,57 @@ describe("events.emit — severity (event-attention-rules)", () => {
     assert.equal(result.severity, "notice");
   });
 });
+
+describe("events.emit — hosts without the event feed (Run402 Core)", () => {
+  it("maps Run402 Core's code-less 404 to EVENTS_UNSUPPORTED", async () => {
+    const coreBody = { error: "not_found", message: "Route is not part of the Run402 Core runtime-kernel scaffold." };
+    mock.method(globalThis, "fetch", async () =>
+      new Response(JSON.stringify(coreBody), { status: 404, headers: { "Content-Type": "application/json" } }),
+    );
+
+    await assert.rejects(
+      () => events.emit("signature_completed"),
+      (err: unknown) => {
+        assert.ok(err instanceof Run402EventsPlatformError);
+        assert.equal(err.code, "EVENTS_UNSUPPORTED");
+        assert.equal(err.status, 404);
+        assert.deepEqual(err.body, coreBody);
+        assert.match(err.message, /Run402 Core/);
+        return true;
+      },
+    );
+  });
+
+  it("maps Cloud's catch-all route 404 to EVENTS_UNSUPPORTED", async () => {
+    mock.method(globalThis, "fetch", async () =>
+      new Response(
+        JSON.stringify({ code: "RESOURCE_NOT_FOUND", message: "Cannot POST /projects/v1/prj_test/events" }),
+        { status: 404, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    await assert.rejects(
+      () => events.emit("signature_completed"),
+      (err: unknown) => err instanceof Run402EventsPlatformError && err.code === "EVENTS_UNSUPPORTED",
+    );
+  });
+
+  it("keeps a coded 404 (a real missing resource) as the gateway's code", async () => {
+    mock.method(globalThis, "fetch", async () =>
+      new Response(
+        JSON.stringify({ code: "PROJECT_NOT_FOUND", message: "Project not found" }),
+        { status: 404, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    await assert.rejects(
+      () => events.emit("signature_completed"),
+      (err: unknown) => {
+        assert.ok(err instanceof Run402EventsPlatformError);
+        assert.equal(err.code, "PROJECT_NOT_FOUND");
+        assert.match(err.message, /Event emit failed \(404\): Project not found/);
+        return true;
+      },
+    );
+  });
+});

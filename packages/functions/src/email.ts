@@ -67,6 +67,77 @@ export class EmailConfigurationError extends Error {
   }
 }
 
+/**
+ * Structured error thrown by `email.send()` when the gateway rejects the send
+ * (a non-2xx response from `POST /mailboxes/v1/:mailbox_id/messages`). A
+ * faithful passthrough of the gateway's error envelope: `code`, `details` and
+ * `next_actions` are kept exactly as returned, and `message` stays
+ * human-readable (`Email send failed (<status>): <gateway message>`).
+ *
+ * `code` is the envelope's `code` (or its `error` when that is the only field),
+ * or `email_platform_error` when the body carries neither.
+ *
+ * Branch on `err.code` / `err.status` / `err.details`, not on `message`.
+ */
+export class Run402EmailPlatformError extends Error {
+  readonly code: string;
+  readonly status: number;
+  /** `details` from the gateway's error envelope, when present. */
+  readonly details: Record<string, unknown> | undefined;
+  /** `next_actions` from the gateway's error envelope, when present. */
+  readonly next_actions: unknown[] | undefined;
+  /** Full response body — parsed object, or `{ message: <raw text> }` when unparseable. */
+  readonly body: unknown;
+
+  constructor(status: number, body: unknown, message: string) {
+    super(message);
+    this.name = "Run402EmailPlatformError";
+    this.status = status;
+    this.body = body;
+    this.code = envelopeString(body, "code", "error") ?? "email_platform_error";
+    this.details = envelopeDetails(body);
+    this.next_actions = envelopeNextActions(body);
+  }
+}
+
+function envelopeString(body: unknown, ...keys: string[]): string | undefined {
+  if (!body || typeof body !== "object") return undefined;
+  const record = body as Record<string, unknown>;
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim() !== "") return value;
+  }
+  return undefined;
+}
+
+function envelopeDetails(body: unknown): Record<string, unknown> | undefined {
+  if (!body || typeof body !== "object") return undefined;
+  const details = (body as Record<string, unknown>).details;
+  return details && typeof details === "object" && !Array.isArray(details)
+    ? (details as Record<string, unknown>)
+    : undefined;
+}
+
+function envelopeNextActions(body: unknown): unknown[] | undefined {
+  if (!body || typeof body !== "object") return undefined;
+  const actions = (body as Record<string, unknown>).next_actions;
+  return Array.isArray(actions) ? actions : undefined;
+}
+
+async function sendFailure(res: Response): Promise<Run402EmailPlatformError> {
+  const text = await res.text();
+  let body: unknown = {};
+  if (text) {
+    try {
+      body = JSON.parse(text) as unknown;
+    } catch {
+      body = { message: text };
+    }
+  }
+  const message = envelopeString(body, "message", "error") ?? (text || "Run402 rejected the email.");
+  return new Run402EmailPlatformError(res.status, body, "Email send failed (" + res.status + "): " + message);
+}
+
 export const email = (() => {
   let _mailboxId: string | null = null;
 
@@ -154,16 +225,7 @@ export const email = (() => {
         },
         body: JSON.stringify(body),
       });
-      if (!res.ok) {
-        const errBody = await res.text();
-        let msg: string;
-        try {
-          msg = (JSON.parse(errBody) as { error?: string }).error || errBody;
-        } catch {
-          msg = errBody;
-        }
-        throw new Error("Email send failed (" + res.status + "): " + msg);
-      }
+      if (!res.ok) throw await sendFailure(res);
       return res.json() as Promise<EmailSendResult>;
     },
   };

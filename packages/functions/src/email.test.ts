@@ -11,7 +11,7 @@ mock.module("./config.js", {
   },
 });
 
-const { email, EmailConfigurationError } = await import("./email.js");
+const { email, EmailConfigurationError, Run402EmailPlatformError } = await import("./email.js");
 
 // email is a module-level singleton with an internal _mailboxId cache.
 // The first describe block must handle discovery + send (two fetch calls).
@@ -234,7 +234,79 @@ describe("email.send — subsequent calls use cached mailboxId (no re-discover)"
       async () => {
         await email.send({ to: "user@example.com", subject: "x", html: "<p>x</p>" });
       },
-      /Email send failed \(429\)/,
+      (err: unknown) => {
+        assert.ok(err instanceof Run402EmailPlatformError);
+        assert.equal(err.status, 429);
+        assert.match(err.message, /Email send failed \(429\): over quota/);
+        return true;
+      },
+    );
+  });
+
+  it("keeps the gateway error envelope's code, details and next_actions on a send failure", async () => {
+    const envelope = {
+      code: "QUOTA_EXCEEDED",
+      message: "Daily email quota exhausted for this organization",
+      details: { resource: "emails_per_day", scope: "organization", used: 100, limit: 100 },
+      next_actions: [{ type: "renew_tier", method: "POST", path: "/tiers/v1/hobby" }],
+    };
+    mock.method(globalThis, "fetch", async () =>
+      new Response(JSON.stringify(envelope), { status: 403, headers: { "Content-Type": "application/json" } }),
+    );
+
+    await assert.rejects(
+      () => email.send({ to: "user@example.com", subject: "x", html: "<p>x</p>" }),
+      (err: unknown) => {
+        assert.ok(err instanceof Run402EmailPlatformError);
+        assert.ok(err instanceof Error);
+        assert.equal(err.name, "Run402EmailPlatformError");
+        assert.equal(err.status, 403);
+        assert.equal(err.code, "QUOTA_EXCEEDED");
+        assert.deepEqual(err.details, envelope.details);
+        assert.deepEqual(err.next_actions, envelope.next_actions);
+        assert.deepEqual(err.body, envelope);
+        assert.equal(err.message, "Email send failed (403): Daily email quota exhausted for this organization");
+        return true;
+      },
+    );
+  });
+
+  it("reads a snake_case error code from a Core-style { error, message } envelope", async () => {
+    mock.method(globalThis, "fetch", async () =>
+      new Response(
+        JSON.stringify({ error: "provider_not_configured", message: "Core outbound email provider is not configured" }),
+        { status: 503, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    await assert.rejects(
+      () => email.send({ to: "user@example.com", subject: "x", html: "<p>x</p>" }),
+      (err: unknown) => {
+        assert.ok(err instanceof Run402EmailPlatformError);
+        assert.equal(err.status, 503);
+        assert.equal(err.code, "provider_not_configured");
+        assert.equal(err.details, undefined);
+        assert.equal(err.next_actions, undefined);
+        assert.match(err.message, /Email send failed \(503\): Core outbound email provider is not configured/);
+        return true;
+      },
+    );
+  });
+
+  it("a non-JSON error body still produces a typed error with the raw text as message", async () => {
+    mock.method(globalThis, "fetch", async () =>
+      new Response("upstream 502 Bad Gateway", { status: 502 }),
+    );
+
+    await assert.rejects(
+      () => email.send({ to: "user@example.com", subject: "x", html: "<p>x</p>" }),
+      (err: unknown) => {
+        assert.ok(err instanceof Run402EmailPlatformError);
+        assert.equal(err.status, 502);
+        assert.equal(err.code, "email_platform_error");
+        assert.equal(err.message, "Email send failed (502): upstream 502 Bad Gateway");
+        return true;
+      },
     );
   });
 });

@@ -229,6 +229,8 @@ Auto-discovers the project's mailbox on first call (the project must already hav
 
 On Run402 Core, this uses the same `/mailboxes/v1` contract as Cloud. Deploy still happens through `run402 deploy apply --manifest`; outbound email is enabled separately by configuring the Core gateway's provider (for example SES) and creating a project mailbox/default. If Core has mailboxes but no outbound provider configured, `email.send()` throws `EmailConfigurationError` with code `PROVIDER_NOT_CONFIGURED` and setup `next_actions`.
 
+When the gateway rejects the send itself, `email.send()` throws `Run402EmailPlatformError` (exported) carrying the gateway's `code`, `status`, `details`, `next_actions`, and `body`; see [Errors](#errors) below.
+
 ```ts
 // Template mode
 await email.send({
@@ -424,7 +426,7 @@ It is your judgement and is sent unchanged: omitted is stored as `info`, and the
 
 `payload` is a compact JSON event — ids and verdict fields, never bodies or secrets — bounded to 8 KiB server-side (oversize payloads are truncated with `payload_truncated: true` rather than rejected). `next_actions` is always platform-synthesized; there is no way to supply your own drill-downs from the emit call (an app-supplied action would be prompt-injection-by-schema for agents that treat `next_actions` as trusted).
 
-**Errors.** Non-2xx responses throw `Run402EventsPlatformError` — see [Errors](#errors) below. In practice the two you're most likely to see are `code: "QUOTA_EXCEEDED"` (403, the organization's pooled daily quota is exhausted; `details: {resource: "events_per_day", scope, used, limit}`) and cross-project denials (`code: "FORBIDDEN"`, 403), alongside the two vocabulary errors above.
+**Errors.** Non-2xx responses throw `Run402EventsPlatformError` — see [Errors](#errors) below. In practice the two you're most likely to see are `code: "QUOTA_EXCEEDED"` (403, the organization's pooled daily quota is exhausted; `details: {resource: "events_per_day", scope, used, limit}`) and cross-project denials (`code: "FORBIDDEN"`, 403), alongside the two vocabulary errors above. On a host without the event feed (Run402 Core) `events.emit` throws `Run402EventsPlatformError` with `code: "EVENTS_UNSUPPORTED"`.
 
 **Always `await` it (and every other side-channel call).** The function's sandbox freezes the moment your handler's response is returned — a fire-and-forget `void events.emit(...)` (or any un-awaited `fetch` to a webhook, analytics endpoint, etc.) is silently killed mid-flight and the event never lands. There is no error, no log, nothing: the request just evaporates with the freeze. If you don't want the caller's latency to include the emit, bound it instead of detaching it — `await` with a short `AbortSignal.timeout(...)` on hand-rolled calls — but never let the handler return before the side effect settles.
 
@@ -710,6 +712,26 @@ try {
     err.next_actions; // platform-synthesized drill-downs (e.g. renew_tier, check_usage)
     err.body;    // full response body (parsed object, or raw string when unparseable)
     if (err.code === "QUOTA_EXCEEDED") { /* … */ }
+  }
+  throw err;
+}
+```
+
+### `Run402EmailPlatformError` — `email.send()` failures
+
+`email.send()` throws `Run402EmailPlatformError` (exported) when the gateway answers the send with a non-2xx response. It keeps the gateway's error envelope: `code` (the envelope's `code`, or its `error` when that is the only field, else `email_platform_error`), `status`, `details`, `next_actions`, and the full `body`. `message` stays human-readable: `Email send failed (<status>): <gateway message>`. Mailbox selection problems found before any send keep throwing `EmailConfigurationError`.
+
+```ts
+import { email, Run402EmailPlatformError } from "@run402/functions";
+
+try {
+  await email.send({ to, subject, html });
+} catch (err) {
+  if (err instanceof Run402EmailPlatformError) {
+    err.code;         // the gateway's code, e.g. "QUOTA_EXCEEDED"
+    err.status;       // HTTP status
+    err.details;      // envelope details, when present
+    err.next_actions; // envelope next_actions, when present
   }
   throw err;
 }

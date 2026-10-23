@@ -47,7 +47,7 @@ export {
 // docs intentionally — they exist to fail loudly, not as API.
 // eslint-disable-next-line @typescript-eslint/no-deprecated -- trap exports, as above
 export { getSession, currentUser, getCurrentUser, getServerSession } from "./auth/index.js";
-export { email } from "./email.js";
+export { email, Run402EmailPlatformError } from "./email.js";
 export type { EmailSendOptions, EmailRawOptions, EmailTemplateOptions, EmailSendResult } from "./email.js";
 export { ai } from "./ai.js";
 export type {

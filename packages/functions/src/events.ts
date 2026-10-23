@@ -115,6 +115,8 @@ export interface EventEmitResult {
  *     exhausted; `details` carries
  *     `{ resource: "events_per_day", scope, used, limit }`.
  *   - `FORBIDDEN` (403) — the service key does not belong to this project.
+ *   - `EVENTS_UNSUPPORTED` — this host does not serve the project event feed
+ *     (Run402 Core); `events.emit` needs Run402 Cloud.
  *
  * Branch on `err.code` / `err.status` / `err.details`, not on `message`.
  */
@@ -129,12 +131,12 @@ export class Run402EventsPlatformError extends Error {
   /** Full response body — parsed object, or the raw string when unparseable. */
   readonly body: unknown;
 
-  constructor(status: number, body: unknown, message: string) {
+  constructor(status: number, body: unknown, message: string, code?: string) {
     super(message);
     this.name = "Run402EventsPlatformError";
     this.status = status;
     this.body = body;
-    this.code = platformCode(body);
+    this.code = code ?? platformCode(body);
     this.details = platformDetails(body);
     this.next_actions = platformNextActions(body);
   }
@@ -174,6 +176,22 @@ function platformNextActions(body: unknown): unknown[] | undefined {
     if (Array.isArray(actions)) return actions;
   }
   return undefined;
+}
+
+/**
+ * A host without the event-feed route. Run402 Core answers
+ * `404 { error: "not_found" }` with no `code`; a Cloud gateway's catch-all is
+ * `404 { code: "RESOURCE_NOT_FOUND", message: "Cannot POST /…" }`. A coded 404
+ * for a real missing resource is passed through unchanged.
+ */
+function looksLikeMissingRoute(status: number, body: unknown): boolean {
+  if (status === 405 || status === 501) return true;
+  if (status !== 404) return false;
+  if (!body || typeof body !== "object") return true;
+  const obj = body as Record<string, unknown>;
+  if (typeof obj.code !== "string") return true;
+  const message = typeof obj.message === "string" ? obj.message : typeof obj.error === "string" ? obj.error : "";
+  return /^Cannot (GET|POST|DELETE|PUT|PATCH) \//.test(message);
 }
 
 async function readErrorBody(res: Response): Promise<unknown> {
@@ -231,6 +249,14 @@ export const events = {
     );
     if (!res.ok) {
       const errBody = await readErrorBody(res);
+      if (looksLikeMissingRoute(res.status, errBody)) {
+        throw new Run402EventsPlatformError(
+          res.status,
+          errBody,
+          "Event emit failed: this host does not serve the project event feed (Run402 Cloud does; Run402 Core does not)",
+          "EVENTS_UNSUPPORTED",
+        );
+      }
       throw new Run402EventsPlatformError(
         res.status,
         errBody,
