@@ -1,4 +1,4 @@
-FROM node:22.21.1-bookworm-slim AS build
+FROM node:22.23.4-bookworm-slim AS build
 
 WORKDIR /app
 
@@ -21,7 +21,7 @@ RUN npm run build -w packages/functions \
   && npm run build -w packages/runtime-kernel \
   && npm run build -w apps/core-gateway
 
-FROM node:22.21.1-bookworm-slim AS runtime
+FROM node:22.23.4-bookworm-slim AS runtime
 
 WORKDIR /app
 ENV NODE_ENV=production
