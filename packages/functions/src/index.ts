@@ -106,6 +106,8 @@ export type {
   AssetsListResult,
   AssetsListSort,
   AssetDeleteResult,
+  AssetSignOptions,
+  AssetSignResult,
   ImageInfo,
 } from "./assets.js";
 export { bytes, getRoutedPaymentContext, isRequest, json, routedHttp, text } from "./routed-http.js";

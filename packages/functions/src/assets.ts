@@ -669,6 +669,68 @@ export const assets = {
   },
 
   /**
+   * Mint a time-boxed signed GET URL for a key in the function's own
+   * project: the way to deliver a private key, whose `AssetRef` URL fields
+   * are all `null`.
+   *
+   * Calls `POST /storage/v1/blob/:key/sign` with the service key, the same
+   * route as the owner-side `r.assets.sign`. Pass `variant` to sign one of
+   * an image's encoded variants (`thumb` / `medium` / `large` WebP, or a
+   * HEIC source's `display_jpeg`) instead of the original; the URL then
+   * answers with the variant's own content type. `ttl_seconds` is 60 to
+   * 604800 (7 days), default 3600.
+   *
+   * Throws when the key does not exist, or when the key has no such variant
+   * (`Asset sign failed (404): RESOURCE_NOT_FOUND: …`).
+   *
+   * @example
+   *   const ref = assets.fromRef(row.photo);
+   *   const srcset = await Promise.all(
+   *     (["thumb", "medium", "large"] as const)
+   *       .filter((v) => ref.variants?.[v])
+   *       .map(async (v) => `${(await assets.sign(ref.key, { variant: v })).signed_url} ${ref.variants![v]!.width_px}w`),
+   *   );
+   */
+  async sign(key: string, opts: AssetSignOptions = {}): Promise<AssetSignResult> {
+    if (typeof key !== "string" || key === "") {
+      throw new Error("assets.sign: key must be a non-empty string");
+    }
+    const body: Record<string, unknown> = {};
+    if (opts.ttl_seconds !== undefined) {
+      if (!Number.isInteger(opts.ttl_seconds) || opts.ttl_seconds < 60 || opts.ttl_seconds > 604800) {
+        throw new Error("assets.sign: ttl_seconds must be an integer from 60 to 604800");
+      }
+      body.ttl_seconds = opts.ttl_seconds;
+    }
+    if (opts.variant !== undefined) {
+      if (!(ASSET_VARIANT_KINDS as readonly string[]).includes(opts.variant)) {
+        throw new Error(`assets.sign: variant must be one of ${ASSET_VARIANT_KINDS.join(", ")}`);
+      }
+      body.variant = opts.variant;
+    }
+    const res = await fetch(
+      config.API_BASE + "/storage/v1/blob/" + key.split("/").map(encodeURIComponent).join("/") + "/sign",
+      {
+        method: "POST",
+        headers: { apikey: config.SERVICE_KEY, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    );
+    if (!res.ok) {
+      throw new Error(
+        "Asset sign failed (" + res.status + "): " + (await readErrorMessage(res)),
+      );
+    }
+    const raw = (await res.json()) as Record<string, unknown>;
+    return {
+      signed_url: String(raw.signed_url),
+      expires_at: String(raw.expires_at),
+      expires_in: Number(raw.expires_in),
+      ...(typeof raw.variant === "string" ? { variant: raw.variant as AssetVariant["kind"] } : {}),
+    };
+  },
+
+  /**
    * Re-hydrate a stored `AssetRef` value (e.g., a JSONB column read out of
    * the user's database) back into the SDK's `AssetRef` shape — including
    * the camelCase aliases (`cdnUrl`, `immutableUrl`, etc.) and the variant
@@ -784,6 +846,26 @@ export interface AssetListRow {
   variants?: AssetRef["variants"];
   blurhash_data_url?: string | null;
   asset_schema?: "v1.49" | "v1.50" | "v1.54" | null;
+}
+
+/** The encoded image variants `assets.sign` can sign, as `AssetVariant.kind`. */
+export const ASSET_VARIANT_KINDS = ["thumb", "medium", "large", "display_jpeg"] as const;
+
+/** Options for `assets.sign(key, opts)`. */
+export interface AssetSignOptions {
+  /** URL lifetime in seconds, 60 to 604800 (7 days). Server default 3600. */
+  ttl_seconds?: number;
+  /** Sign this encoded variant instead of the original. */
+  variant?: AssetVariant["kind"];
+}
+
+/** Result of `assets.sign(key, opts)`. */
+export interface AssetSignResult {
+  signed_url: string;
+  expires_at: string;
+  expires_in: number;
+  /** The variant signed; absent when the original was. */
+  variant?: AssetVariant["kind"];
 }
 
 /** Result of `assets.delete(key)`. */

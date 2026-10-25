@@ -803,3 +803,66 @@ describe("assets.delete", () => {
     assert.equal(captured, null);
   });
 });
+
+describe("assets.sign", () => {
+  let captured: { url: string; init: RequestInit } | null = null;
+  let response: Response;
+  beforeEach(() => {
+    captured = null;
+    response = new Response(
+      JSON.stringify({
+        signed_url: "https://s3.example.com/_cas/bb/rest?X-Amz-Signature=x",
+        expires_at: "2030-01-01T01:00:00.000Z",
+        expires_in: 600,
+        variant: "medium",
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+    mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
+      captured = { url, init };
+      return response;
+    });
+  });
+
+  it("POSTs /storage/v1/blob/:key/sign with the service key and the variant", async () => {
+    const result = await assets.sign("family/a b.jpg", { variant: "medium", ttl_seconds: 600 });
+    assert.equal(captured!.url, "https://test.run402.com/storage/v1/blob/family/a%20b.jpg/sign");
+    assert.equal(captured!.init.method, "POST");
+    assert.equal((captured!.init.headers as Record<string, string>).apikey, "sk_test");
+    assert.deepEqual(JSON.parse(String(captured!.init.body)), { ttl_seconds: 600, variant: "medium" });
+    assert.deepEqual(result, {
+      signed_url: "https://s3.example.com/_cas/bb/rest?X-Amz-Signature=x",
+      expires_at: "2030-01-01T01:00:00.000Z",
+      expires_in: 600,
+      variant: "medium",
+    });
+  });
+
+  it("sends an empty body and returns no variant for the original", async () => {
+    response = new Response(
+      JSON.stringify({ signed_url: "https://s3.example.com/o", expires_at: "2030-01-01T01:00:00.000Z", expires_in: 3600 }),
+      { status: 200 },
+    );
+    const result = await assets.sign("doc.pdf");
+    assert.deepEqual(JSON.parse(String(captured!.init.body)), {});
+    assert.equal("variant" in result, false);
+  });
+
+  it("throws with the gateway's code when the key has no such variant", async () => {
+    response = new Response(
+      JSON.stringify({ code: "RESOURCE_NOT_FOUND", message: "Blob doc.pdf has no thumb variant" }),
+      { status: 404 },
+    );
+    await assert.rejects(
+      () => assets.sign("doc.pdf", { variant: "thumb" }),
+      /Asset sign failed \(404\): RESOURCE_NOT_FOUND: Blob doc.pdf has no thumb variant/,
+    );
+  });
+
+  it("rejects an unknown variant, a bad ttl, and an empty key before any HTTP call", async () => {
+    await assert.rejects(() => assets.sign("a.jpg", { variant: "huge" as never }), /variant must be one of/);
+    await assert.rejects(() => assets.sign("a.jpg", { ttl_seconds: 30 }), /ttl_seconds must be an integer/);
+    await assert.rejects(() => assets.sign(""), /key must be a non-empty string/);
+    assert.equal(captured, null);
+  });
+});

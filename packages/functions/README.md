@@ -322,6 +322,26 @@ const grid = blobs.map((b) => ({
 const { revoked_immutable_refs } = await assets.delete("media/old-banner.jpg");
 ```
 
+### `assets.sign(key, { variant?, ttl_seconds? })` — deliver a private image
+
+A private key's `AssetRef` carries its whole variant set, but every URL field is `null`. `assets.sign` mints a time-boxed signed GET URL (default 1 hour, 60 to 604800 seconds) for the original or, with `variant`, for one encoded variant (`thumb` / `medium` / `large` WebP, or a HEIC source's `display_jpeg`); a variant URL answers with the variant's own content type. A key without that variant throws `Asset sign failed (404): RESOURCE_NOT_FOUND: …`.
+
+```ts
+import { assets, auth } from "@run402/functions";
+
+await auth.requireUser();
+const photo = assets.fromRef(row.photo); // a private AssetRef stored on the row
+const srcset = (
+  await Promise.all(
+    (["thumb", "medium", "large"] as const)
+      .filter((v) => photo.variants?.[v])
+      .map(async (v) => `${(await assets.sign(photo.key, { variant: v })).signed_url} ${photo.variants![v]!.width_px}w`),
+  )
+).join(", ");
+```
+
+With `@run402/astro`, `signAssetRef(ref, sign)` from `@run402/astro/manifest` does this for the whole ref, and `<Run402Picture>` / `<Run402Image>` render the result.
+
 ### Routed image generation example
 
 Use a routed function when the browser should request an image at app runtime. Keep app-level auth/rate limits in your handler before calling `ai.generateImage`, especially for public routes.
