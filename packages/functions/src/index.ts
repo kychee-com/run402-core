@@ -108,6 +108,11 @@ export type {
   AssetDeleteResult,
   AssetSignOptions,
   AssetSignResult,
+  AssetSignManyRequestItem,
+  AssetSignManyOptions,
+  AssetSignManyItem,
+  AssetSignManyResult,
+  AssetSignItemError,
   ImageInfo,
 } from "./assets.js";
 export { bytes, getRoutedPaymentContext, isRequest, json, routedHttp, text } from "./routed-http.js";

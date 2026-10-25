@@ -866,3 +866,87 @@ describe("assets.sign", () => {
     assert.equal(captured, null);
   });
 });
+
+describe("assets.signMany", () => {
+  let captured: { url: string; init: RequestInit } | null = null;
+  let response: Response;
+  beforeEach(() => {
+    captured = null;
+    response = new Response(
+      JSON.stringify({
+        items: [
+          { key: "family/a.jpg", variant: "thumb", signed_url: "https://s3.example.com/t" },
+          { key: "family/a.jpg", signed_url: "https://s3.example.com/o" },
+          {
+            key: "gone.jpg",
+            variant: "medium",
+            error: { code: "RESOURCE_NOT_FOUND", message: "Blob gone.jpg not found", details: { field: "key" } },
+          },
+        ],
+        expires_at: "2030-01-01T01:00:00.000Z",
+        expires_in: 600,
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+    mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
+      captured = { url, init };
+      return response;
+    });
+  });
+
+  it("POSTs /storage/v1/blobs/sign once and answers every item in order", async () => {
+    const result = await assets.signMany(
+      [{ key: "family/a.jpg", variant: "thumb" }, { key: "family/a.jpg" }, { key: "gone.jpg", variant: "medium" }],
+      { ttl_seconds: 600 },
+    );
+    assert.equal(captured!.url, "https://test.run402.com/storage/v1/blobs/sign");
+    assert.equal(captured!.init.method, "POST");
+    assert.equal((captured!.init.headers as Record<string, string>).apikey, "sk_test");
+    assert.deepEqual(JSON.parse(String(captured!.init.body)), {
+      items: [{ key: "family/a.jpg", variant: "thumb" }, { key: "family/a.jpg" }, { key: "gone.jpg", variant: "medium" }],
+      ttl_seconds: 600,
+    });
+    assert.deepEqual(result, {
+      items: [
+        { key: "family/a.jpg", variant: "thumb", signed_url: "https://s3.example.com/t" },
+        { key: "family/a.jpg", signed_url: "https://s3.example.com/o" },
+        {
+          key: "gone.jpg",
+          variant: "medium",
+          error: { code: "RESOURCE_NOT_FOUND", message: "Blob gone.jpg not found", details: { field: "key" } },
+        },
+      ],
+      expires_at: "2030-01-01T01:00:00.000Z",
+      expires_in: 600,
+    });
+  });
+
+  it("can be passed unbound, as a signer callback", async () => {
+    const { signMany } = assets;
+    await signMany([{ key: "family/a.jpg" }]);
+    assert.deepEqual(JSON.parse(String(captured!.init.body)), { items: [{ key: "family/a.jpg" }] });
+  });
+
+  it("throws with the gateway's code when the request is refused", async () => {
+    response = new Response(
+      JSON.stringify({ code: "VALIDATION_FAILED", message: "items[0].variant must be one of: thumb" }),
+      { status: 400 },
+    );
+    await assert.rejects(() => assets.signMany([{ key: "a.jpg" }]), /Asset sign failed \(400\): VALIDATION_FAILED/);
+  });
+
+  it("rejects empty, oversized, keyless, unknown-variant and bad-ttl requests before any HTTP call", async () => {
+    await assert.rejects(() => assets.signMany([]), /1 to 1000 entries/);
+    await assert.rejects(
+      () => assets.signMany(Array.from({ length: 1001 }, (_, i) => ({ key: `k${i}` }))),
+      /1 to 1000 entries/,
+    );
+    await assert.rejects(() => assets.signMany([{ key: "" }]), /items\[0\]\.key must be a non-empty string/);
+    await assert.rejects(
+      () => assets.signMany([{ key: "a.jpg" }, { key: "a.jpg", variant: "huge" as never }]),
+      /items\[1\]\.variant must be one of/,
+    );
+    await assert.rejects(() => assets.signMany([{ key: "a.jpg" }], { ttl_seconds: 30 }), /ttl_seconds must be an integer/);
+    assert.equal(captured, null);
+  });
+});

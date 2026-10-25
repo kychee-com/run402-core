@@ -681,15 +681,11 @@ export const assets = {
    * 604800 (7 days), default 3600.
    *
    * Throws when the key does not exist, or when the key has no such variant
-   * (`Asset sign failed (404): RESOURCE_NOT_FOUND: …`).
+   * (`Asset sign failed (404): RESOURCE_NOT_FOUND: …`). For several URLs at
+   * once (a srcset, a page of photos) use `assets.signMany`, one request.
    *
    * @example
-   *   const ref = assets.fromRef(row.photo);
-   *   const srcset = await Promise.all(
-   *     (["thumb", "medium", "large"] as const)
-   *       .filter((v) => ref.variants?.[v])
-   *       .map(async (v) => `${(await assets.sign(ref.key, { variant: v })).signed_url} ${ref.variants![v]!.width_px}w`),
-   *   );
+   *   const { signed_url } = await assets.sign(row.report_key, { ttl_seconds: 600 });
    */
   async sign(key: string, opts: AssetSignOptions = {}): Promise<AssetSignResult> {
     if (typeof key !== "string" || key === "") {
@@ -727,6 +723,82 @@ export const assets = {
       expires_at: String(raw.expires_at),
       expires_in: Number(raw.expires_in),
       ...(typeof raw.variant === "string" ? { variant: raw.variant as AssetVariant["kind"] } : {}),
+    };
+  },
+
+  /**
+   * Mint signed GET URLs for many keys and variants in one request: the way
+   * to deliver a page of private images without one round trip per URL.
+   *
+   * Calls `POST /storage/v1/blobs/sign` with the service key. Each item is a
+   * `key` and an optional `variant`; the result's `items` answer them in
+   * order, each with `signed_url`, or with `error` (`RESOURCE_NOT_FOUND`,
+   * `details.available` for a missing variant) when the project lacks that
+   * key or variant, so one stale row does not fail the page. One
+   * `ttl_seconds` (60 to 604800, default 3600) covers every URL. 1 to 1000
+   * items; a bad item, an unknown variant or a bad TTL throws before any
+   * request.
+   *
+   * @example
+   *   const ref = assets.fromRef(row.photo);
+   *   const { items } = await assets.signMany([
+   *     { key: ref.key, variant: "thumb" },
+   *     { key: ref.key, variant: "medium" },
+   *   ]);
+   *   const [thumb, medium] = items.map((i) => i.signed_url);
+   */
+  async signMany(items: readonly AssetSignManyRequestItem[], opts: AssetSignManyOptions = {}): Promise<AssetSignManyResult> {
+    if (!Array.isArray(items) || items.length === 0 || items.length > ASSET_SIGN_MANY_MAX_ITEMS) {
+      throw new Error(`assets.signMany: items must be an array of 1 to ${ASSET_SIGN_MANY_MAX_ITEMS} entries`);
+    }
+    const wireItems = items.map((item, i) => {
+      if (!item || typeof item.key !== "string" || item.key === "") {
+        throw new Error(`assets.signMany: items[${i}].key must be a non-empty string`);
+      }
+      if (item.variant === undefined) return { key: item.key };
+      if (!(ASSET_VARIANT_KINDS as readonly string[]).includes(item.variant)) {
+        throw new Error(`assets.signMany: items[${i}].variant must be one of ${ASSET_VARIANT_KINDS.join(", ")}`);
+      }
+      return { key: item.key, variant: item.variant };
+    });
+    const body: Record<string, unknown> = { items: wireItems };
+    if (opts.ttl_seconds !== undefined) {
+      if (!Number.isInteger(opts.ttl_seconds) || opts.ttl_seconds < 60 || opts.ttl_seconds > 604800) {
+        throw new Error("assets.signMany: ttl_seconds must be an integer from 60 to 604800");
+      }
+      body.ttl_seconds = opts.ttl_seconds;
+    }
+    const res = await fetch(config.API_BASE + "/storage/v1/blobs/sign", {
+      method: "POST",
+      headers: { apikey: config.SERVICE_KEY, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      throw new Error(
+        "Asset sign failed (" + res.status + "): " + (await readErrorMessage(res)),
+      );
+    }
+    const raw = (await res.json()) as Record<string, unknown>;
+    const rawItems = Array.isArray(raw.items) ? (raw.items as Array<Record<string, unknown>>) : [];
+    return {
+      items: rawItems.map((r): AssetSignManyItem => {
+        const echo = {
+          key: String(r.key),
+          ...(typeof r.variant === "string" ? { variant: r.variant as AssetVariant["kind"] } : {}),
+        };
+        if (typeof r.signed_url === "string") return { ...echo, signed_url: r.signed_url };
+        const err = (r.error ?? {}) as Record<string, unknown>;
+        return {
+          ...echo,
+          error: {
+            code: String(err.code ?? "UNKNOWN"),
+            message: String(err.message ?? "not signed"),
+            ...(err.details && typeof err.details === "object" ? { details: err.details as Record<string, unknown> } : {}),
+          },
+        };
+      }),
+      expires_at: String(raw.expires_at),
+      expires_in: Number(raw.expires_in),
     };
   },
 
@@ -866,6 +938,43 @@ export interface AssetSignResult {
   expires_in: number;
   /** The variant signed; absent when the original was. */
   variant?: AssetVariant["kind"];
+}
+
+/** Most items one `assets.signMany` call may carry. */
+export const ASSET_SIGN_MANY_MAX_ITEMS = 1000;
+
+/** One URL to mint with `assets.signMany`: the original of `key`, or one
+ *  of its encoded variants. */
+export interface AssetSignManyRequestItem {
+  key: string;
+  variant?: AssetVariant["kind"];
+}
+
+/** Options for `assets.signMany(items, opts)`. */
+export interface AssetSignManyOptions {
+  /** Lifetime of every URL in seconds, 60 to 604800 (7 days). Server default 3600. */
+  ttl_seconds?: number;
+}
+
+/** Why one `assets.signMany` item was not signed. */
+export interface AssetSignItemError {
+  /** `RESOURCE_NOT_FOUND` when the project has no such key or variant. */
+  code: string;
+  message: string;
+  /** `{ field: "key" }`, or `{ field: "variant", variant, available }`. */
+  details?: Record<string, unknown>;
+}
+
+/** One answer of `assets.signMany`, in request order: `signed_url` or `error`. */
+export type AssetSignManyItem =
+  | { key: string; variant?: AssetVariant["kind"]; signed_url: string; error?: undefined }
+  | { key: string; variant?: AssetVariant["kind"]; signed_url?: undefined; error: AssetSignItemError };
+
+/** Result of `assets.signMany(items, opts)`. */
+export interface AssetSignManyResult {
+  items: AssetSignManyItem[];
+  expires_at: string;
+  expires_in: number;
 }
 
 /** Result of `assets.delete(key)`. */

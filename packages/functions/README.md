@@ -326,21 +326,21 @@ const { revoked_immutable_refs } = await assets.delete("media/old-banner.jpg");
 
 A private key's `AssetRef` carries its whole variant set, but every URL field is `null`. `assets.sign` mints a time-boxed signed GET URL (default 1 hour, 60 to 604800 seconds) for the original or, with `variant`, for one encoded variant (`thumb` / `medium` / `large` WebP, or a HEIC source's `display_jpeg`); a variant URL answers with the variant's own content type. A key without that variant throws `Asset sign failed (404): RESOURCE_NOT_FOUND: …`.
 
+### `assets.signMany(items, { ttl_seconds? })` — a page of private images in one request
+
+`assets.signMany` mints many URLs with one `POST /storage/v1/blobs/sign`: each item is `{ key, variant? }` (1 to 1000), and the result's `items` answer them in order with `signed_url`, or with `error` (`RESOURCE_NOT_FOUND`; `details.available` lists the variants a key has) for a key or variant the project lacks, so one stale row does not fail the page. One `ttl_seconds` covers every URL. Use it for a srcset or a gallery instead of one `assets.sign` per URL.
+
 ```ts
 import { assets, auth } from "@run402/functions";
 
 await auth.requireUser();
 const photo = assets.fromRef(row.photo); // a private AssetRef stored on the row
-const srcset = (
-  await Promise.all(
-    (["thumb", "medium", "large"] as const)
-      .filter((v) => photo.variants?.[v])
-      .map(async (v) => `${(await assets.sign(photo.key, { variant: v })).signed_url} ${photo.variants![v]!.width_px}w`),
-  )
-).join(", ");
+const kinds = (["thumb", "medium", "large"] as const).filter((v) => photo.variants?.[v]);
+const { items } = await assets.signMany(kinds.map((variant) => ({ key: photo.key, variant })));
+const srcset = items.map((item, i) => `${item.signed_url} ${photo.variants![kinds[i]!]!.width_px}w`).join(", ");
 ```
 
-With `@run402/astro`, `signAssetRef(ref, sign)` from `@run402/astro/manifest` does this for the whole ref, and `<Run402Picture>` / `<Run402Image>` render the result.
+With `@run402/astro`, `signAssetRefs(refs, assets.signMany)` from `@run402/astro/manifest` signs every ref on a page in one request (`signAssetRef(ref, assets.signMany)` for one), and `<Run402Picture>` / `<Run402Image>` render the result.
 
 ### Routed image generation example
 
