@@ -416,6 +416,14 @@ async function expectQueuedInvocations() {
   const requests = Array.from({ length: 6 }, () => fetch(`${baseUrl}/projects/v1/${project.project_id}/static/api/sleep?ms=300`));
   const responses = await Promise.all(requests);
   for (const response of responses) {
+    if (response.status !== 200) {
+      const requestId = response.headers.get("x-run402-request-id");
+      const listed = await getJson(
+        `/projects/v1/${project.project_id}/functions/logs?request_id=${encodeURIComponent(requestId)}`,
+        serviceHeaders,
+      ).catch((error) => ({ error: String(error) }));
+      throw new Error(`Queued invocation ${requestId} returned ${response.status} ${await response.text()}; logs: ${JSON.stringify(listed)}`);
+    }
     const body = await readJsonResponse(response, 200);
     if (body.slept !== true || body.version !== "v1") {
       throw new Error(`Queued invocation returned wrong body: ${JSON.stringify(body)}`);

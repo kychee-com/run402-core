@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -175,7 +175,17 @@ export class LocalFunctionExecutor {
     );
     await mkdir(bundleDir, { recursive: true });
     const modulePath = path.join(bundleDir, "entry.mjs");
-    await writeFile(modulePath, content.bytes);
+    // Concurrent invocations of a bundle stage the same bytes at this path. Writing it in place truncates the file a
+    // running invocation may be importing, which then fails on an empty or partial module; a private copy renamed
+    // into place is never seen half-written.
+    const stagingPath = `${modulePath}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(stagingPath, content.bytes);
+      await rename(stagingPath, modulePath);
+    } catch (error) {
+      await rm(stagingPath, { force: true });
+      throw error;
+    }
     return modulePath;
   }
 

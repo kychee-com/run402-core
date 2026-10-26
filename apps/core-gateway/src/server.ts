@@ -3634,6 +3634,7 @@ async function invokeFunctionWithDiagnostics(
       error: errorCode,
       status: runtimeErrorStatus(error),
       duration_ms: durationMs,
+      ...runnerFailureDetails(error),
       ...context,
     }, finishedAt);
     await recordFunctionInvocation(runtime, {
@@ -3755,6 +3756,16 @@ function redactLogMessage(message: string, knownValues: readonly string[]): { me
 
 function runtimeErrorCode(error: unknown): string {
   return error instanceof RuntimeKernelTypedError ? error.code : "internal_error";
+}
+
+// Why the runner failed, without the user's error text: how it failed (runner_error) and how it exited.
+function runnerFailureDetails(error: unknown): Record<string, unknown> {
+  if (!(error instanceof RuntimeKernelTypedError)) return {};
+  const out: Record<string, unknown> = {};
+  for (const key of ["runner_error", "exit_code", "signal"] as const) {
+    if (error.details[key] !== undefined) out[key] = error.details[key];
+  }
+  return out;
 }
 
 function runtimeErrorStatus(error: unknown): number {

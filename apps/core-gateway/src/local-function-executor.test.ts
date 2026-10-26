@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { rm } from "node:fs/promises";
+import { readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import {
@@ -324,6 +324,38 @@ test("local function executor queues pending invocations within the configured l
   }
 });
 
+test("local function executor stages a bundle by rename, never rewriting the file in place", async () => {
+  const fixture = await createExecutorFixture(`
+    export default async function handler(event) {
+      return { requestId: event.requestId };
+    }
+  `);
+  const invoke = (requestId: string) => fixture.executor.invoke({
+    projectId: PROJECT_ID,
+    releaseId: RELEASE_ID,
+    functionName: "staged",
+    invocationKind: "direct",
+    requestId,
+    bundle: fixture.bundle,
+  });
+  try {
+    await invoke("req_stage_1");
+    const bundleDir = path.join(fixture.workDir, PROJECT_ID, RELEASE_ID, "staged", fixture.bundle.bundle_sha256);
+    const before = await stat(path.join(bundleDir, "entry.mjs"));
+    const results = await Promise.all(["req_stage_2", "req_stage_3", "req_stage_4"].map(invoke));
+    assert.deepEqual(results.map((result) => decodeJsonBody(result.response.body)), [
+      { requestId: "req_stage_2" },
+      { requestId: "req_stage_3" },
+      { requestId: "req_stage_4" },
+    ]);
+    // A new inode: the next invocation's copy replaced the file, so a runner still reading the old one never saw it truncated
+    assert.notEqual((await stat(path.join(bundleDir, "entry.mjs"))).ino, before.ino);
+    assert.deepEqual(await readdir(bundleDir), ["entry.mjs"]);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test("local function executor enforces response body limit", async () => {
   const fixture = await createExecutorFixture(`
     export default async function handler() {
@@ -396,6 +428,7 @@ async function createExecutorFixture(source: string, options: {
   const bundle = functionBundle(sha256, bytes.byteLength);
   return {
     bundle,
+    workDir: path.join(root, "work"),
     executor: new LocalFunctionExecutor({
       content,
       workDir: path.join(root, "work"),

@@ -2754,7 +2754,13 @@ test("routed function errors return sanitized request diagnostics and platform l
     content: new MemoryContentStore(),
     functionBundles: new MemoryFunctionBundles(functionBundle("9".repeat(64), 12)),
     functionExecutor: new MemoryFunctionExecutor({
-      error: new LocalExecutorError("raw user boom secret-value", { function_name: "api" }),
+      error: new LocalExecutorError("raw user boom secret-value", {
+        function_name: "api",
+        runner_error: "runner_uncaught",
+        exit_code: 1,
+        signal: null,
+        stderr: "raw user boom stderr",
+      }),
     }),
     functionLogs,
   };
@@ -2781,6 +2787,10 @@ test("routed function errors return sanitized request diagnostics and platform l
   assert.equal(logs.some((entry) => entry.stream === "platform" && entry.level === "error"), true);
   assert.equal(logs.some((entry) => entry.message.includes("raw user boom")), false);
   assert.equal(logs.some((entry) => entry.message.includes("/api/*") && entry.message.includes("/api/fails")), true);
+  const failed = logs.find((entry) => entry.message.includes("function_invocation_failed"));
+  assert.ok(failed);
+  assert.equal(JSON.parse(failed.message).runner_error, "runner_uncaught");
+  assert.equal(JSON.parse(failed.message).exit_code, 1);
 });
 
 test("function user logs are redacted before readback or direct response", async () => {
