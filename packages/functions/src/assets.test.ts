@@ -476,11 +476,12 @@ describe("assets.list — v1.50 sort + filter + new row fields", () => {
       },
     });
     assert.match(capturedUrl, /sort=createdAt%3Adesc/);
-    assert.match(capturedUrl, /filter\.uploaded_by=user_a/);
-    assert.match(capturedUrl, /filter\.tag=hero/);
-    assert.match(capturedUrl, /filter\.format=jpeg/);
-    assert.match(capturedUrl, /filter\.is_image=true/);
-    assert.match(capturedUrl, /filter\.min_width=1920/);
+    assert.match(capturedUrl, /filter_uploaded_by=user_a/);
+    assert.match(capturedUrl, /filter_tag=hero/);
+    assert.match(capturedUrl, /filter_format=jpeg/);
+    assert.match(capturedUrl, /filter_is_image=true/);
+    assert.match(capturedUrl, /filter_min_width=1920/);
+    assert.doesNotMatch(capturedUrl, /filter\./); // the gateway refuses dotted keys with INVALID_FILTER_KEY
   });
 
   it("omits sort when default (key:asc)", async () => {

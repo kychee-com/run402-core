@@ -577,7 +577,7 @@ export const assets = {
     if (validatedFilter) {
       for (const [k, v] of Object.entries(validatedFilter)) {
         if (v === undefined) continue;
-        params.set(`filter.${k}`, typeof v === "boolean" ? String(v) : String(v));
+        params.set(`filter_${k}`, String(v));
       }
     }
 
