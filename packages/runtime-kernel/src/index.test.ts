@@ -829,6 +829,26 @@ test("function apply accepts email function triggers without schedule metadata",
   ]);
 });
 
+test("function apply carries app-repo function triggers as declared, without schedule metadata", async () => {
+  const spec = prebundledFunctionSpec("f".repeat(64), 12);
+  spec.functions.replace.api.triggers = [
+    {
+      id: "bundle",
+      type: "app_repo",
+      repo: "default",
+      paths: ["people/"],
+      run: { event_type: "content.changed" },
+    },
+  ];
+
+  const plan = await createApplyPlan(new MemoryRuntimePorts({ contentPresent: true }), { spec });
+  const bundle = plan.function_effects?.bundles.find((entry) => entry.name === "api");
+
+  assert.deepEqual(bundle?.triggers, [
+    { id: "bundle", type: "app_repo", repo: "default", paths: ["people/"], run: { event_type: "content.changed" } },
+  ]);
+});
+
 test("function apply rejects invalid schedules and host-owned schedule limit violations", async () => {
   {
     const spec = prebundledFunctionSpec("8".repeat(64), 12);

@@ -210,3 +210,27 @@ export type { EventEmitOptions, EventEmitResult, EventNextAction } from "./event
 // answers `PUSH_UNSUPPORTED`). Browsers sign up through `/_run402/push.js`.
 export { push, Run402PushError } from "./push.js";
 export type { PushSendOptions, PushSendResult, PushNextAction } from "./push.js";
+// `repo` / `repos` — the project's app repos: plain git repositories the app
+// reads and commits (Run402 Cloud; Core answers `APP_REPOS_UNSUPPORTED`). One
+// request reads one commit, pinned on first read and moved by its own commits.
+export { repo, repos, R402AppRepoError } from "./repo.js";
+export type {
+  AppRepo,
+  AppRepoCommitOptions,
+  AppRepoCommitRecord,
+  AppRepoCommitResult,
+  AppRepoDiff,
+  AppRepoDiffChange,
+  AppRepoFileValue,
+  AppRepoJsonValue,
+  AppRepoLog,
+  AppRepoLogOptions,
+  AppRepoNextAction,
+  AppRepoPerson,
+  AppRepoReader,
+  AppRepoRevertOptions,
+  AppRepoSummary,
+  AppRepoTreeEntry,
+  AppReposCreateOptions,
+  AppReposDeleteOptions,
+} from "./repo.js";

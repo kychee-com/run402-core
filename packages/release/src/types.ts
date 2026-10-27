@@ -114,7 +114,21 @@ export interface FunctionEmailTriggerSpec {
   run: FunctionTriggerRunSpec;
 }
 
-export type FunctionTriggerSpec = FunctionScheduleTriggerSpec | FunctionEmailTriggerSpec;
+/**
+ * Runs the function once per commit to an app repo's `main` that changes a
+ * path starting with one of `paths` (every path when omitted). Prefixes are
+ * matched with `startsWith`, so `people` also matches `peoplex.json`; write
+ * `people/` for the directory. The repo need not exist yet.
+ */
+export interface FunctionAppRepoTriggerSpec {
+  id: string;
+  type: "app_repo";
+  repo: string;
+  paths?: string[];
+  run: FunctionTriggerRunSpec;
+}
+
+export type FunctionTriggerSpec = FunctionScheduleTriggerSpec | FunctionEmailTriggerSpec | FunctionAppRepoTriggerSpec;
 
 export type DetectSource = "accept-language" | `cookie:${string}`;
 
@@ -187,7 +201,22 @@ export interface StaticRouteTarget {
   file: string;
 }
 
-export type RouteTarget = FunctionRouteTarget | StaticRouteTarget;
+/**
+ * Serves a file from an app repo's latest `main` commit. For a prefix pattern
+ * `path` is a directory prefix ("" = repo root; canonical form ends in `/`)
+ * and the part matched by `*` is appended to it; for an exact pattern `path`
+ * is required and names the file. GET/HEAD only, never priced. `requireAuth`
+ * and `requireRole` gate it exactly as they gate a function.
+ */
+export interface RepoRouteTarget {
+  type: "repo";
+  repo: string;
+  path?: string;
+  requireAuth?: boolean;
+  requireRole?: RoleGateSpec | null;
+}
+
+export type RouteTarget = FunctionRouteTarget | StaticRouteTarget | RepoRouteTarget;
 
 export interface RouteSpec {
   pattern: string;

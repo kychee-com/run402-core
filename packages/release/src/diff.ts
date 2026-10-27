@@ -824,6 +824,9 @@ function sameRouteTarget(a: RouteEntry["target"], b: RouteEntry["target"]): bool
   if (a.type !== b.type) return false;
   if (a.type === "function" && b.type === "function") return a.name === b.name;
   if (a.type === "static" && b.type === "static") return a.file === b.file;
+  if (a.type === "repo" && b.type === "repo") {
+    return canonicalizeJson(a) === canonicalizeJson(b);
+  }
   return false;
 }
 

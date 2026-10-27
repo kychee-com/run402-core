@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import { canonicalizeJson } from "./canonical-json.js";
 import { ReleaseSpecValidationError } from "./errors.js";
+import { canonicalizeRepoRouteTarget } from "./repo-route-target.js";
 import { validateRouteDiscovery, type RouteDiscoveryContext } from "./route-discovery.js";
 import {
   SUPPORTED_HTTP_METHODS,
@@ -87,14 +88,14 @@ function routeEntryFromSpec(spec: RouteSpec, resource: string): RouteEntry {
     throw routeError(`${resource}.pattern`, "route pattern must be a string");
   }
   const pattern = validateAndNormalizePattern(raw.pattern, `${resource}.pattern`);
-  const target = validateTarget(raw.target, `${resource}.target`);
+  const kind: RouteEntry["kind"] = pattern.endsWith("/*") ? "prefix" : "exact";
+  const target = validateTarget(raw.target, `${resource}.target`, kind);
   const methods = normalizeMethods(raw.methods, `${resource}.methods`, target);
   const pricing = validateRoutePricing(raw.pricing, `${resource}.pricing`, target, {
     pattern,
     methods,
     methodsResource: `${resource}.methods`,
   });
-  const kind: RouteEntry["kind"] = pattern.endsWith("/*") ? "prefix" : "exact";
   if (target.type === "static" && kind !== "exact") {
     throw routeError(`${resource}.pattern`, "static route aliases must use exact path patterns; prefix /* patterns are not supported");
   }
@@ -136,7 +137,7 @@ function validateAndNormalizePattern(pattern: string, resource: string): string 
   return pattern;
 }
 
-function validateTarget(target: unknown, resource: string): RouteTarget {
+function validateTarget(target: unknown, resource: string, kind: RouteEntry["kind"]): RouteTarget {
   if (!target || typeof target !== "object" || Array.isArray(target)) {
     throw routeError(resource, "route target must be an object");
   }
@@ -154,7 +155,10 @@ function validateTarget(target: unknown, resource: string): RouteTarget {
     validateStaticTargetFile(raw.file, `${resource}.file`);
     return { type: "static", file: raw.file };
   }
-  throw routeError(`${resource}.type`, "route target.type must be 'function' or 'static'");
+  if (raw.type === "repo") {
+    return canonicalizeRepoRouteTarget(target as Record<string, unknown>, kind, resource);
+  }
+  throw routeError(`${resource}.type`, "route target.type must be 'function', 'static' or 'repo'");
 }
 
 function validateStaticTargetFile(file: string, resource: string): void {
@@ -185,9 +189,9 @@ function validateStaticTargetFile(file: string, resource: string): void {
 
 function normalizeMethods(methods: unknown, resource: string, target: RouteTarget): HttpMethod[] | null {
   if (methods === undefined || methods === null) {
-    if (target.type === "static") {
-      // GET plus HEAD is the only method set a static alias can normalize
-      // to, so an omitted list is unambiguous.
+    if (target.type === "static" || target.type === "repo") {
+      // GET plus HEAD is the only method set a static alias or a repo
+      // target can normalize to, so an omitted list is unambiguous.
       return ["GET", "HEAD"];
     }
     return null;
@@ -210,12 +214,17 @@ function normalizeMethods(methods: unknown, resource: string, target: RouteTarge
     out.add(upper as HttpMethod);
   }
   const normalized = [...out].sort(compareAscii);
-  if (target.type === "static") {
+  if (target.type === "static" || target.type === "repo") {
     const validStaticMethods =
       normalized.length === 1 && normalized[0] === "GET" ||
       normalized.length === 2 && normalized[0] === "GET" && normalized[1] === "HEAD";
     if (!validStaticMethods) {
-      throw routeError(resource, "static route aliases support only GET or GET plus HEAD methods");
+      throw routeError(
+        resource,
+        target.type === "static"
+          ? "static route aliases support only GET or GET plus HEAD methods"
+          : "repo route targets support only GET or GET plus HEAD methods",
+      );
     }
     return ["GET", "HEAD"];
   }
@@ -312,9 +321,15 @@ function stableRouteEntryObject(entry: RouteEntry): unknown {
 }
 
 function stableRouteTarget(target: RouteTarget): unknown {
-  return target.type === "function"
-    ? { type: "function", name: target.name }
-    : { type: "static", file: target.file };
+  if (target.type === "function") return { type: "function", name: target.name };
+  if (target.type === "static") return { type: "static", file: target.file };
+  return JSON.parse(canonicalizeJson({
+    type: "repo",
+    repo: target.repo,
+    path: target.path ?? "",
+    ...(target.requireAuth === true ? { requireAuth: true } : {}),
+    ...(target.requireRole ? { requireRole: target.requireRole } : {}),
+  })) as unknown;
 }
 
 function stableRoutePricing(pricing: RoutePricingSpec): unknown {
@@ -339,7 +354,9 @@ function methodSortKey(methods: HttpMethod[] | null): string {
 }
 
 function targetSortKey(target: RouteTarget): string {
-  return target.type === "function" ? `function:${target.name}` : `static:${target.file}`;
+  if (target.type === "function") return `function:${target.name}`;
+  if (target.type === "static") return `static:${target.file}`;
+  return `repo:${target.repo}:${target.path ?? ""}`;
 }
 
 function compareAscii(a: string, b: string): number {

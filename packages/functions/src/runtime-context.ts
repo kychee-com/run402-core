@@ -308,6 +308,43 @@ export function requireActiveContext(sdkFunction: string): RunRequestContext {
 }
 
 /**
+ * One app repo's commit pin within one request (the `repo` namespace).
+ *
+ * `pinned` holds the commit this request reads (`null`: the repo was empty
+ * when the request first read it). `resolving` means a first read is in
+ * flight; concurrent readers wait on `done`, then look again, so one request
+ * resolves a repo's head once even under `Promise.all`.
+ */
+export type AppRepoPinSlot =
+  | { state: "pinned"; commit: string | null }
+  | { state: "resolving"; done: Promise<void> };
+
+/**
+ * Per-request app-repo pins, keyed by the context object rather than stored
+ * on it: the pin is lazy (most requests never read a repo), the context shape
+ * that `runWithContext` callers construct stays unchanged, and the map dies
+ * with the request's context.
+ */
+const appRepoPins = new WeakMap<RunRequestContext, Map<string, AppRepoPinSlot>>();
+
+/**
+ * The current request's app-repo pins (repo name → slot), created on first
+ * use. `undefined` outside an active request context (a scheduled or
+ * triggered run without one, module scope, or a timer after the response):
+ * there, every `repo` call reads the head and nothing is pinned.
+ */
+export function currentAppRepoPins(): Map<string, AppRepoPinSlot> | undefined {
+  const ctx = als.getStore();
+  if (ctx === undefined || !ctx.active.value) return undefined;
+  let pins = appRepoPins.get(ctx);
+  if (pins === undefined) {
+    pins = new Map();
+    appRepoPins.set(ctx, pins);
+  }
+  return pins;
+}
+
+/**
  * Flip the cache-bypass taint flag on the current context. Called by
  * `getUser()` and payment-primitive SDK calls to signal that the
  * rendered response depends on request-scoped auth state and therefore

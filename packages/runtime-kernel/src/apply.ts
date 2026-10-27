@@ -511,7 +511,10 @@ function bundleMetadataFromSpec(
     schedule: null,
     schedule_meta: null,
     triggers: (spec.triggers ?? []).map((trigger) => {
-      if (trigger.type === "email") {
+      // Email and app-repo triggers are carried as declared: their events come
+      // from the host (Run402 Cloud's mail and app repos), never from the
+      // kernel's scheduler.
+      if (trigger.type === "email" || trigger.type === "app_repo") {
         return { ...trigger };
       }
       const scheduleTrigger = validateCoreFunctionScheduleTrigger({ functionName: name, trigger });

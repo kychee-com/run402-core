@@ -40,6 +40,7 @@ Current Core capability table:
 | Astro SSR | Yes |
 | Portable archive inspect/verify/import | Yes |
 | Web push notifications (`push.send`, `/_run402/push.js`) | No, Cloud only (`PUSH_UNSUPPORTED`) |
+| App repos (`repo` / `repos` in `@run402/functions`) | No, Cloud only (`APP_REPOS_UNSUPPORTED`) |
 | Cloud principal/org authority graph | No |
 | Buzz identity and community control plane | No |
 | Complete Cloud action-time attribution history | No |

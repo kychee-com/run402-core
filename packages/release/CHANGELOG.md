@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add the function trigger type `{ id, type: "app_repo", repo, paths?, run }`, which runs a function on each commit to an app repo. `repo` is an app repo name (not checked for existence); `paths` is 1-50 repo path prefixes matched with `startsWith` (so `people` also matches `peoplex.json`; no trailing `/` is added), every path when omitted. Schedule and email fields are refused on it, and `repo`/`paths` on the other types. The JSON Schema now describes `triggers` for all three types.
+
+- Add a third route target type, `{ type: "repo", repo, path?, requireAuth?, requireRole? }`, which serves a file from an app repo. It is prefix-capable (`path` is a directory prefix, canonically ending in `/`; for an exact pattern `path` is required and names the file), GET/HEAD only, never priced, and its role gate is validated like a function's. Validation, canonicalization, materialization (no static-file check and no static-manifest entry), diffing and the JSON Schema know it; the repo's existence is the host's check.
+
 - `computeReleaseDiff` states public path changes: both envelopes carry `public_paths: { mode_old, mode_new, added, removed, changed, totals? }`, and a change to `site.public_paths` alone (a path added, removed or pointed at another asset, or a mode switch) is no longer a noop and is named in the summary. A file reachable by its own name in implicit mode stays in the `site` diff only.
 
 - Wire prior mutable-path protection through actual implicit and explicit manifest compilation. Inferred classes are no longer mistaken for explicit immutable declarations during materialization.

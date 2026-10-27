@@ -1,4 +1,5 @@
 import { ReleaseSpecValidationError } from "./errors.js";
+import { canonicalizeRepoRouteTarget, isValidAppRepoName, validateRoleGate } from "./repo-route-target.js";
 import { validateRouteDiscovery } from "./route-discovery.js";
 import {
   SUPPORTED_HTTP_METHODS,
@@ -8,7 +9,6 @@ import {
   type HttpMethod,
   type I18nSpec,
   type ReleaseSpec,
-  type RoleGateSpec,
   type RouteSpec,
 } from "./types.js";
 
@@ -210,7 +210,7 @@ function validateFunctionTriggers(value: unknown, resource: string): void {
     const trigger = value[i];
     const path = `${resource}[${i}]`;
     if (!isRecord(trigger)) throw invalid(path, "function trigger must be an object");
-    rejectUnknownKeys(trigger, path, ["id", "type", "cron", "timezone", "misfire_policy", "overlap_policy", "mailbox", "events", "run"]);
+    rejectUnknownKeys(trigger, path, ["id", "type", "cron", "timezone", "misfire_policy", "overlap_policy", "mailbox", "events", "repo", "paths", "run"]);
     if (typeof trigger.id !== "string" || trigger.id.length === 0) {
       throw invalid(`${path}.id`, "function trigger id is required");
     }
@@ -219,6 +219,9 @@ function validateFunctionTriggers(value: unknown, resource: string): void {
     if (trigger.type === "schedule") {
       if (trigger.mailbox !== undefined || trigger.events !== undefined) {
         throw invalid(path, "schedule triggers cannot include mailbox or events");
+      }
+      if (trigger.repo !== undefined || trigger.paths !== undefined) {
+        throw invalid(path, "schedule triggers cannot include repo or paths");
       }
       if (typeof trigger.cron !== "string" || trigger.cron.trim().split(/\s+/).length !== 5) {
         throw invalid(`${path}.cron`, "function trigger cron must be a 5-field string");
@@ -241,6 +244,9 @@ function validateFunctionTriggers(value: unknown, resource: string): void {
       ) {
         throw invalid(path, "email triggers cannot include schedule fields");
       }
+      if (trigger.repo !== undefined || trigger.paths !== undefined) {
+        throw invalid(path, "email triggers cannot include repo or paths");
+      }
       if (typeof trigger.mailbox !== "string" || trigger.mailbox.length === 0) {
         throw invalid(`${path}.mailbox`, "function trigger mailbox is required");
       }
@@ -252,8 +258,27 @@ function validateFunctionTriggers(value: unknown, resource: string): void {
           throw invalid(`${path}.events[${j}]`, "function trigger event must be reply_received, delivery, bounced, or complained");
         }
       }
+    } else if (trigger.type === "app_repo") {
+      if (
+        trigger.cron !== undefined ||
+        trigger.timezone !== undefined ||
+        trigger.misfire_policy !== undefined ||
+        trigger.overlap_policy !== undefined
+      ) {
+        throw invalid(path, "app_repo triggers cannot include schedule fields");
+      }
+      if (trigger.mailbox !== undefined || trigger.events !== undefined) {
+        throw invalid(path, "app_repo triggers cannot include mailbox or events");
+      }
+      if (!isValidAppRepoName(trigger.repo)) {
+        throw invalid(
+          `${path}.repo`,
+          "function trigger repo must be an app repo name: 1-64 characters of a-z, 0-9, '.', '_' or '-', starting with a letter or digit, not ending in .git",
+        );
+      }
+      if (trigger.paths !== undefined) validateAppRepoTriggerPaths(trigger.paths, `${path}.paths`);
     } else {
-      throw invalid(`${path}.type`, "function trigger type must be schedule or email");
+      throw invalid(`${path}.type`, "function trigger type must be schedule, email or app_repo");
     }
     if (!isRecord(trigger.run)) throw invalid(`${path}.run`, "function trigger run must be an object");
     rejectUnknownKeys(trigger.run, `${path}.run`, ["event_type", "payload", "retry", "expires_after_seconds"]);
@@ -277,15 +302,35 @@ function validateFunctionTriggers(value: unknown, resource: string): void {
   }
 }
 
-function validateRoleGate(gate: RoleGateSpec, resource: string): void {
-  if (!isRecord(gate)) throw invalid(resource, "requireRole must be an object");
-  rejectUnknownKeys(gate, resource, ["table", "idColumn", "roleColumn", "allowed", "cacheTtl", "onDeny", "signInPath"]);
-  for (const key of ["table", "idColumn", "roleColumn"] as const) {
-    if (typeof gate[key] !== "string" || !SQL_IDENTIFIER.test(gate[key])) {
-      throw invalid(`${resource}.${key}`, `${key} must be a SQL identifier`);
+const APP_REPO_TRIGGER_PATHS_MAX = 50;
+const APP_REPO_TRIGGER_PATH_BYTES_MAX = 1024;
+
+/**
+ * An app_repo trigger's `paths` are repo path PREFIXES, matched at commit time
+ * with `path.startsWith(prefix)`: `people/` matches `people/a.json`, and a
+ * bare `people` also matches `peoplex.json`. A trailing `/` is kept as given,
+ * never added.
+ */
+function validateAppRepoTriggerPaths(value: unknown, resource: string): void {
+  if (!Array.isArray(value)) throw invalid(resource, "function trigger paths must be an array");
+  if (value.length === 0 || value.length > APP_REPO_TRIGGER_PATHS_MAX) {
+    throw invalid(resource, `function trigger paths must have 1-${APP_REPO_TRIGGER_PATHS_MAX} entries (omit it for every path)`);
+  }
+  for (let i = 0; i < value.length; i++) {
+    const item = value[i];
+    const at = `${resource}[${i}]`;
+    if (typeof item !== "string" || item.length === 0) throw invalid(at, "function trigger path must be a non-empty string");
+    if (new TextEncoder().encode(item).length > APP_REPO_TRIGGER_PATH_BYTES_MAX) {
+      throw invalid(at, `function trigger path must be at most ${APP_REPO_TRIGGER_PATH_BYTES_MAX} bytes`);
+    }
+    if (item.startsWith("/")) throw invalid(at, "function trigger path must not start with /");
+    const body = item.endsWith("/") ? item.slice(0, -1) : item;
+    for (const segment of body.split("/")) {
+      if (segment.length === 0) throw invalid(at, "function trigger path must not contain empty path segments");
+      if (segment === "." || segment === "..") throw invalid(at, "function trigger path must not contain . or .. path segments");
+      if (segment.toLowerCase() === ".git") throw invalid(at, "function trigger path must not contain .git path segments");
     }
   }
-  validateStringArray(gate.allowed, `${resource}.allowed`);
 }
 
 function validateSite(spec: ReleaseSpec): void {
@@ -406,8 +451,25 @@ function validateRouteSpec(route: RouteSpec, resource: string): void {
     if (typeof route.target.file !== "string" || route.target.file.length === 0) {
       throw invalid(`${resource}.target.file`, "static route target requires file");
     }
+  } else if (route.target.type === "repo") {
+    if (route.pricing !== undefined) {
+      throw invalid(`${resource}.pricing`, "route pricing is only supported on function routes");
+    }
+    if (route.methods !== undefined) {
+      const upper = [...new Set(route.methods.map((method) => method.toUpperCase()))].sort();
+      const getOnly = upper.length === 1 && upper[0] === "GET";
+      const getHead = upper.length === 2 && upper[0] === "GET" && upper[1] === "HEAD";
+      if (!getOnly && !getHead) {
+        throw invalid(`${resource}.methods`, "repo route targets support only GET or GET plus HEAD methods");
+      }
+    }
+    canonicalizeRepoRouteTarget(
+      route.target as unknown as Record<string, unknown>,
+      route.pattern.endsWith("/*") ? "prefix" : "exact",
+      `${resource}.target`,
+    );
   } else {
-    throw invalid(`${resource}.target.type`, "route target type must be function or static");
+    throw invalid(`${resource}.target.type`, "route target type must be function, static or repo");
   }
   validateRoutePricing(route.pricing, `${resource}.pricing`, route, resource);
 }

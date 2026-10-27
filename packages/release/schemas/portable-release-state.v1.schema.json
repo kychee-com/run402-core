@@ -176,6 +176,10 @@
         "timeout_seconds": { "type": "integer", "minimum": 1 },
         "memory_mb": { "type": "integer", "minimum": 128 },
         "schedule": { "type": ["string", "null"] },
+        "triggers": {
+          "type": "array",
+          "items": { "type": "object", "additionalProperties": true }
+        },
         "deps": {
           "type": "array",
           "items": { "type": "string" }

@@ -8,6 +8,7 @@ export * from "./normalize.js";
 export * from "./plan-fingerprint.js";
 export * from "./route-discovery.js";
 export * from "./routes.js";
+export { APP_REPO_NAME, isValidAppRepoName } from "./repo-route-target.js";
 export * from "./static-manifest.js";
 export * from "./typed-config.js";
 export type * from "./types.js";

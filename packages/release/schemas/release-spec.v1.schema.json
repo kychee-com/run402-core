@@ -386,6 +386,10 @@
         "schedule": {
           "type": ["string", "null"]
         },
+        "triggers": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/function_trigger" }
+        },
         "deps": {
           "type": "array",
           "items": { "type": "string", "minLength": 1 }
@@ -407,6 +411,72 @@
           "items": { "type": "string", "minLength": 1 }
         }
       }
+    },
+    "function_trigger_run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event_type"],
+      "properties": {
+        "event_type": { "type": "string", "minLength": 1 },
+        "payload": { "type": "object" },
+        "retry": { "type": "object" },
+        "expires_after_seconds": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "function_trigger": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "type", "cron", "run"],
+          "properties": {
+            "id": { "type": "string", "minLength": 1 },
+            "type": { "const": "schedule" },
+            "cron": { "type": "string" },
+            "timezone": { "type": "string" },
+            "misfire_policy": { "const": "skip" },
+            "overlap_policy": { "const": "allow" },
+            "run": { "$ref": "#/$defs/function_trigger_run" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "type", "mailbox", "events", "run"],
+          "properties": {
+            "id": { "type": "string", "minLength": 1 },
+            "type": { "const": "email" },
+            "mailbox": { "type": "string", "minLength": 1 },
+            "events": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "enum": ["reply_received", "delivery", "bounced", "complained"] }
+            },
+            "run": { "$ref": "#/$defs/function_trigger_run" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "type", "repo", "run"],
+          "properties": {
+            "id": { "type": "string", "minLength": 1 },
+            "type": { "const": "app_repo" },
+            "repo": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+              "not": { "pattern": "\\.git$" }
+            },
+            "paths": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 50,
+              "items": { "type": "string", "minLength": 1, "not": { "pattern": "^/" } }
+            },
+            "run": { "$ref": "#/$defs/function_trigger_run" }
+          }
+        }
+      ]
     },
     "subdomain_name": {
       "type": "string",
@@ -448,6 +518,27 @@
                 "type": { "const": "static" },
                 "file": { "$ref": "#/$defs/site_asset_path" }
               }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["type", "repo"],
+              "properties": {
+                "type": { "const": "repo" },
+                "repo": {
+                  "type": "string",
+                  "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
+                  "not": { "pattern": "\\.git$" }
+                },
+                "path": { "type": "string" },
+                "requireAuth": { "type": "boolean" },
+                "requireRole": {
+                  "oneOf": [
+                    { "type": "null" },
+                    { "$ref": "#/$defs/role_gate" }
+                  ]
+                }
+              }
             }
           ]
         }
@@ -459,7 +550,7 @@
               "target": {
                 "type": "object",
                 "properties": {
-                  "type": { "const": "static" }
+                  "type": { "enum": ["static", "repo"] }
                 },
                 "required": ["type"]
               }

@@ -110,6 +110,17 @@ export function normalizeFunctionTriggers(triggers: readonly FunctionTriggerSpec
           ? { expires_after_seconds: trigger.run.expires_after_seconds }
           : {}),
       };
+      if (trigger.type === "app_repo") {
+        // `paths` are a set of prefixes: sorted like email `events`, spelling
+        // kept (no trailing `/` is added).
+        return {
+          id: trigger.id,
+          type: "app_repo" as const,
+          repo: trigger.repo,
+          ...(trigger.paths !== undefined ? { paths: [...trigger.paths].sort(compareAscii) } : {}),
+          run,
+        };
+      }
       if (trigger.type === "email") {
         return {
           id: trigger.id,

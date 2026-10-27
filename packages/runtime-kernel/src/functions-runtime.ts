@@ -4,6 +4,7 @@ import type {
 } from "@run402/functions";
 import type {
   ContentRefHex,
+  FunctionAppRepoTriggerSpec,
   FunctionEmailTriggerSpec,
   FunctionSpec,
   FunctionScheduleTriggerSpec,
@@ -198,7 +199,8 @@ export interface CoreFunctionScheduleTriggerMetadata extends FunctionScheduleTri
 
 export type CoreFunctionTriggerMetadata =
   | CoreFunctionScheduleTriggerMetadata
-  | FunctionEmailTriggerSpec;
+  | FunctionEmailTriggerSpec
+  | FunctionAppRepoTriggerSpec;
 
 export interface CoreAstroSsrRuntimeCapability {
   capability: "core-astro-ssr";

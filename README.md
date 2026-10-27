@@ -57,7 +57,7 @@ Run402 Cloud remains the managed service and the authority for its participant, 
 
 ### `@run402/functions`
 
-In-function helper library for Run402 serverless functions. It provides typed access to caller-context database queries, admin database queries, auth helpers, email, AI, storage assets, cache helpers, web push notifications (Run402 Cloud), routed HTTP utilities, and webhook verification.
+In-function helper library for Run402 serverless functions. It provides typed access to caller-context database queries, admin database queries, auth helpers, email, AI, storage assets, cache helpers, web push notifications and app repos (Run402 Cloud), routed HTTP utilities, and webhook verification.
 
 ```bash
 npm install @run402/functions

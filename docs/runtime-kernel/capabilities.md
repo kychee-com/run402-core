@@ -58,6 +58,7 @@ Unsupported required capabilities fail with `unsupported_capability`.
 - `site.patch`
 - hosted OAuth
 - web push notifications (`push.send` throws `PUSH_UNSUPPORTED`; `/_run402/push*` is not served)
+- app repos (`repo.*` / `repos.*` throw `APP_REPOS_UNSUPPORTED`)
 - managed subdomains and custom domains
 - Cloud archive export creation
 - Cloud import

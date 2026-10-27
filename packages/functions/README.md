@@ -1,6 +1,6 @@
 # @run402/functions
 
-In-function helper library for [Run402](https://run402.com) serverless functions. Imported _inside_ a deployed function — gives you typed access to the caller's database (RLS-respecting) and the project's admin database, the caller's auth, the project's mailbox, AI helpers, runtime asset uploads, the project's cursored event feed, and web push notifications to the app's users' phones.
+In-function helper library for [Run402](https://run402.com) serverless functions. Imported _inside_ a deployed function — gives you typed access to the caller's database (RLS-respecting) and the project's admin database, the caller's auth, the project's mailbox, AI helpers, runtime asset uploads, the project's cursored event feed, web push notifications to the app's users' phones, and the project's app repos (git repositories the app reads and commits).
 
 Run402's first-class people/agent **control-plane principals** are distinct from the deployed app's tenant callers described in this package. Here, `auth.user()`, verified tenant identity, and RLS identify an end user of the application; they do not expose or replace the Run402 organization membership, grant, grant key, or Buzz identity model.
 
@@ -506,6 +506,40 @@ importScripts("/_run402/push-sw.js");
 
 **iPhone and iPad.** Web push needs iOS 16.4 or later and works only from the Home Screen app (Share, then Add to Home Screen; the site needs a web app manifest with `"display": "standalone"`), so in a Safari tab `status()` is `"needs_install"`. The permission prompt appears only from a tap. A denial can be undone only by removing the Home Screen icon and adding it again.
 
+## `repo` and `repos` — the project's app repos
+
+App repos are plain git repositories that belong to the project and are written by its app: content an app edits at run time (pages, records, settings) with full history, readable and writable from functions, the CLI, and `git clone`. Needs Run402 Cloud: on a host without the app-repo routes (Run402 Core) every call throws `R402AppRepoError` with `code: "APP_REPOS_UNSUPPORTED"`.
+
+```ts
+import { repo, repos } from "@run402/functions";
+
+// `repo` is the `default` repo. It always exists, and reads as empty until its first commit.
+const site = (await repo.readJson<{ title: string }>("site.json")) ?? { title: "Untitled" };
+
+await repo.commit(
+  {
+    "site.json": { ...site, title: "Our club" }, // a JSON value, written canonically
+    "pages/about.md": "# About us\n",            // a string, written as UTF-8
+    "logo.png": pngBytes,                         // a Uint8Array, written as bytes
+    "old/page.md": null,                          // null deletes the file
+  },
+  { message: "Rename the site" },
+);
+
+// Other repos are created first, optionally from another repo (objects are shared, not copied).
+await repos.create("user-42", { from: "template" });
+const notes = repos.open("user-42"); // a handle; makes no call
+```
+
+- **Reads.** `read(path)` (UTF-8 text), `readBytes(path)` (`Uint8Array`), `readJson(path)` (parsed) each return `null` when the file is absent; `list(dir?)` returns `[{ name, path, type: "file" | "dir", size, oid }]`, `[]` for an empty repo. A repo that does not exist throws `APP_REPO_NOT_FOUND` with a `create_app_repo` next action; nothing creates a repo implicitly.
+- **Writes.** `commit(files, { message?, author?, parent? })` maps each path to a string, bytes, `null` (delete) or any other JSON value (written with sorted keys, two-space indent and a trailing newline). It resolves the gateway's answer: `{ committed: true, commit, parent, head, seq, paths, author }`, or `{ committed: false, head }` when nothing changed. `revert(commit, { message? })` commits the inverse of a commit. A file over 4 MiB is refused with `APP_REPO_FILE_TOO_LARGE`: store it with `assets.put` and commit a reference.
+- **Conflicts.** Without `parent`, a commit lands on top of a newer head as long as none of its paths changed since the commit the request read; otherwise it throws `APP_REPO_CONFLICT` with `details: { head, base, conflicting_paths }`, and you re-read and retry. With `parent`, it lands only if `parent` is still the head.
+- **History.** `log({ path?, limit?, cursor? })` returns `{ commits, head, has_more, next_cursor }`, newest first; `diff(from, to)` returns `{ from, to, changes: [{ path, status, old_oid, new_oid }] }`.
+- **Who edited.** The app is the committer. When a signed-in user made the request, the commit forwards their verified identity: they are the author (by display name, never their email) and the message carries a `Run402-Actor: <user_id>` trailer. `author: { name, email }` acts for someone else and never changes the trailer.
+- **`repos`.** `open(name)`, `create(name, { from? })`, `list()` (every repo, `default` included), `delete(name, { confirm: name })` (the confirmation must equal the name; `default` cannot be deleted).
+
+**One request reads one commit.** Inside a request, the first read of a repo resolves its head once and pins that commit; every later read of that repo in the same request comes from it, so a page never shows half of two edits. A `commit` is built on the pinned commit, and a successful `commit` or `revert` moves the pin to the new head, so the request reads what it wrote. The next request resolves the head afresh. `head()` returns the pinned commit (`null` for an empty repo), resolving it if nothing is pinned yet; `at(commit)` returns a read-only handle on that commit. Outside a request context (a scheduled run without one), nothing is pinned and each call reads the head.
+
 ## Static-site generation (build-time use)
 
 The same library works at build time for static-site generation if you set `RUN402_SERVICE_KEY` and `RUN402_PROJECT_ID` in your `.env`:
@@ -783,6 +817,10 @@ try {
   } else throw err;
 }
 ```
+
+### `R402AppRepoError` — `repo` / `repos` failures
+
+`repo.*` and `repos.*` throw `R402AppRepoError` (exported) with `code`, `status`, `details`, `next_actions`, and `body` from the gateway: `APP_REPO_NOT_FOUND` (404, with a `create_app_repo` next action), `APP_REPO_EXISTS` (409), `APP_REPO_CONFLICT` (409, `details: { head, base, conflicting_paths }`), `APP_REPO_FILE_TOO_LARGE` (422), `APP_REPO_DEFAULT_UNDELETABLE` (403), `QUOTA_EXCEEDED` (403, the organization's pooled storage), `VALIDATION_FAILED` (400). Local codes: `VALIDATION_FAILED` with `field` for input checked before any request (an `undefined` file value, a `confirm` that does not match), `APP_REPO_INVALID_JSON` when `readJson` finds a file that is not JSON, `APP_REPOS_UNSUPPORTED` on a host without app repos (Run402 Core), and `PROJECT_ID_MISSING` outside a deployed function. A missing file is not an error: reads return `null`.
 
 Other helpers still throw plain `Error` whose message includes the HTTP status and the response body so you can branch on `code` / `category` / `retryable` (the v1.34+ agent-operable error envelope).
 

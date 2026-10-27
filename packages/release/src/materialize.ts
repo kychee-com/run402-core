@@ -376,6 +376,10 @@ function validateRouteTargets(materialized: PortableReleaseState): void {
         ? []
         : [`${entry.pattern} -> function ${entry.target.name}`];
     }
+    // A repo target names an app repo, not a release resource: there is no
+    // static file to check and no static-manifest entry. Whether the repo
+    // exists is the host's check, against the project.
+    if (entry.target.type === "repo") return [];
     return staticPaths.has(normalizeSitePath(entry.target.file))
       ? []
       : [`${entry.pattern} -> static file ${entry.target.file}`];
