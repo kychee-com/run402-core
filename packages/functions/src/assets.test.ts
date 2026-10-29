@@ -782,7 +782,23 @@ describe("assets.delete", () => {
       key: "media/a b.jpg",
       revoked_immutable_refs: 4,
       cache_invalidation: { status: "submitted", paths: ["/_blob/media/a b.jpg"], invalidation_id: "I1" },
+      signed_url_revocation: null,
     });
+  });
+
+  it("returns the revocation of a private key's signed URLs", async () => {
+    response = new Response(
+      JSON.stringify({
+        deleted: true,
+        key: "family/photo.jpg",
+        revoked_immutable_refs: 0,
+        cache_invalidation: null,
+        signed_url_revocation: { status: "submitted" },
+      }),
+      { status: 200 },
+    );
+    const result = await assets.delete("family/photo.jpg");
+    assert.deepEqual(result.signed_url_revocation, { status: "submitted" });
   });
 
   it("returns a null cache_invalidation for a private key", async () => {

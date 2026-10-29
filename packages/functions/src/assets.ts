@@ -631,8 +631,10 @@ export const assets = {
    * Calls `DELETE /storage/v1/blob/:key` with the service key, the same
    * route as the owner-side `r.assets.rm`. The gateway removes the key,
    * revokes its immutable URLs (the source's and every image variant's),
-   * and queues a CDN invalidation of the mutable URL for a public key. The
-   * content bytes are reaped by the platform once nothing references them.
+   * queues a CDN invalidation of the mutable URL for a public key, and
+   * revokes the key's unexpired signed URLs at the edge, so they answer 403
+   * within a minute (`signed_url_revocation`). The content bytes are reaped
+   * by the platform once nothing references them.
    *
    * Throws when the key does not exist (`Asset delete failed (404)`).
    */
@@ -654,6 +656,7 @@ export const assets = {
     }
     const raw = (await res.json()) as Record<string, unknown>;
     const inv = raw.cache_invalidation as Record<string, unknown> | null | undefined;
+    const revocation = raw.signed_url_revocation as Record<string, unknown> | null | undefined;
     return {
       deleted: raw.deleted === true,
       key: String(raw.key ?? key),
@@ -664,6 +667,9 @@ export const assets = {
             paths: Array.isArray(inv.paths) ? inv.paths.map(String) : [],
             invalidation_id: (inv.invalidation_id as string | null) ?? null,
           }
+        : null,
+      signed_url_revocation: revocation
+        ? { status: revocation.status === "submitted" ? "submitted" : "queued" }
         : null,
     };
   },
@@ -679,6 +685,13 @@ export const assets = {
    * HEIC source's `display_jpeg`) instead of the original; the URL then
    * answers with the variant's own content type. `ttl_seconds` is 60 to
    * 604800 (7 days), default 3600.
+   *
+   * On Run402 Cloud the URL is a CloudFront link signed for that one object:
+   * use it as is (any change to it answers 403). Any origin can read it
+   * (`Access-Control-Allow-Origin: *`, so WebGL textures and canvas work),
+   * it answers `Range` with 206, members viewing the same key share the edge
+   * cache, and it stops working within a minute of the key being deleted or
+   * overwritten.
    *
    * Throws when the key does not exist, or when the key has no such variant
    * (`Asset sign failed (404): RESOURCE_NOT_FOUND: …`). For several URLs at
@@ -737,7 +750,7 @@ export const assets = {
    * key or variant, so one stale row does not fail the page. One
    * `ttl_seconds` (60 to 604800, default 3600) covers every URL. 1 to 1000
    * items; a bad item, an unknown variant or a bad TTL throws before any
-   * request.
+   * request. Each URL is the same CDN link `assets.sign` returns.
    *
    * @example
    *   const ref = assets.fromRef(row.photo);
@@ -989,6 +1002,10 @@ export interface AssetDeleteResult {
     paths: string[];
     invalidation_id: string | null;
   } | null;
+  /** Edge revocation of the key's unexpired signed URLs: `submitted` (the
+   *  links answer 403 within seconds) or `queued` (the platform retries
+   *  every minute); `null` when no signed URL was outstanding. */
+  signed_url_revocation: { status: "submitted" | "queued" } | null;
 }
 
 /** URL fields of a list row, omitted when the gateway did not send them. */
