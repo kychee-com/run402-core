@@ -18,6 +18,7 @@ import {
   cacheControlForStaticCacheClass,
   releasePackageInfo,
   canonicalizeJson,
+  buildStaticManifestFromEntries,
   canonicalizeStaticManifest,
   classifyStaticCacheClass,
   collectLegacyImmutableRisks,
@@ -250,6 +251,47 @@ describe("static manifest model", () => {
       path: "/assets/app.1234abcd.js",
       previous_sha256: SHA_A,
       candidate_sha256: SHA_B,
+      previous_cache_class: "immutable_versioned",
+    }]);
+  });
+
+  it("re-infers a downgraded fingerprinted path only while its bytes hold, then guards it as immutable", () => {
+    const path = "/_astro/auth-hosted.DcxaOapR.css";
+    const entry = (sha256: string) => [{
+      public_path: path,
+      asset_path: path.slice(1),
+      sha256,
+      size: 1,
+      content_type: "text/css",
+      authority: "implicit_file_path" as const,
+      direct: true,
+    }];
+    const downgraded = canonicalizeStaticManifest({
+      version: STATIC_MANIFEST_VERSION,
+      files: {
+        [path]: {
+          sha256: SHA_A,
+          size: 1,
+          content_type: "text/css",
+          cache_class: "revalidating_asset",
+          cache_class_source: "downgraded",
+        },
+      },
+    });
+
+    const changed = buildStaticManifestFromEntries(entry(SHA_B), { previousManifest: downgraded });
+    assert.equal(changed.files[path]!.cache_class, "revalidating_asset");
+    assert.deepEqual(detectPreviousImmutableViolations(downgraded, changed), []);
+
+    const held = buildStaticManifestFromEntries(entry(SHA_B), { previousManifest: changed });
+    assert.equal(held.files[path]!.cache_class, "immutable_versioned");
+    assert.equal(held.files[path]!.cache_class_source, "inferred_sha_filename");
+
+    const changedAgain = buildStaticManifestFromEntries(entry(SHA_A), { previousManifest: held });
+    assert.deepEqual(detectPreviousImmutableViolations(held, changedAgain), [{
+      path,
+      previous_sha256: SHA_B,
+      candidate_sha256: SHA_A,
       previous_cache_class: "immutable_versioned",
     }]);
   });

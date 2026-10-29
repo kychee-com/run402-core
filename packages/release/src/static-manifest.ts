@@ -42,7 +42,10 @@ export interface CacheClassificationInput {
   path: string;
   contentType?: string | null;
   declaredCacheClass?: StaticCacheClass | null;
-  previous?: Pick<StaticManifestFileEntry, "sha256" | "cache_class"> | null;
+  /** The candidate's bytes; with the previous source, lets unchanged bytes shed an older classifier's verdict. */
+  sha256?: string | null;
+  previous?: Pick<StaticManifestFileEntry, "sha256" | "cache_class"> &
+    Partial<Pick<StaticManifestFileEntry, "cache_class_source">> | null;
 }
 
 export interface CacheClassificationResult {
@@ -300,7 +303,8 @@ export function classifyStaticCacheClass(
     input.previous?.cache_class === "revalidating_asset" &&
     input.previous.sha256 !== "" &&
     cacheClass === "immutable_versioned" &&
-    input.declaredCacheClass !== "immutable_versioned"
+    input.declaredCacheClass !== "immutable_versioned" &&
+    !previousVerdictIsOnlyAnOlderInference(input.previous, input.sha256)
   ) {
     cacheClass = "revalidating_asset";
     source = "downgraded";
@@ -308,6 +312,18 @@ export function classifyStaticCacheClass(
   }
 
   return { cache_class: cacheClass, cache_class_source: source, warnings };
+}
+
+// Prior-path mutable protection needs evidence: changed bytes, or a mutable
+// declaration. The same bytes under an inferred or downgraded verdict carry
+// only an older classifier's opinion, so the current classifier decides.
+function previousVerdictIsOnlyAnOlderInference(
+  previous: NonNullable<CacheClassificationInput["previous"]>,
+  candidateSha256: string | null | undefined,
+): boolean {
+  if (!candidateSha256 || candidateSha256 !== previous.sha256) return false;
+  const source = previous.cache_class_source;
+  return source === "downgraded" || source === "inferred_sha_filename" || source === "inferred_html";
 }
 
 export function cacheControlForStaticCacheClass(cacheClass: StaticCacheClass): string {
@@ -410,14 +426,16 @@ export function buildStaticManifestFromEntries(
     const publicPath = canonicalizeStaticManifestPath(entry.public_path, `static_manifest.files.${entry.public_path}`);
     const assetPath = normalizeStaticManifestAssetPath(entry.asset_path, `static_manifest.files.${publicPath}.asset_path`);
     const contentType = normalizeContentType(entry.content_type ?? guessContentType(assetPath));
+    const sha256 = normalizeSha(entry.sha256, `static_manifest.files.${publicPath}.sha256`);
     const classification = classifyStaticCacheClass({
       path: publicPath,
       contentType,
       declaredCacheClass: entry.cache_class ?? null,
+      sha256,
       previous: options.previousManifest?.files[publicPath] ?? null,
     });
     const normalized: StaticManifestFileEntry = {
-      sha256: normalizeSha(entry.sha256, `static_manifest.files.${publicPath}.sha256`),
+      sha256,
       size: normalizeSize(entry.size, `static_manifest.files.${publicPath}.size`),
       content_type: contentType,
       cache_class: classification.cache_class,
