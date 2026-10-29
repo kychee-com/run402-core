@@ -395,6 +395,51 @@ describe("portable release materialization", () => {
     assert.equal(next.static_manifest?.files["/debug.json"], undefined);
   });
 
+  it("refuses new bytes at previously immutable paths and names every one", () => {
+    const first = materializeRelease({
+      spec: {
+        project: "p0001",
+        site: {
+          replace: {
+            "assets/app.1234abcd.js": { sha256: SHA_A, size: 10, contentType: "application/javascript" },
+            "assets/vendor-2RHH4Euo.js": { sha256: SHA_A, size: 10, contentType: "application/javascript" },
+            "index.html": { sha256: SHA_A, size: 10, contentType: "text/html" },
+          },
+        },
+      },
+    });
+    assert.throws(
+      () => materializeRelease({
+        concreteBase: first,
+        spec: {
+          project: "p0001",
+          site: {
+            patch: {
+              put: {
+                "assets/app.1234abcd.js": { sha256: SHA_B, size: 10, contentType: "application/javascript" },
+                "assets/vendor-2RHH4Euo.js": { sha256: SHA_B, size: 10, contentType: "application/javascript" },
+                "index.html": { sha256: SHA_B, size: 10, contentType: "text/html" },
+              },
+            },
+          },
+        },
+      }),
+      (err) => {
+        assert.ok(err instanceof StaticManifestError);
+        assert.equal(err.code, "STATIC_IMMUTABLE_PATH_CHANGED");
+        assert.equal(err.resource, "site");
+        assert.match(err.message, /\/assets\/app\.1234abcd\.js \(and 1 more\)/);
+        assert.deepEqual(err.details, {
+          paths: [
+            { path: "/assets/app.1234abcd.js", previous_sha256: SHA_A, candidate_sha256: SHA_B },
+            { path: "/assets/vendor-2RHH4Euo.js", previous_sha256: SHA_A, candidate_sha256: SHA_B },
+          ],
+        });
+        return true;
+      },
+    );
+  });
+
   it("materializes static aliases as route-only manifest entries", () => {
     const materialized = materializeRelease({
       spec: {

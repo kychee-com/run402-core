@@ -79,6 +79,7 @@ export class StaticManifestError extends Error {
     public code: string,
     message: string,
     public resource: string = "static_manifest",
+    public details?: Record<string, unknown>,
   ) {
     super(message);
     this.name = "StaticManifestError";

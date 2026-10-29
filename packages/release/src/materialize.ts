@@ -16,7 +16,7 @@ import {
   staticManifestEntryAssetPath,
   staticManifestPublicPathMode,
   summarizeStaticManifest,
-  type StaticManifestError,
+  StaticManifestError,
 } from "./static-manifest.js";
 import type {
   FunctionSpec,
@@ -166,11 +166,18 @@ export function materializeRelease(input: MaterializeReleaseInput): PortableRele
       builtStatic.manifest,
     );
     if (immutableViolations.length > 0) {
-      const err = new Error("Cannot change bytes for a path previously served as immutable_versioned") as StaticManifestError;
-      err.name = "StaticManifestError";
-      err.code = "STATIC_IMMUTABLE_PATH_CHANGED";
-      err.resource = "site";
-      throw err;
+      const paths = immutableViolations.map(({ path, previous_sha256, candidate_sha256 }) => ({
+        path,
+        previous_sha256,
+        candidate_sha256,
+      }));
+      const more = paths.length > 1 ? ` (and ${paths.length - 1} more)` : "";
+      throw new StaticManifestError(
+        "STATIC_IMMUTABLE_PATH_CHANGED",
+        `Cannot change bytes for a path previously served as immutable_versioned: ${paths[0]!.path}${more}`,
+        "site",
+        { paths },
+      );
     }
   }
   out.static_manifest = builtStatic.manifest;
