@@ -77,6 +77,13 @@ export function validateRawEmail(body: unknown): NormalizedRawEmail {
   if (record.template !== undefined) {
     throw new EmailValidationError("template email is not supported by Run402 Core outbound email yet", "template");
   }
+  // Refused, never ignored: an ignored copy field would send without its
+  // recipients and report success.
+  for (const field of ["bcc", "cc"] as const) {
+    if (record[field] !== undefined) {
+      throw new EmailValidationError(`${field} is not supported by Run402 Core outbound email yet`, field);
+    }
+  }
   const to = expectString(record.to, "to");
   validateEmailAddress(to, "to");
   const subject = expectString(record.subject, "subject");

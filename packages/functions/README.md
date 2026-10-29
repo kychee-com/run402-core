@@ -246,7 +246,17 @@ await email.send({
   html: "<h1>Hi</h1>",
   from_name: "My App",
 });
+
+// Blind copies (either mode): one address or up to 5
+await email.send({
+  to: "user@example.com",
+  bcc: "archive@example.com",
+  subject: "We found something",
+  html: "<p>...</p>",
+});
 ```
+
+`bcc` sends the same message to each address, and no header of any copy names a blind copy. Each blind copy counts as one send against the project's email limits. A suppressed blind copy refuses the whole send with `RECIPIENT_SUPPRESSED` (`details.field: "bcc"`). The result's `bcc` lists each address. A blind copy's later bounce shows on the message's `bcc` entry and never marks the message failed. There is no `cc`, and Run402 Core refuses `bcc` and `cc`.
 
 Templates: `project_invite` (`project_name`, `invite_url`), `magic_link`
 (`project_name`, `expires_in`, plus `link_url`, `code`, or both according to

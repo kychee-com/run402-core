@@ -222,7 +222,23 @@ describe("email.send — subsequent calls use cached mailboxId (no re-discover)"
 
     const body = JSON.parse(capturedBody);
     assert.equal(body.from_name, undefined);
+    assert.equal("bcc" in body, false);
     assert.deepEqual(body.variables, {});
+  });
+
+  it("passes bcc through unchanged in raw and template mode", async () => {
+    const bodies: unknown[] = [];
+    mock.method(globalThis, "fetch", async (_url: string, opts: RequestInit) => {
+      bodies.push(JSON.parse(opts.body as string));
+      return new Response(JSON.stringify({ message_id: "msg_005", bcc: [{ address: "archive@example.com", status: "sent", bounce_type: null }] }), { status: 201 });
+    });
+
+    const result = await email.send({ to: "user@example.com", bcc: "Archive@example.com", subject: "Found", html: "<p>x</p>" });
+    await email.send({ to: "user@example.com", bcc: ["a@example.com", "b@example.com"], template: "notification", variables: { project_name: "F", message: "m" } });
+
+    assert.equal((bodies[0] as { bcc: unknown }).bcc, "Archive@example.com");
+    assert.deepEqual((bodies[1] as { bcc: unknown }).bcc, ["a@example.com", "b@example.com"]);
+    assert.deepEqual(result.bcc, [{ address: "archive@example.com", status: "sent", bounce_type: null }]);
   });
 
   it("throws on send failure", async () => {

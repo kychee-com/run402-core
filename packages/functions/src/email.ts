@@ -2,6 +2,12 @@ import { config } from "./config.js";
 
 export interface EmailRawOptions {
   to: string;
+  /**
+   * Blind copies: one address or up to 5. Each receives the same message, no
+   * header of any copy names them, and each counts as one send against the
+   * project's email limits. The platform validates them; Core refuses them.
+   */
+  bcc?: string | string[];
   subject: string;
   html: string;
   text?: string;
@@ -12,6 +18,8 @@ export interface EmailRawOptions {
 
 export interface EmailTemplateOptions {
   to: string;
+  /** Blind copies, as on {@link EmailRawOptions.bcc}. */
+  bcc?: string | string[];
   template: string;
   variables?: Record<string, string>;
   from_name?: string;
@@ -27,6 +35,8 @@ export interface EmailSendResult {
   id?: string;
   mailbox_id?: string;
   from_address?: string;
+  /** The blind copies the message went to (lower-cased, each `status: "sent"`); absent when it had none. */
+  bcc?: Array<{ address: string; status: string; bounce_type: string | null }>;
   [key: string]: unknown;
 }
 
@@ -208,6 +218,7 @@ export const email = (() => {
     async send(opts: EmailSendOptions): Promise<EmailSendResult> {
       const mbxId = await _discoverMailbox();
       const body: Record<string, unknown> = { to: opts.to };
+      if (opts.bcc !== undefined) body.bcc = opts.bcc;
       if ("template" in opts && opts.template) {
         body.template = opts.template;
         body.variables = opts.variables || {};

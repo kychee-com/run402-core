@@ -4324,3 +4324,30 @@ test('retained static aliases serve source bytes without exposing backing URLs',
   const hidden = await coreGatewayResponse({ method: 'GET', pathname: `/projects/v1/${project.project_id}/static/hidden/source.js` }, runtime);
   assert.equal(hidden.status, 404);
 });
+
+test("raw sends refuse bcc and cc before any provider call", async () => {
+  const catalog = new MemoryProjectCatalog();
+  const project = await catalog.create({ name: "email app" });
+  const mailboxes = new MemoryMailboxStore();
+  const emailProvider = new MockEmailProvider("example.com");
+  const runtime = { projects: catalog, projectKeys: catalog, mailboxes, emailProvider };
+  const created = await coreGatewayResponse({
+    method: "POST",
+    pathname: "/mailboxes/v1",
+    headers: { authorization: `Bearer ${project.service_key}` },
+    body: { slug: "signing" },
+  }, runtime);
+  const mailboxId = (created.body as { mailbox_id: string }).mailbox_id;
+
+  for (const field of ["bcc", "cc"]) {
+    const refused = await coreGatewayResponse({
+      method: "POST",
+      pathname: `/mailboxes/v1/${mailboxId}/messages`,
+      headers: { authorization: `Bearer ${project.service_key}` },
+      body: { to: "signer@example.net", subject: "Hi", html: "<p>Hi</p>", [field]: "archive@example.net" },
+    }, runtime);
+    assert.equal(refused.status, 400, field);
+    assert.match(JSON.stringify(refused.body), new RegExp(`${field} is not supported`));
+  }
+  assert.equal(emailProvider.sent.length, 0);
+});
