@@ -29,7 +29,7 @@
   },
   "dependencies": {
     "@run402/functions": "4.17.0",
-    "@run402/release": "0.9.0",
+    "@run402/release": "0.9.1",
     "croner": "^10.0.1"
   },
   "repository": {
