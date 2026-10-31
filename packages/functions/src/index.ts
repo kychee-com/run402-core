@@ -59,6 +59,16 @@ export type {
   ModerateResult,
 } from "./ai.js";
 export { assets } from "./assets.js";
+export { uploads, Run402UploadError } from "./asset-uploads.js";
+export type {
+  UploadState,
+  UploadStatus,
+  UploadPartUrl,
+  CreateUploadOptions,
+  UploadFileInfo,
+  AuthorizeResult,
+  UploadsHandlerOptions,
+} from "./asset-uploads.js";
 // `snapshots.*` — the function's own project's restore points, authorized by
 // its service key. `restore` returns a handle; poll `getRestore`.
 export { snapshots, R402SnapshotsError } from "./snapshots.js";

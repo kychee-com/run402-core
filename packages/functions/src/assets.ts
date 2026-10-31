@@ -9,6 +9,7 @@
  */
 
 import { config } from "./config.js";
+import { abortUpload, completeUpload, createUpload, getUpload, renewUpload } from "./asset-uploads.js";
 
 export type AssetVisibility = "public" | "private";
 
@@ -471,6 +472,16 @@ async function readErrorMessage(res: Response): Promise<string> {
 }
 
 export const assets = {
+  /** Open an upload a user's browser sends straight to storage (see `uploads.handler`). */
+  createUpload,
+  /** Fresh presigned URLs for an upload's missing (or named) parts. */
+  renewUpload,
+  /** An upload's state, with the parts storage already holds. */
+  getUpload,
+  /** Verify and finish an upload: `verifying`, then `completed` with the asset. */
+  completeUpload,
+  /** Abort an active upload and release its reserved quota. */
+  abortUpload,
   /**
    * Upload bytes to the project's blob store and return the resolved AssetRef.
    *

@@ -11,6 +11,7 @@
       "import": "./dist/index.js"
     },
     "./browser/push.js": "./browser/push.js",
+    "./browser/upload.js": "./browser/upload.js",
     "./browser/push-sw.js": "./browser/push-sw.js"
   },
   "files": [

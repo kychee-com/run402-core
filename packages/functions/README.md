@@ -386,6 +386,57 @@ export default async function handler(req: Request): Promise<Response> {
 }
 ```
 
+## `uploads.handler(...)` — let your users upload big files straight to storage
+
+A member of your app has a large file on their phone (an 800 MB zip, a video, a scanned book, up to 5 GiB). `uploads.handler` and the browser module let them send it directly from the browser into the project's storage: your function opens the upload with the project's authority and hands the browser only presigned part URLs, so neither the gateway nor your function carries the bytes. The result is an ordinary asset, the same `AssetRef` `assets.put` returns (metadata, EXIF policy and image variants included; an image the encoder refuses, such as a TIFF or one over 40 MP, is stored without variants).
+
+```ts
+// functions/uploads.ts, routed at /api/uploads and /api/uploads/*
+import { auth, uploads } from "@run402/functions";
+
+export default uploads.handler({
+  identify: async () => (await auth.user())?.id ?? null,       // null → 401
+  authorize: async (file, owner) =>
+    file.size > 2 * 1024 ** 3
+      ? { refuse: "Files are limited to 2 GB" }                // → 403
+      : {
+          key: `contributed/${owner}/${crypto.randomUUID()}/${file.name}`,
+          visibility: "private",
+          exifPolicy: "strip",
+          metadata: { uploaded_by: owner },
+        },
+  onComplete: async (asset, upload) => {
+    // Runs once per upload as a durable function run, even if the tab closed.
+  },
+});
+```
+
+```js
+// In the page
+import { uploadFile } from "@run402/functions/browser/upload.js";
+
+const asset = await uploadFile(input.files[0], {
+  endpoint: "/api/uploads",
+  onProgress: ({ fraction }) => (bar.value = fraction),
+});
+```
+
+`uploadFile` sends 8 MiB parts four at a time (`concurrency`), retries a failed part with backoff and waits for an offline phone to come back, renews URLs that expire, and remembers the upload in IndexedDB: after a reload, picking the same file again resumes it and sends only the parts storage lacks. It computes no hash; the gateway hashes the finished file. A refusal rejects with the server's `code` and `status` (`QUOTA_EXCEEDED`, `UPLOAD_REFUSED`, `AUTH_REQUIRED`); a failed verification rejects with `code: "upload_failed"` and `.upload`.
+
+The handler checks that every call after the first comes from the upload's owner (anyone else gets 404). It needs `RUN402_FUNCTION_NAME`, set in every deployed function, to receive its own completion run; pass `functionName` where it is not set.
+
+The primitives under it, for your own protocol (service key, no project id argument):
+
+| Method | What it does |
+|---|---|
+| `assets.createUpload(key, { sizeBytes, contentType, visibility?, immutable?, exifPolicy?, metadata?, sha256?, owner?, onComplete?: { function }, ttlSeconds? })` | Open an upload; returns `{ upload_id, mode, part_size_bytes, part_count, parts: [{ part_number, url, byte_start, byte_end }], … }` with up to 64 URLs. Reserves the size against the organization's storage (403 `QUOTA_EXCEEDED` up front). Opening the same key, size and type again returns the same upload with fresh URLs. A `sha256` the project already holds completes at once. |
+| `assets.renewUpload(upload_id, { partNumbers?, ttlSeconds? })` | Fresh URLs for the named parts, or for up to 64 parts storage lacks. |
+| `assets.getUpload(upload_id)` | State: `status`, `parts_done` and `bytes_done` from storage, `asset` once `completed`, `error` once `failed`. |
+| `assets.completeUpload(upload_id)` | `verifying` (poll `getUpload`), then `completed` or `failed`. Refuses with `UPLOAD_INCOMPLETE` while a part is missing. |
+| `assets.abortUpload(upload_id)` | Abort and release the reservation. |
+
+Failures throw `Run402UploadError` with `status`, `code`, `details` and `next_actions`.
+
 ## `snapshots.*` — restore points for your own project
 
 Take named restore points and restore them from inside your app, authorized by the function's service key. Every call targets the function's own project; there is no project id or credential argument. Labels and metadata are stored outside the project's database, so `snapshots.list()` stays a complete ledger of restore points after a restore. Run402 Cloud only: on a host without snapshots (Run402 Core) every call throws `R402SnapshotsError` with `code: "SNAPSHOTS_UNSUPPORTED"`.
