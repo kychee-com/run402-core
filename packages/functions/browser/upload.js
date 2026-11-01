@@ -251,7 +251,14 @@ function finish(env, state, opts) {
  */
 export function uploadFile(file, options) {
   var env = options && options.env ? options.env : globalThis;
-  var opts = Object.assign({ concurrency: 4, retryBaseMs: 1000, pollMs: 2000 }, options || {});
+  var opts = Object.assign({}, options || {});
+  // Defaults apply per option, so a page forwarding its own optional settings
+  // (`concurrency: undefined`) gets the default, never an empty worker pool.
+  var defaults = { concurrency: 4, retryBaseMs: 1000, pollMs: 2000 };
+  Object.keys(defaults).forEach(function (k) { if (opts[k] === undefined || opts[k] === null) opts[k] = defaults[k]; });
+  if (!Number.isInteger(opts.concurrency) || opts.concurrency < 1) {
+    return Promise.reject(fail("invalid_options", "uploadFile: concurrency must be a positive integer"));
+  }
   if (!opts.endpoint) return Promise.reject(fail("invalid_options", "uploadFile: endpoint is required"));
   if (!file || typeof file.slice !== "function" || typeof file.size !== "number") {
     return Promise.reject(fail("invalid_options", "uploadFile: file must be a File or Blob"));

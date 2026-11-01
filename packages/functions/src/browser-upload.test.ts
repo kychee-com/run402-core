@@ -173,6 +173,25 @@ describe("browser/upload.js uploadFile", () => {
     await assert.rejects(p, (err: { code: string; name?: string }) => err.code === "aborted" && err.name !== "AbortError");
   });
 
+  it("treats an option passed as undefined as not passed (a page forwarding its own optional settings)", async () => {
+    const size = 3 * PART;
+    const w = world();
+    const asset = await uploadFile(fakeFile(size), {
+      ...fast, env: env(size, w), concurrency: undefined, retryBaseMs: undefined, pollMs: undefined,
+    });
+    assert.deepEqual(asset, { key: "k", size_bytes: size });
+    assert.equal(w.parts.size, 3);
+  });
+
+  it("refuses a concurrency that is not a positive integer before any request", async () => {
+    for (const concurrency of [0, -1, 2.5, "4"]) {
+      const w = world();
+      await assert.rejects(uploadFile(fakeFile(1000), { ...fast, env: env(1000, w), concurrency }),
+        (err: { code: string }) => err.code === "invalid_options");
+      assert.equal(w.apiCalls.length, 0);
+    }
+  });
+
   it("rejects with the server's code", async () => {
     const e = env(1000, world());
     const refused = { ...e, fetch: async () => new Response(JSON.stringify({ code: "QUOTA_EXCEEDED", message: "over" }), { status: 403 }) };
