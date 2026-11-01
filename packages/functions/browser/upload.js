@@ -256,6 +256,7 @@ export function uploadFile(file, options) {
   if (!file || typeof file.slice !== "function" || typeof file.size !== "number") {
     return Promise.reject(fail("invalid_options", "uploadFile: file must be a File or Blob"));
   }
+  if (opts.signal && opts.signal.aborted) return Promise.reject(fail("aborted", "Upload aborted"));
   return begin(env, file, opts).then(function (state) {
     if (state.status === "completed") return state;
     var ready = state.status === "active" ? sendParts(env, file, state, opts) : Promise.resolve();
@@ -268,6 +269,12 @@ export function uploadFile(file, options) {
       var reason = final.error ? final.error.code + ": " + final.error.message : final.status;
       throw fail("upload_failed", "Upload " + final.status + " (" + reason + ")", { upload: final });
     });
+  }).catch(function (err) {
+    // Whatever was in flight when the signal fired (the open, a renewal, a
+    // poll) rejects with the platform's AbortError; the caller is promised
+    // one shape for an abort.
+    if (opts.signal && opts.signal.aborted && err && err.code !== "aborted") throw fail("aborted", "Upload aborted");
+    throw err;
   });
 }
 

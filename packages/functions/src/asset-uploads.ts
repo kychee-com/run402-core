@@ -130,6 +130,27 @@ function validateCreate(key: string, opts: CreateUploadOptions): void {
   if (opts.visibility !== undefined && opts.visibility !== "public" && opts.visibility !== "private") throw bad("visibility must be 'public' or 'private'");
   if (opts.exifPolicy !== undefined && opts.exifPolicy !== "keep" && opts.exifPolicy !== "strip") throw bad("exifPolicy must be 'keep' or 'strip'");
   if (opts.sha256 !== undefined && !/^[0-9a-f]{64}$/i.test(opts.sha256)) throw bad("sha256 must be 64 hex characters");
+  if (opts.immutable !== undefined && typeof opts.immutable !== "boolean") throw bad("immutable must be a boolean");
+  if (opts.owner !== undefined && (typeof opts.owner !== "string" || opts.owner.length < 1 || opts.owner.length > OWNER_MAX_LENGTH)) {
+    throw bad(`owner must be a string of 1 to ${OWNER_MAX_LENGTH} characters`);
+  }
+  if (opts.metadata !== undefined && (opts.metadata === null || typeof opts.metadata !== "object" || Array.isArray(opts.metadata))) {
+    throw bad("metadata must be an object of string, number, boolean or string[] values");
+  }
+  if (opts.onComplete !== undefined && (opts.onComplete === null || typeof opts.onComplete !== "object"
+    || typeof opts.onComplete.function !== "string" || !FUNCTION_NAME_RE.test(opts.onComplete.function))) {
+    throw bad("onComplete must be { function: <a function name of this project> }");
+  }
+  validateTtl(opts.ttlSeconds, "createUpload");
+}
+
+const OWNER_MAX_LENGTH = 256;
+const FUNCTION_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,62}$/i;
+
+function validateTtl(ttlSeconds: unknown, method: string): void {
+  if (ttlSeconds !== undefined && (typeof ttlSeconds !== "number" || !Number.isFinite(ttlSeconds))) {
+    throw new Run402UploadError(400, "VALIDATION_FAILED", `assets.${method}: ttlSeconds must be a number of seconds (60 to 21600)`);
+  }
 }
 
 export async function createUpload(key: string, opts: CreateUploadOptions): Promise<UploadState> {
@@ -152,6 +173,11 @@ export async function createUpload(key: string, opts: CreateUploadOptions): Prom
 
 export async function renewUpload(uploadId: string, opts: { partNumbers?: number[]; ttlSeconds?: number } = {}): Promise<UploadState> {
   const id = requireUploadId(uploadId, "renewUpload");
+  validateTtl(opts.ttlSeconds, "renewUpload");
+  if (opts.partNumbers !== undefined && (!Array.isArray(opts.partNumbers) || opts.partNumbers.length === 0
+    || opts.partNumbers.length > 64 || !opts.partNumbers.every((n) => Number.isInteger(n) && n >= 1))) {
+    throw new Run402UploadError(400, "VALIDATION_FAILED", "assets.renewUpload: partNumbers must be 1 to 64 part numbers (integers from 1)");
+  }
   const { body } = await call<UploadState>("POST", `/apply/v1/asset-uploads/${id}/urls`, {
     part_numbers: opts.partNumbers,
     ttl_seconds: opts.ttlSeconds,

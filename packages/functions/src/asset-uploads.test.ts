@@ -64,6 +64,35 @@ describe("assets.*Upload primitives", () => {
     assert.equal(calls.length, 0);
   });
 
+  it("validates every option locally, before any HTTP call", async () => {
+    const calls = gateway(() => ({ status: 201, body: state() }));
+    const base = { sizeBytes: 1, contentType: "a/b" };
+    const bad: Array<[Record<string, unknown>, RegExp]> = [
+      [{ ttlSeconds: "x" }, /ttlSeconds/],
+      [{ ttlSeconds: Number.NaN }, /ttlSeconds/],
+      [{ onComplete: "uploads" }, /onComplete/],
+      [{ onComplete: { function: 5 } }, /onComplete/],
+      [{ onComplete: { function: "../x" } }, /onComplete/],
+      [{ immutable: "yes" }, /immutable/],
+      [{ owner: "" }, /owner/],
+      [{ owner: "x".repeat(257) }, /owner/],
+      [{ owner: 7 }, /owner/],
+      [{ metadata: "tags" }, /metadata/],
+      [{ metadata: [1] }, /metadata/],
+    ];
+    for (const [extra, re] of bad) {
+      await assert.rejects(
+        assets.createUpload("k", { ...base, ...extra } as never),
+        (err: InstanceType<typeof Run402UploadError>) => err instanceof Run402UploadError && err.status === 400
+          && err.code === "VALIDATION_FAILED" && re.test(err.message) && err.message.startsWith("assets.createUpload: "),
+        `refused ${JSON.stringify(extra)}`,
+      );
+    }
+    await assert.rejects(assets.renewUpload(ID, { ttlSeconds: "x" as never }), /assets\.renewUpload: ttlSeconds/);
+    await assert.rejects(assets.renewUpload(ID, { partNumbers: [0] }), /assets\.renewUpload: partNumbers/);
+    assert.equal(calls.length, 0);
+  });
+
   it("routes renew, read, complete and abort to their paths", async () => {
     const calls = gateway(() => ({ status: 200, body: state() }));
     await assets.renewUpload(ID, { partNumbers: [2] });

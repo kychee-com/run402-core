@@ -153,6 +153,26 @@ describe("browser/upload.js uploadFile", () => {
     assert.equal(idb.data.size, 0, "forgotten once complete");
   });
 
+  it("rejects with code \"aborted\" when the signal aborts before or during the open", async () => {
+    const already = new AbortController();
+    already.abort();
+    await assert.rejects(uploadFile(fakeFile(1000), { ...fast, env: env(1000, world()), signal: already.signal }),
+      (err: { code: string; name?: string }) => err.code === "aborted" && err.name !== "AbortError");
+
+    // Abort while the open request is in flight: fetch rejects with the platform's AbortError.
+    const midway = new AbortController();
+    const e = env(1000, world());
+    const slowOpen = {
+      ...e,
+      fetch: (url: string, init: { signal?: AbortSignal }) => new Promise<Response>((_resolve, reject) => {
+        init.signal?.addEventListener("abort", () => reject(new DOMException("signal is aborted without reason", "AbortError")));
+      }),
+    };
+    const p = uploadFile(fakeFile(1000), { ...fast, env: slowOpen, signal: midway.signal });
+    setTimeout(() => midway.abort(), 5);
+    await assert.rejects(p, (err: { code: string; name?: string }) => err.code === "aborted" && err.name !== "AbortError");
+  });
+
   it("rejects with the server's code", async () => {
     const e = env(1000, world());
     const refused = { ...e, fetch: async () => new Response(JSON.stringify({ code: "QUOTA_EXCEEDED", message: "over" }), { status: 403 }) };
