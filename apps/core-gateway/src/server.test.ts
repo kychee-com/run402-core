@@ -4325,7 +4325,7 @@ test('retained static aliases serve source bytes without exposing backing URLs',
   assert.equal(hidden.status, 404);
 });
 
-test("raw sends refuse bcc and cc before any provider call", async () => {
+test("raw sends refuse bcc, cc and from_address before any provider call", async () => {
   const catalog = new MemoryProjectCatalog();
   const project = await catalog.create({ name: "email app" });
   const mailboxes = new MemoryMailboxStore();
@@ -4339,7 +4339,7 @@ test("raw sends refuse bcc and cc before any provider call", async () => {
   }, runtime);
   const mailboxId = (created.body as { mailbox_id: string }).mailbox_id;
 
-  for (const field of ["bcc", "cc"]) {
+  for (const field of ["bcc", "cc", "from_address"]) {
     const refused = await coreGatewayResponse({
       method: "POST",
       pathname: `/mailboxes/v1/${mailboxId}/messages`,
