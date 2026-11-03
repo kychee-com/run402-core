@@ -68,6 +68,7 @@ export type {
   UploadFileInfo,
   AuthorizeResult,
   UploadsHandlerOptions,
+  VideoFailure,
 } from "./asset-uploads.js";
 // `snapshots.*` — the function's own project's restore points, authorized by
 // its service key. `restore` returns a handle; poll `getRestore`.
@@ -123,6 +124,10 @@ export type {
   AssetSignManyItem,
   AssetSignManyResult,
   AssetSignItemError,
+  AssetSignVariant,
+  AssetVideo,
+  AssetVideoOutput,
+  AssetVideoOutputKind,
   ImageInfo,
 } from "./assets.js";
 export { bytes, getRoutedPaymentContext, isRequest, json, routedHttp, text } from "./routed-http.js";

@@ -429,13 +429,39 @@ The primitives under it, for your own protocol (service key, no project id argum
 
 | Method | What it does |
 |---|---|
-| `assets.createUpload(key, { sizeBytes, contentType, visibility?, immutable?, exifPolicy?, metadata?, sha256?, owner?, onComplete?: { function }, ttlSeconds? })` | Open an upload; returns `{ upload_id, mode, part_size_bytes, part_count, parts: [{ part_number, url, byte_start, byte_end }], … }` with up to 64 URLs. Reserves the size against the organization's storage (403 `QUOTA_EXCEEDED` up front). Opening the same key, size and type again returns the same upload with fresh URLs. A `sha256` the project already holds completes at once. |
+| `assets.createUpload(key, { sizeBytes, contentType, visibility?, immutable?, exifPolicy?, metadata?, sha256?, owner?, onComplete?: { function }, ttlSeconds?, video?: { transcript?, language?, maxCostUsdMicros? } })` | Open an upload; returns `{ upload_id, mode, part_size_bytes, part_count, parts: [{ part_number, url, byte_start, byte_end }], … }` with up to 64 URLs. Reserves the size against the organization's storage (403 `QUOTA_EXCEEDED` up front). Opening the same key, size and type again returns the same upload with fresh URLs. A `sha256` the project already holds completes at once. |
 | `assets.renewUpload(upload_id, { partNumbers?, ttlSeconds? })` | Fresh URLs for the named parts, or for up to 64 parts storage lacks. |
 | `assets.getUpload(upload_id)` | State: `status`, `parts_done` and `bytes_done` from storage, `asset` once `completed`, `error` once `failed`. |
 | `assets.completeUpload(upload_id)` | `verifying` (poll `getUpload`), then `completed` or `failed`. Refuses with `UPLOAD_INCOMPLETE` while a part is missing. |
 | `assets.abortUpload(upload_id)` | Abort and release the reservation. |
 
 Failures throw `Run402UploadError` with `status`, `code`, `details` and `next_actions`.
+
+### A video, prepared: a web copy, a poster and a timed transcript
+
+A video uploaded as is from a phone often will not play in a browser, and none can seek in it before downloading it whole. Declare `video` when you open the upload (`authorize` may return it) and run402 prepares it after the upload completes, on its own GPU machines:
+
+```js
+export default uploads.handler({
+  identify: async () => (await auth.user())?.id ?? null,
+  authorize: async (file, owner) => ({
+    key: `videos/${owner}/${crypto.randomUUID()}/${file.name}`,
+    visibility: "private",
+    ...(file.type.startsWith("video/") ? { video: { transcript: true } } : {}),
+  }),
+  onComplete: async (asset) => { /* the original arrived; tell the member */ },
+  onVideo: async (asset) => {
+    // Minutes later: asset.video = { duration_seconds, width, height, web, poster, transcript }
+    const [web, poster, transcript] = await Promise.all(["video_web", "video_poster", "video_transcript"]
+      .map((variant) => assets.sign(asset.key, { variant })));
+  },
+  onVideoFailed: async (upload, error) => { /* error.code: VIDEO_UNDECODABLE, VIDEO_TOO_LONG, MAX_COST_EXCEEDED, ALLOWANCE_INSUFFICIENT, JOB_CANCELLED, JOB_FAILED */ },
+});
+```
+
+- **The web copy** is an H.264/AAC MP4 with its index at the front, deinterlaced when the source is, square pixels, HDR tone-mapped to SDR, the long side at most 1280 px: every browser plays it and seeks in it over `Range` requests on its signed link. **The poster** is a JPEG frame at the same size. **The transcript** (`transcript: true`) is `run402.transcript.v1` JSON: `{ language, language_detected, model, duration_seconds, segments: [{ start_seconds, end_seconds, text }] }` in the spoken language, with no speaker labels and no subtitle files; translating it and writing WebVTT are your app's. Pass `language` (ISO 639-1) when you know it; otherwise it is detected.
+- **Price:** every started minute of video, at least five, at the published per-minute prices (`GET /tiers/v1` `video`), debited from the organization's allowance once the outputs exist. `maxCostUsdMicros` caps it: a longer video fails `MAX_COST_EXCEEDED` before any work and costs nothing. The outputs count in the organization's storage and go when the original is deleted. The same bytes uploaded twice are prepared once.
+- **Timing:** a short clip is ready in a few minutes (mostly a machine starting); an hour of tape in tens of minutes. The original is kept whole whatever happens.
 
 ## `snapshots.*` — restore points for your own project
 

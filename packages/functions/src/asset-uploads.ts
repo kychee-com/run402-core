@@ -47,7 +47,16 @@ export interface UploadState {
   owner: string | null;
   metadata: Record<string, string | number | boolean | string[]> | null;
   expires_at: string;
-  /** The AssetRef once `status` is `completed`. */
+  /** The upload's video declaration, when it made one; once completed, where its preparation stands. */
+  video?: {
+    transcript: boolean;
+    language: string | null;
+    max_cost_usd_micros: number | null;
+    status?: "preparing" | "ready" | "failed";
+    job_id?: string | null;
+    error?: { code: string; message: string };
+  };
+  /** The AssetRef once `status` is `completed`; it gains `video` once run402 has prepared the video. */
   asset?: Record<string, unknown>;
   /** The reason once `status` is `failed` (or an expiry, on `aborted`). */
   error?: { code: string; message: string };
@@ -71,6 +80,21 @@ export interface CreateUploadOptions {
   onComplete?: { function: string };
   /** How long each batch of part URLs lives: 60 s to 6 h, default 1 h. */
   ttlSeconds?: number;
+  /**
+   * A `video/*` upload to prepare after it completes: a web copy that streams,
+   * a poster, and (with `transcript: true`) a timed transcript in the spoken
+   * language. Billed per started minute of video (at least five) from the organization's
+   * allowance; `language` (ISO 639-1) skips detection; `maxCostUsdMicros`
+   * caps the charge (a longer video fails before any work and costs nothing).
+   * `uploads.handler`'s `onVideo` / `onVideoFailed` hear the result.
+   */
+  video?: { transcript?: boolean; language?: string; maxCostUsdMicros?: number };
+}
+
+/** Why a prepared video failed (`onVideoFailed`); the original upload is kept either way. */
+export interface VideoFailure {
+  code: "VIDEO_UNDECODABLE" | "VIDEO_TOO_LONG" | "MAX_COST_EXCEEDED" | "ALLOWANCE_INSUFFICIENT" | "JOB_CANCELLED" | "JOB_FAILED" | string;
+  message: string;
 }
 
 export class Run402UploadError extends Error {
@@ -142,6 +166,18 @@ function validateCreate(key: string, opts: CreateUploadOptions): void {
     throw bad("onComplete must be { function: <a function name of this project> }");
   }
   validateTtl(opts.ttlSeconds, "createUpload");
+  if (opts.video !== undefined) {
+    const v = opts.video;
+    if (v === null || typeof v !== "object" || Array.isArray(v)) throw bad("video must be { transcript?, language?, maxCostUsdMicros? }");
+    if (!opts.contentType.toLowerCase().startsWith("video/")) throw bad("video may be declared only for a video/* contentType");
+    if (v.transcript !== undefined && typeof v.transcript !== "boolean") throw bad("video.transcript must be a boolean");
+    if (v.language !== undefined && (typeof v.language !== "string" || !/^[a-z]{2}$/.test(v.language))) {
+      throw bad("video.language must be a two-letter ISO 639-1 code, such as \"he\" or \"yi\"");
+    }
+    if (v.maxCostUsdMicros !== undefined && (!Number.isSafeInteger(v.maxCostUsdMicros) || v.maxCostUsdMicros < 1)) {
+      throw bad("video.maxCostUsdMicros must be a positive integer of micro-dollars");
+    }
+  }
 }
 
 const OWNER_MAX_LENGTH = 256;
@@ -167,6 +203,11 @@ export async function createUpload(key: string, opts: CreateUploadOptions): Prom
     owner: opts.owner,
     on_complete: opts.onComplete,
     ttl_seconds: opts.ttlSeconds,
+    video: opts.video === undefined ? undefined : {
+      transcript: opts.video.transcript,
+      language: opts.video.language,
+      max_cost_usd_micros: opts.video.maxCostUsdMicros,
+    },
   });
   return body;
 }
@@ -221,6 +262,10 @@ export interface UploadsHandlerOptions {
   onComplete?: (asset: Record<string, unknown>, upload: UploadState) => unknown | Promise<unknown>;
   /** Runs once per upload that fails verification. */
   onFailed?: (upload: UploadState) => unknown | Promise<unknown>;
+  /** Runs once per upload that declared `video` when its outputs are ready; `asset.video` names them. */
+  onVideo?: (asset: Record<string, unknown>, upload: UploadState) => unknown | Promise<unknown>;
+  /** Runs once per upload whose declared video could not be prepared. */
+  onVideoFailed?: (upload: UploadState, error: VideoFailure) => unknown | Promise<unknown>;
   /** This function's name, for the completion run. Default: `RUN402_FUNCTION_NAME`. */
   functionName?: string;
 }
@@ -262,7 +307,8 @@ async function handleOpen(opts: UploadsHandlerOptions, req: Request, owner: stri
   if ("refuse" in decision) return json({ code: "UPLOAD_REFUSED", message: decision.refuse }, 403);
   const { key, contentType, ...rest } = decision;
   const functionName = opts.functionName ?? process.env.RUN402_FUNCTION_NAME;
-  if (opts.onComplete && !functionName) {
+  const wantsRuns = Boolean(opts.onComplete || opts.onFailed || opts.onVideo || opts.onVideoFailed);
+  if (wantsRuns && !functionName) {
     throw new Error("uploads.handler: onComplete needs functionName (RUN402_FUNCTION_NAME is not set here)");
   }
   const state = await createUpload(key, {
@@ -270,7 +316,7 @@ async function handleOpen(opts: UploadsHandlerOptions, req: Request, owner: stri
     sizeBytes: file.size,
     contentType: contentType ?? file.type,
     owner,
-    onComplete: (opts.onComplete || opts.onFailed) && functionName ? { function: functionName } : undefined,
+    onComplete: wantsRuns && functionName ? { function: functionName } : undefined,
   });
   return json(forBrowser(state), 201);
 }
@@ -281,6 +327,23 @@ async function handleCompletionRun(opts: UploadsHandlerOptions, req: Request): P
   const state = await getUpload(uploadId);
   if (state.status === "completed" && state.asset && opts.onComplete) await opts.onComplete(state.asset, state);
   if (state.status === "failed" && opts.onFailed) await opts.onFailed(state);
+  return json({ ok: true });
+}
+
+/** The second run of a declared video (`asset_video.completed` / `asset_video.failed`): re-read, then call. */
+async function handleVideoRun(opts: UploadsHandlerOptions, req: Request): Promise<Response> {
+  const envelope = parseFunctionRunEnvelope(await req.json());
+  const payload = envelope.payload as { upload_id?: unknown; status?: unknown; error?: { code?: unknown; message?: unknown } };
+  const state = await getUpload(String(payload.upload_id ?? ""));
+  const asset = state.asset as { video?: unknown } | undefined;
+  if (payload.status === "completed" && asset?.video && opts.onVideo) {
+    await opts.onVideo(state.asset!, state);
+  } else if (payload.status !== "completed" && opts.onVideoFailed) {
+    await opts.onVideoFailed(state, {
+      code: String(payload.error?.code ?? "JOB_FAILED"),
+      message: String(payload.error?.message ?? "The video could not be prepared"),
+    });
+  }
   return json({ ok: true });
 }
 
@@ -314,16 +377,17 @@ async function handleExisting(req: Request, owner: string, id: string, action: s
  *
  * Invoked as the upload's completion run (`X-Run402-Trigger: function_run`,
  * event `asset_upload.completed` / `asset_upload.failed`), it calls
- * `onComplete` / `onFailed`.
+ * `onComplete` / `onFailed`; invoked as a declared video's run
+ * (`asset_video.completed` / `asset_video.failed`), `onVideo` / `onVideoFailed`.
  */
 export function handler(opts: UploadsHandlerOptions): (req: Request) => Promise<Response> {
   return async (req: Request) => {
     try {
       if (req.headers.get("x-run402-trigger") === "function_run") {
         const probe = await req.clone().json().catch(() => null);
-        if (isFunctionRun(probe) && String((probe as { event_type?: string }).event_type).startsWith("asset_upload.")) {
-          return await handleCompletionRun(opts, req);
-        }
+        const eventType = isFunctionRun(probe) ? String((probe as { event_type?: string }).event_type) : "";
+        if (eventType.startsWith("asset_upload.")) return await handleCompletionRun(opts, req);
+        if (eventType.startsWith("asset_video.")) return await handleVideoRun(opts, req);
       }
       const owner = await opts.identify(req);
       if (!owner) return json({ code: "AUTH_REQUIRED", message: "Sign in to upload" }, 401);

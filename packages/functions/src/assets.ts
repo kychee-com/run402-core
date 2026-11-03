@@ -172,6 +172,11 @@ export interface AssetRef {
     display_jpeg?: AssetVariant;
   };
 
+  /** A video upload that declared `video`, once run402 prepared it: the web
+   *  copy, the poster and the transcript, each signed with
+   *  `assets.sign(key, { variant: "video_web" | "video_poster" | "video_transcript" })`. */
+  video?: AssetVideo;
+
   // ─── v1.54 — asset shape-contract fields ─────────────────────────────────
   // Both populated atomically at upload time when the gateway encoder runs.
   // Surfaced on the AssetRef so consumers (`<Run402Image>`, `r.assets.fromRef`)
@@ -322,6 +327,7 @@ function widenAssetRef(raw: Record<string, unknown>): AssetRef {
     ...(displayUrl !== undefined ? { display_url: displayUrl } : {}),
     ...(displayImmutableUrl !== undefined ? { display_immutable_url: displayImmutableUrl } : {}),
     ...(variants !== undefined ? { variants } : {}),
+    ...(raw.video && typeof raw.video === "object" ? { video: raw.video as AssetVideo } : {}),
     // v1.50 — pass-through caller metadata + image intrinsics. Gateway
     // omits non-image fields entirely for non-image uploads; we mirror
     // that by emitting `undefined` (omitted slot) rather than `null` for
@@ -693,8 +699,10 @@ export const assets = {
    * Calls `POST /storage/v1/blob/:key/sign` with the service key, the same
    * route as the owner-side `r.assets.sign`. Pass `variant` to sign one of
    * an image's encoded variants (`thumb` / `medium` / `large` WebP, or a
-   * HEIC source's `display_jpeg`) instead of the original; the URL then
-   * answers with the variant's own content type. `ttl_seconds` is 60 to
+   * HEIC source's `display_jpeg`), or one of a prepared video's outputs
+   * (`video_web`, `video_poster`, `video_transcript`; see `AssetRef.video`),
+   * instead of the original; the URL then answers with that object's own
+   * content type. `ttl_seconds` is 60 to
    * 604800 (7 days), default 3600.
    *
    * On Run402 Cloud the URL is a CloudFront link signed for that one object:
@@ -723,8 +731,8 @@ export const assets = {
       body.ttl_seconds = opts.ttl_seconds;
     }
     if (opts.variant !== undefined) {
-      if (!(ASSET_VARIANT_KINDS as readonly string[]).includes(opts.variant)) {
-        throw new Error(`assets.sign: variant must be one of ${ASSET_VARIANT_KINDS.join(", ")}`);
+      if (!(ASSET_SIGN_VARIANTS as readonly string[]).includes(opts.variant)) {
+        throw new Error(`assets.sign: variant must be one of ${ASSET_SIGN_VARIANTS.join(", ")}`);
       }
       body.variant = opts.variant;
     }
@@ -746,7 +754,7 @@ export const assets = {
       signed_url: String(raw.signed_url),
       expires_at: String(raw.expires_at),
       expires_in: Number(raw.expires_in),
-      ...(typeof raw.variant === "string" ? { variant: raw.variant as AssetVariant["kind"] } : {}),
+      ...(typeof raw.variant === "string" ? { variant: raw.variant as AssetSignVariant } : {}),
     };
   },
 
@@ -780,8 +788,8 @@ export const assets = {
         throw new Error(`assets.signMany: items[${i}].key must be a non-empty string`);
       }
       if (item.variant === undefined) return { key: item.key };
-      if (!(ASSET_VARIANT_KINDS as readonly string[]).includes(item.variant)) {
-        throw new Error(`assets.signMany: items[${i}].variant must be one of ${ASSET_VARIANT_KINDS.join(", ")}`);
+      if (!(ASSET_SIGN_VARIANTS as readonly string[]).includes(item.variant)) {
+        throw new Error(`assets.signMany: items[${i}].variant must be one of ${ASSET_SIGN_VARIANTS.join(", ")}`);
       }
       return { key: item.key, variant: item.variant };
     });
@@ -808,7 +816,7 @@ export const assets = {
       items: rawItems.map((r): AssetSignManyItem => {
         const echo = {
           key: String(r.key),
-          ...(typeof r.variant === "string" ? { variant: r.variant as AssetVariant["kind"] } : {}),
+          ...(typeof r.variant === "string" ? { variant: r.variant as AssetSignVariant } : {}),
         };
         if (typeof r.signed_url === "string") return { ...echo, signed_url: r.signed_url };
         const err = (r.error ?? {}) as Record<string, unknown>;
@@ -947,12 +955,42 @@ export interface AssetListRow {
 /** The encoded image variants `assets.sign` can sign, as `AssetVariant.kind`. */
 export const ASSET_VARIANT_KINDS = ["thumb", "medium", "large", "display_jpeg"] as const;
 
+/** A prepared video's outputs, signed through the source key like a variant. */
+export const ASSET_VIDEO_OUTPUT_KINDS = ["video_web", "video_poster", "video_transcript"] as const;
+export type AssetVideoOutputKind = (typeof ASSET_VIDEO_OUTPUT_KINDS)[number];
+
+/** Everything `assets.sign` / `assets.signMany` can name as `variant`. */
+export const ASSET_SIGN_VARIANTS = [...ASSET_VARIANT_KINDS, ...ASSET_VIDEO_OUTPUT_KINDS] as const;
+export type AssetSignVariant = AssetVariant["kind"] | AssetVideoOutputKind;
+
+/** One output of a prepared video (asset-video-processing). */
+export interface AssetVideoOutput {
+  kind: AssetVideoOutputKind;
+  content_type: string;
+  size_bytes: number;
+  sha256: string;
+}
+
+/** `AssetRef.video`: an uploaded video run402 prepared. */
+export interface AssetVideo {
+  spec_version: string;
+  duration_seconds: number;
+  width: number;
+  height: number;
+  /** H.264/AAC MP4, faststart, square pixels, long side ≤ 1280 px. */
+  web: AssetVideoOutput;
+  /** A JPEG frame at the web copy's size. */
+  poster: AssetVideoOutput;
+  /** `run402.transcript.v1` JSON in the spoken language; null when not declared. */
+  transcript: AssetVideoOutput | null;
+}
+
 /** Options for `assets.sign(key, opts)`. */
 export interface AssetSignOptions {
   /** URL lifetime in seconds, 60 to 604800 (7 days). Server default 3600. */
   ttl_seconds?: number;
-  /** Sign this encoded variant instead of the original. */
-  variant?: AssetVariant["kind"];
+  /** Sign this encoded variant, or a prepared video's output, instead of the original. */
+  variant?: AssetSignVariant;
 }
 
 /** Result of `assets.sign(key, opts)`. */
@@ -961,7 +999,7 @@ export interface AssetSignResult {
   expires_at: string;
   expires_in: number;
   /** The variant signed; absent when the original was. */
-  variant?: AssetVariant["kind"];
+  variant?: AssetSignVariant;
 }
 
 /** Most items one `assets.signMany` call may carry. */
@@ -971,7 +1009,7 @@ export const ASSET_SIGN_MANY_MAX_ITEMS = 1000;
  *  of its encoded variants. */
 export interface AssetSignManyRequestItem {
   key: string;
-  variant?: AssetVariant["kind"];
+  variant?: AssetSignVariant;
 }
 
 /** Options for `assets.signMany(items, opts)`. */
@@ -991,8 +1029,8 @@ export interface AssetSignItemError {
 
 /** One answer of `assets.signMany`, in request order: `signed_url` or `error`. */
 export type AssetSignManyItem =
-  | { key: string; variant?: AssetVariant["kind"]; signed_url: string; error?: undefined }
-  | { key: string; variant?: AssetVariant["kind"]; signed_url?: undefined; error: AssetSignItemError };
+  | { key: string; variant?: AssetSignVariant; signed_url: string; error?: undefined }
+  | { key: string; variant?: AssetSignVariant; signed_url?: undefined; error: AssetSignItemError };
 
 /** Result of `assets.signMany(items, opts)`. */
 export interface AssetSignManyResult {

@@ -55,6 +55,17 @@ describe("assets.*Upload primitives", () => {
     });
   });
 
+  it("createUpload sends a video declaration in snake_case, and refuses one on a file that is not a video", async () => {
+    const calls = gateway(() => ({ status: 201, body: state() }));
+    await assets.createUpload("videos/m1/rachel.mov", {
+      sizeBytes: 20 * 1024 * 1024, contentType: "video/quicktime", video: { transcript: true, language: "yi", maxCostUsdMicros: 600000 },
+    });
+    assert.deepEqual((calls[0]!.body as { video: unknown }).video, { transcript: true, language: "yi", max_cost_usd_micros: 600000 });
+    await assert.rejects(assets.createUpload("a.zip", { sizeBytes: 1, contentType: "application/zip", video: { transcript: true } }), /video\/\*/);
+    await assert.rejects(assets.createUpload("a.mp4", { sizeBytes: 1, contentType: "video/mp4", video: { language: "yid" } }), /ISO 639-1/);
+    assert.equal(calls.length, 1);
+  });
+
   it("validates before any HTTP call", async () => {
     const calls = gateway(() => ({ status: 201, body: state() }));
     await assert.rejects(assets.createUpload("", { sizeBytes: 1, contentType: "a/b" }), Run402UploadError);
@@ -195,5 +206,43 @@ describe("uploads.handler", () => {
     }));
     assert.equal(res.status, 200);
     assert.deepEqual(got, [{ key: "contributed/m1/u/scans.zip", sha256: "ab" }]);
+  });
+
+  function videoRun(status: "completed" | "failed", error?: { code: string; message: string }) {
+    return {
+      trigger: "function_run", run_id: "fnrun_2", generation: 1, event_type: `asset_video.${status}`,
+      idempotency_key: `asset_video:${ID}`, run_at: "2026-11-02T00:00:00.000Z",
+      attempt: { attempt_id: "fnatt_2", number: 1, max: 5 }, source: { type: "asset_upload", upload_id: ID },
+      payload: { upload_id: ID, key: "videos/m1/rachel.mov", status, job_id: "job_1", ...(error ? { error } : {}) },
+    };
+  }
+
+  const videoHandler = (got: unknown[]) => uploads.handler({
+    identify: () => "m1",
+    authorize: () => ({ key: "k" }),
+    onComplete: () => { got.push("onComplete"); },
+    onVideo: (asset) => { got.push({ onVideo: asset }); },
+    onVideoFailed: (_upload, error) => { got.push({ onVideoFailed: error }); },
+  });
+
+  it("calls onVideo, from the asset_video.completed run, with the asset carrying video", async () => {
+    const video = { spec_version: "v1", duration_seconds: 1361, width: 768, height: 576 };
+    gateway(() => ({ status: 200, body: state({ status: "completed", asset: { key: "videos/m1/rachel.mov", video } }) }));
+    const got: unknown[] = [];
+    const res = await videoHandler(got)(new Request("https://app.example/api/uploads", {
+      method: "POST", headers: { "x-run402-trigger": "function_run" }, body: JSON.stringify(videoRun("completed")),
+    }));
+    assert.equal(res.status, 200);
+    assert.deepEqual(got, [{ onVideo: { key: "videos/m1/rachel.mov", video } }]);
+  });
+
+  it("calls onVideoFailed with the run's code and message", async () => {
+    gateway(() => ({ status: 200, body: state({ status: "completed", asset: { key: "videos/m1/rachel.mov" } }) }));
+    const got: unknown[] = [];
+    await videoHandler(got)(new Request("https://app.example/api/uploads", {
+      method: "POST", headers: { "x-run402-trigger": "function_run" },
+      body: JSON.stringify(videoRun("failed", { code: "VIDEO_TOO_LONG", message: "3 h max" })),
+    }));
+    assert.deepEqual(got, [{ onVideoFailed: { code: "VIDEO_TOO_LONG", message: "3 h max" } }]);
   });
 });
