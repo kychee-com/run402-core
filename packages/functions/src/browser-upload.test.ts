@@ -81,7 +81,12 @@ function env(size: number, w: World, idb = fakeIndexedDb()) {
     const path = url.replace("https://app.example", "");
     w.apiCalls.push(`${init.method} ${path}`);
     const all = Array.from({ length: partCount }, (_, i) => i + 1);
-    if (init.method === "POST" && path === "/api/uploads") return json({ ...base(), parts: urlsFor(all.slice(0, 64)) }, 201);
+    if (init.method === "POST" && path === "/api/uploads") {
+      // The same file reopened answers what storage holds and URLs for the rest.
+      const done = [...w.parts.keys()].sort((a, b) => a - b);
+      const missing = all.filter((n) => !w.parts.has(n));
+      return json({ ...base(), parts_done: done, parts: urlsFor(missing.slice(0, 64)) }, 201);
+    }
     if (init.method === "GET" && path === `/api/uploads/${ID}`) {
       if (w.status === "verifying" && ++verifyPolls >= 2) w.status = "completed";
       const done = [...w.parts.keys()].sort((a, b) => a - b);
@@ -151,6 +156,20 @@ describe("browser/upload.js uploadFile", () => {
     assert.equal(w.puts - putsBefore, 4, "only the four missing parts were sent");
     assert.equal(w.apiCalls.filter((c) => c === "POST /api/uploads").length, 1, "no second upload was opened");
     assert.equal(idb.data.size, 0, "forgotten once complete");
+  });
+
+  it("sends only what storage lacks when the open finds the upload again, with no memory of it", async () => {
+    const size = 10 * PART;
+    const w = world({ stopAfterParts: 6 });
+    await assert.rejects(uploadFile(fakeFile(size), { ...fast, env: env(size, w, fakeIndexedDb()), concurrency: 1, retryBaseMs: 0 }));
+
+    // Another browser, or a file whose lastModified changed: the memory misses, the open does not.
+    w.stopAfterParts = -1;
+    const putsBefore = w.puts;
+    await uploadFile(fakeFile(size), { ...fast, env: env(size, w, fakeIndexedDb()) });
+    assert.equal(w.parts.size, 10);
+    assert.equal(w.puts - putsBefore, 4, "only the four missing parts were sent");
+    assert.equal(w.apiCalls.filter((c) => c.endsWith("/urls")).length, 0, "the open's URLs were enough");
   });
 
   it("rejects with code \"aborted\" when the signal aborts before or during the open", async () => {
