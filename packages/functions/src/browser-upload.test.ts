@@ -184,7 +184,10 @@ describe("browser/upload.js uploadFile", () => {
     const slowOpen = {
       ...e,
       fetch: (url: string, init: { signal?: AbortSignal }) => new Promise<Response>((_resolve, reject) => {
-        init.signal?.addEventListener("abort", () => reject(new DOMException("signal is aborted without reason", "AbortError")));
+        const aborted = () => reject(new DOMException("signal is aborted without reason", "AbortError"));
+        // Like the real fetch: a slow machine can reach this after the abort.
+        if (init.signal?.aborted) aborted();
+        init.signal?.addEventListener("abort", aborted);
       }),
     };
     const p = uploadFile(fakeFile(1000), { ...fast, env: slowOpen, signal: midway.signal });
