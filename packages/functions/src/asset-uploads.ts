@@ -169,6 +169,8 @@ function validateCreate(key: string, opts: CreateUploadOptions): void {
   if (opts.video !== undefined) {
     const v = opts.video;
     if (v === null || typeof v !== "object" || Array.isArray(v)) throw bad("video must be { transcript?, language?, maxCostUsdMicros? }");
+    const unknownField = Object.keys(v).find((k) => !["transcript", "language", "maxCostUsdMicros"].includes(k));
+    if (unknownField) throw bad(`video has no field ${unknownField}; it takes { transcript?, language?, maxCostUsdMicros? }`);
     if (!opts.contentType.toLowerCase().startsWith("video/")) throw bad("video may be declared only for a video/* contentType");
     if (v.transcript !== undefined && typeof v.transcript !== "boolean") throw bad("video.transcript must be a boolean");
     if (v.language !== undefined && (typeof v.language !== "string" || !/^[a-z]{2}$/.test(v.language))) {
@@ -336,7 +338,13 @@ async function handleVideoRun(opts: UploadsHandlerOptions, req: Request): Promis
   const payload = envelope.payload as { upload_id?: unknown; status?: unknown; error?: { code?: unknown; message?: unknown } };
   const state = await getUpload(String(payload.upload_id ?? ""));
   const asset = state.asset as { video?: unknown } | undefined;
-  if (payload.status === "completed" && asset?.video && opts.onVideo) {
+  if (payload.status === "completed" && state.video?.status === "failed") {
+    // The key went between the job's end and this run: the read is the truth.
+    await opts.onVideoFailed?.(state, state.video.error ?? {
+      code: "ASSET_DELETED",
+      message: "The upload's key no longer holds these bytes",
+    });
+  } else if (payload.status === "completed" && asset?.video && opts.onVideo) {
     await opts.onVideo(state.asset!, state);
   } else if (payload.status !== "completed" && opts.onVideoFailed) {
     await opts.onVideoFailed(state, {

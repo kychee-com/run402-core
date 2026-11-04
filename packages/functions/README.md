@@ -455,7 +455,7 @@ export default uploads.handler({
     const [web, poster, transcript] = await Promise.all(["video_web", "video_poster", "video_transcript"]
       .map((variant) => assets.sign(asset.key, { variant })));
   },
-  onVideoFailed: async (upload, error) => { /* error.code: VIDEO_UNDECODABLE, VIDEO_TOO_LONG, MAX_COST_EXCEEDED, ALLOWANCE_INSUFFICIENT, JOB_CANCELLED, JOB_FAILED */ },
+  onVideoFailed: async (upload, error) => { /* error.code: VIDEO_UNDECODABLE, VIDEO_TOO_LONG, MAX_COST_EXCEEDED, ALLOWANCE_INSUFFICIENT, JOB_CANCELLED, ASSET_DELETED, JOB_FAILED */ },
 });
 ```
 

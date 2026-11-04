@@ -236,6 +236,24 @@ describe("uploads.handler", () => {
     assert.deepEqual(got, [{ onVideo: { key: "videos/m1/rachel.mov", video } }]);
   });
 
+  it("calls onVideoFailed, not silence, when a completed run's read says the key has gone", async () => {
+    const error = { code: "ASSET_DELETED", message: "The key is gone" };
+    gateway(() => ({ status: 200, body: state({ status: "completed", asset: { key: "videos/m1/rachel.mov" }, video: { transcript: false, language: null, max_cost_usd_micros: null, status: "failed", job_id: "job_1", error } }) }));
+    const got: unknown[] = [];
+    await videoHandler(got)(new Request("https://app.example/api/uploads", {
+      method: "POST", headers: { "x-run402-trigger": "function_run" }, body: JSON.stringify(videoRun("completed")),
+    }));
+    assert.deepEqual(got, [{ onVideoFailed: error }]);
+  });
+
+  it("refuses a video field it does not know, so a wire-spelled cap is never dropped", async () => {
+    gateway(() => ({ status: 200, body: state({}) }));
+    await assert.rejects(
+      assets.createUpload("videos/a.mov", { sizeBytes: 1024, contentType: "video/quicktime", video: { max_cost_usd_micros: 5 } as never }),
+      /video has no field max_cost_usd_micros/,
+    );
+  });
+
   it("calls onVideoFailed with the run's code and message", async () => {
     gateway(() => ({ status: 200, body: state({ status: "completed", asset: { key: "videos/m1/rachel.mov" } }) }));
     const got: unknown[] = [];
