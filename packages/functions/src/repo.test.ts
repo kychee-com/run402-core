@@ -446,6 +446,63 @@ describe("repo.revert", () => {
   });
 });
 
+describe("repo tokens", () => {
+  const minted = { token_id: "t1", token: "art1_x", repo_name: "c-42", access: "read", clone_url: "https://x/c-42.git", expires_at: "2026-11-04T12:00:00.000Z", expires_in: 3600, next_actions: [] };
+
+  it("mints with the service key, leaves the pin alone, and returns the answer", async () => {
+    respond = () => json(minted, 201);
+    const out = await repos.open("c-42").createToken({ access: "read", ttlSeconds: 3600 });
+    assert.deepEqual(out, minted);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].method, "POST");
+    assert.equal(calls[0].url, `${BASE}/c-42/tokens`);
+    assert.deepEqual(calls[0].body, { access: "read", ttl_seconds: 3600 });
+    assert.match(calls[0].headers.Authorization ?? calls[0].headers.authorization, /^Bearer /);
+  });
+
+  it("omits ttl_seconds when not given, and works on the default repo", async () => {
+    respond = () => json(minted, 201);
+    await repo.createToken({ access: "write" });
+    assert.equal(calls[0].url, `${BASE}/default/tokens`);
+    assert.deepEqual(calls[0].body, { access: "write" });
+  });
+
+  it("refuses bad options before any request", async () => {
+    const bad: Array<[unknown, string]> = [
+      [{ access: "admin" }, "access"],
+      [{}, "access"],
+      [undefined, "access"],
+      [{ access: "read", ttlSeconds: 59 }, "ttlSeconds"],
+      [{ access: "read", ttlSeconds: 86401 }, "ttlSeconds"],
+      [{ access: "read", ttlSeconds: 1.5 }, "ttlSeconds"],
+    ];
+    for (const [opts, field] of bad) {
+      await assert.rejects(
+        repo.createToken(opts as never),
+        (err: InstanceType<typeof R402AppRepoError>) => err.code === "VALIDATION_FAILED" && err.field === field,
+      );
+    }
+    await assert.rejects(repo.revokeToken(""), (err: InstanceType<typeof R402AppRepoError>) => err.field === "tokenId");
+    assert.equal(calls.length, 0);
+  });
+
+  it("revokes by id", async () => {
+    respond = () => json({ revoked: true, token_id: "t 1", revoked_at: "2026-11-04T12:00:00.000Z" });
+    assert.equal((await repos.open("c-42").revokeToken("t 1")).revoked, true);
+    assert.equal(calls[0].method, "DELETE");
+    assert.equal(calls[0].url, `${BASE}/c-42/tokens/t%201`);
+  });
+
+  it("carries a gateway refusal, and a pinned handle has no token calls", async () => {
+    respond = () => json({ code: "APP_REPO_NOT_FOUND", message: "nope", next_actions: [{ type: "create_app_repo" }] }, 404);
+    await assert.rejects(
+      repos.open("nope").createToken({ access: "read" }),
+      (err: InstanceType<typeof R402AppRepoError>) => err.code === "APP_REPO_NOT_FOUND" && err.next_actions[0].type === "create_app_repo",
+    );
+    assert.equal("createToken" in repo.at("a".repeat(40)), false);
+  });
+});
+
 describe("repos", () => {
   it("open makes no call", () => {
     const handle = repos.open("user-42");

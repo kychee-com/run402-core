@@ -25,6 +25,10 @@
  * triggered run without one) nothing is pinned: each call reads the head,
  * unless you pin with `at(commit)`.
  *
+ * **Tokens.** `createToken({ access, ttlSeconds })` on a handle mints a credential
+ * for that one repo, usable as the git password and on its read and commit routes,
+ * that expires by itself. Hand it to whatever should reach this repo and no other.
+ *
  * Every call uses the project's service key. A commit or revert also forwards
  * the request's data-plane actor token, so the platform records the verified
  * signed-in user (`Run402-Actor` trailer) and names them as author.
@@ -169,6 +173,35 @@ export type AppRepoCommitResult =
     }
   | { committed: false; head: string | null; [key: string]: unknown };
 
+export type AppRepoTokenAccess = "read" | "write";
+
+export interface AppRepoTokenOptions {
+  /** `read` fetches; `write` also commits and pushes. Required: there is no default. */
+  access: AppRepoTokenAccess;
+  /** 60–86400, default 3600. The token never outlives the credential that minted it. */
+  ttlSeconds?: number;
+}
+
+/** `createToken`'s answer. `token` is shown only here; use `expires_in`, which reports the actual lifetime. */
+export interface AppRepoToken {
+  token_id: string;
+  token: string;
+  repo_name: string;
+  access: AppRepoTokenAccess;
+  clone_url: string;
+  expires_at: string;
+  expires_in: number;
+  next_actions: AppRepoNextAction[];
+  [key: string]: unknown;
+}
+
+export interface AppRepoTokenRevocation {
+  revoked: true;
+  token_id: string;
+  revoked_at: string;
+  [key: string]: unknown;
+}
+
 /** Reads, history and pinning: what every handle offers. */
 export interface AppRepoReader {
   readonly name: string;
@@ -193,6 +226,10 @@ export interface AppRepo extends AppRepoReader {
   revert(commit: string, opts?: AppRepoRevertOptions): Promise<AppRepoCommitResult>;
   /** A read-only handle pinned to `commit`. */
   at(commit: string): AppRepoReader;
+  /** Mint a credential for this one repo: the git password, and a Bearer on its read and commit routes. */
+  createToken(opts: AppRepoTokenOptions): Promise<AppRepoToken>;
+  /** Stop a token at once. Repeating it answers the same. */
+  revokeToken(tokenId: string): Promise<AppRepoTokenRevocation>;
 }
 
 export interface AppReposCreateOptions {
@@ -535,6 +572,16 @@ function requireId(value: unknown, field: string): string {
   return value;
 }
 
+function tokenBody(opts: AppRepoTokenOptions): { access: AppRepoTokenAccess; ttl_seconds?: number } {
+  const { access, ttlSeconds } = opts ?? ({} as AppRepoTokenOptions);
+  if (access !== "read" && access !== "write") throw invalid("access", 'must be "read" or "write"');
+  if (ttlSeconds === undefined) return { access };
+  if (!Number.isInteger(ttlSeconds) || ttlSeconds < 60 || ttlSeconds > 86400) {
+    throw invalid("ttlSeconds", "must be an integer from 60 to 86400");
+  }
+  return { access, ttl_seconds: ttlSeconds };
+}
+
 // ---------------------------------------------------------------------------
 // Handles
 // ---------------------------------------------------------------------------
@@ -619,6 +666,17 @@ function openRepo(name: string): AppRepo {
 
     at(commit) {
       return readerAt(name, requireId(commit, "commit"));
+    },
+
+    async createToken(opts) {
+      return requestJson<AppRepoToken>("POST", `${repoPath(name)}/tokens`, { body: tokenBody(opts) });
+    },
+
+    async revokeToken(tokenId) {
+      return requestJson<AppRepoTokenRevocation>(
+        "DELETE",
+        `${repoPath(name)}/tokens/${encodeURIComponent(requireId(tokenId, "tokenId"))}`,
+      );
     },
   };
 }
