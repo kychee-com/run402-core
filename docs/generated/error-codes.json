@@ -1,7 +1,7 @@
 {
   "owner": "core",
   "repository": "kychee-com/run402-core",
-  "revision": "0a9851babc25e01adb89c908af9cb27b3d3a7250",
+  "revision": "b515b8c586593670e930eabb9a64a3a2bf35cffe",
   "sources": [
     {
       "source": "packages/functions/src/auth/errors.ts",
@@ -30,7 +30,7 @@
     },
     {
       "source": "packages/functions/src/auth/index.ts",
-      "sourceDigest": "285268b5e0afaadbcc7b06130adb05cec59344724e1c1cc6436789fab2265d5d",
+      "sourceDigest": "5173fdc713fd967c7263a21bff5bd0f6894e5b52a9016711bec1dabd1f6f3426",
       "codes": [
         "R402_AUTH_FRESHNESS_REQUIRED"
       ]
@@ -73,7 +73,7 @@
     },
     {
       "source": "packages/functions/src/runtime-context.ts",
-      "sourceDigest": "6bf3bec7cf24e63e10046bf17db776080bf137ec6577126bcf0c0745f1aaded1",
+      "sourceDigest": "61e91d2fbf3a5142b0b2a855d50428335e8e677eb1e0cc8f6413a6f80a3dadc0",
       "codes": [
         "R402_AUTH_ACTOR_HEADER_SPOOF",
         "R402_SDK_OUTSIDE_REQUEST_CONTEXT"
