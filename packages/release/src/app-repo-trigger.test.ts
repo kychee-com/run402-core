@@ -8,6 +8,8 @@ import {
   materializeRelease,
   validateReleaseSpec,
   type ReleaseSpec,
+  isValidAppRepoName,
+  isValidAppRepoTriggerRepo,
 } from "./index.js";
 
 const SOURCE = { sha256: "a".repeat(64), size: 10 };
@@ -80,6 +82,31 @@ describe("app_repo function triggers", () => {
         );
       }
     }
+  });
+
+  it("accepts repo \"*\" for every repo of the project, and materializes it as written", () => {
+    validateReleaseSpec(specWith({ ...base, repo: "*" }));
+    validateReleaseSpec(specWith({ ...base, repo: "*", paths: ["people/"] }, true));
+    const state = materializeRelease({ spec: specWith({ ...base, repo: "*" }) });
+    assert.deepEqual(state.functions[0]?.triggers, [{
+      id: "bundle", type: "app_repo", repo: "*", run: { event_type: "content.changed", payload: {} },
+    }]);
+  });
+
+  it("refuses any other pattern, saying what repo takes", () => {
+    for (const repo of ["family-*", "**", "*/x", " *"]) {
+      assert.throws(
+        () => validateReleaseSpec(specWith({ ...base, repo })),
+        isInvalidAt(`${AT}.repo`, /an app repo name.*or "\*"/),
+      );
+    }
+  });
+
+  it("keeps a route target to one named repo", () => {
+    assert.equal(isValidAppRepoName("*"), false);
+    assert.equal(isValidAppRepoTriggerRepo("*"), true);
+    assert.equal(isValidAppRepoTriggerRepo("default"), true);
+    assert.equal(isValidAppRepoTriggerRepo("family-*"), false);
   });
 
   it("refuses a bad repo name", () => {

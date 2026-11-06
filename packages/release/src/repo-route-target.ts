@@ -12,6 +12,11 @@ export function isValidAppRepoName(name: unknown): name is string {
   return typeof name === "string" && APP_REPO_NAME.test(name) && !name.endsWith(".git");
 }
 
+/** What a function trigger's `repo` takes: one repo's name, or `"*"` for every repo of the project. A route names one. */
+export function isValidAppRepoTriggerRepo(name: unknown): name is string {
+  return name === "*" || isValidAppRepoName(name);
+}
+
 /**
  * Shape check for a `requireRole` block. Shared by `FunctionSpec.requireRole`
  * and repo route targets, so both are validated by the same rule.

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- A function trigger's `repo` may be `"*"`: the trigger runs on a commit to any app repo of the project, those created later included, and `payload.event.repo_name` names the repo. No other pattern is accepted, and a route target still names one repo.
+
 - Add the function trigger type `{ id, type: "app_repo", repo, paths?, run }`, which runs a function on each commit to an app repo. `repo` is an app repo name (not checked for existence); `paths` is 1-50 repo path prefixes matched with `startsWith` (so `people` also matches `peoplex.json`; no trailing `/` is added), every path when omitted. Schedule and email fields are refused on it, and `repo`/`paths` on the other types. The JSON Schema now describes `triggers` for all three types.
 
 - Add a third route target type, `{ type: "repo", repo, path?, requireAuth?, requireRole? }`, which serves a file from an app repo. It is prefix-capable (`path` is a directory prefix, canonically ending in `/`; for an exact pattern `path` is required and names the file), GET/HEAD only, never priced, and its role gate is validated like a function's. Validation, canonicalization, materialization (no static-file check and no static-manifest entry), diffing and the JSON Schema know it; the repo's existence is the host's check.

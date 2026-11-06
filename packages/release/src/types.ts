@@ -118,7 +118,9 @@ export interface FunctionEmailTriggerSpec {
  * Runs the function once per commit to an app repo's `main` that changes a
  * path starting with one of `paths` (every path when omitted). Prefixes are
  * matched with `startsWith`, so `people` also matches `peoplex.json`; write
- * `people/` for the directory. The repo need not exist yet.
+ * `people/` for the directory. The repo need not exist yet. `repo: "*"` means
+ * every repo of the project, those created later included; the run's
+ * `payload.event.repo_name` names the repo committed to.
  */
 export interface FunctionAppRepoTriggerSpec {
   id: string;

@@ -1,5 +1,5 @@
 import { ReleaseSpecValidationError } from "./errors.js";
-import { canonicalizeRepoRouteTarget, isValidAppRepoName, validateRoleGate } from "./repo-route-target.js";
+import { canonicalizeRepoRouteTarget, isValidAppRepoTriggerRepo, validateRoleGate } from "./repo-route-target.js";
 import { validateRouteDiscovery } from "./route-discovery.js";
 import {
   SUPPORTED_HTTP_METHODS,
@@ -270,10 +270,10 @@ function validateFunctionTriggers(value: unknown, resource: string): void {
       if (trigger.mailbox !== undefined || trigger.events !== undefined) {
         throw invalid(path, "app_repo triggers cannot include mailbox or events");
       }
-      if (!isValidAppRepoName(trigger.repo)) {
+      if (!isValidAppRepoTriggerRepo(trigger.repo)) {
         throw invalid(
           `${path}.repo`,
-          "function trigger repo must be an app repo name: 1-64 characters of a-z, 0-9, '.', '_' or '-', starting with a letter or digit, not ending in .git",
+          "function trigger repo must be an app repo name (1-64 characters of a-z, 0-9, '.', '_' or '-', starting with a letter or digit, not ending in .git) or \"*\" for every repo of the project",
         );
       }
       if (trigger.paths !== undefined) validateAppRepoTriggerPaths(trigger.paths, `${path}.paths`);
