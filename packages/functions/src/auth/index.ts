@@ -130,12 +130,14 @@ async function user(): Promise<Actor | null> {
   if (ctx.actor) {
     return actorContextToPublicActor(ctx.actor, ctx.projectId);
   }
-  // For browser SSR (routed_http) the cookie envelope is the ONLY actor
-  // input. We do NOT fall back to decoding an `Authorization: Bearer`
-  // header here — otherwise a Bearer on a GET to a tenant SSR page would
-  // resolve an actor, contradicting the "cookie is the only browser actor
-  // input" invariant. The fallback is preserved only for direct/machine
-  // invocations below.
+  // For routed requests (routed_http) the gateway-verified envelope is the
+  // ONLY actor input. The gateway signs it from one credential it resolved
+  // against the session store on that request (the browser's session cookie,
+  // an MCP grant, or a native app's session token), so revocation holds on
+  // the next request. We do NOT fall back to decoding an `Authorization:
+  // Bearer` header here: this runtime cannot see revocation, and a Bearer on
+  // a GET to a tenant SSR page must not resolve an actor of its own. The
+  // fallback is preserved only for direct/machine invocations below.
   if (ctx.invocationKind === "routed_http") {
     return null;
   }

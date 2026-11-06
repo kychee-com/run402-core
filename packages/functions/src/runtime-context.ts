@@ -72,10 +72,11 @@ export interface RunRequestContext {
    *  verbatim; consumer code never sees the raw envelope. */
   actor: ActorContext | null;
   /** Capability `auth-hosted-surface-parity`: invocation class. For
-   *  `"routed_http"` (browser SSR) the actor is resolved ONLY from the
-   *  verified cookie envelope above — `auth.user()` does NOT fall back
-   *  to decoding an `Authorization: Bearer` header, so the
-   *  "cookie is the only browser actor input" invariant holds. For
+   *  `"routed_http"` the actor is resolved ONLY from the verified gateway
+   *  envelope above, which the gateway signs from the credential it resolved
+   *  (a browser's session cookie, an MCP grant, or a native app's session
+   *  token) — `auth.user()` does NOT fall back to decoding an
+   *  `Authorization: Bearer` header itself. For
    *  `"direct"` (machine / mobile / CI function invocation) the Bearer
    *  fallback is preserved. `"scheduled"` and `"function_run"` use the same
    *  trusted server-side context class as direct invocation, but the Run402
