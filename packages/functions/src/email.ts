@@ -1,6 +1,6 @@
 import { config } from "./config.js";
 
-export interface EmailRawOptions {
+interface EmailRawEnvelope {
   to: string;
   /**
    * Blind copies: one address or up to 5. Each receives the same message, no
@@ -9,12 +9,14 @@ export interface EmailRawOptions {
    */
   bcc?: string | string[];
   subject: string;
-  html: string;
-  text?: string;
   from_name?: string;
   template?: never;
   variables?: never;
 }
+
+/** A raw message: a subject and at least one of `text` and `html`. */
+export type EmailRawOptions = EmailRawEnvelope &
+  ({ html: string; text?: string } | { html?: string; text: string });
 
 export interface EmailTemplateOptions {
   to: string;

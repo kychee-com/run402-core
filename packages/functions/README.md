@@ -247,6 +247,13 @@ await email.send({
   from_name: "My App",
 });
 
+// Raw plain text: a raw message needs a subject and text, html, or both
+await email.send({
+  to: "user@example.com",
+  subject: "Welcome!",
+  text: "Hi",
+});
+
 // Blind copies (either mode): one address or up to 5
 await email.send({
   to: "user@example.com",

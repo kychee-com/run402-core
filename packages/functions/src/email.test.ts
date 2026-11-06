@@ -152,6 +152,39 @@ describe("email.send — first call discovers default mailbox via GET /mailboxes
   });
 });
 
+describe("email.send — a raw message carries text, html, or both", () => {
+  const sentBody = async (opts: Parameters<typeof email.send>[0]) => {
+    let body = "";
+    mock.method(globalThis, "fetch", async (url: string, init: RequestInit) => {
+      if (url.endsWith("/mailboxes/v1")) {
+        return new Response(JSON.stringify({ mailboxes: [{ mailbox_id: "mbx_test", status: "active", can_send: true }] }), { status: 200 });
+      }
+      body = init.body as string;
+      return new Response(JSON.stringify({ id: "msg_raw" }), { status: 200 });
+    });
+    await email.send(opts);
+    mock.restoreAll();
+    return JSON.parse(body) as unknown;
+  };
+
+  it("sends a text-only message with no html field", async () => {
+    assert.deepEqual(await sentBody({ to: "user@example.com", subject: "Hi", text: "Hello" }), {
+      to: "user@example.com",
+      subject: "Hi",
+      text: "Hello",
+    });
+  });
+
+  it("sends both parts when both are given", async () => {
+    assert.deepEqual(await sentBody({ to: "user@example.com", subject: "Hi", html: "<p>Hello</p>", text: "Hello" }), {
+      to: "user@example.com",
+      subject: "Hi",
+      html: "<p>Hello</p>",
+      text: "Hello",
+    });
+  });
+});
+
 describe("email.send — subsequent calls use cached mailboxId (no re-discover)", () => {
   it("posts raw HTML email with optional text and from_name", async () => {
     const calls: Array<{ url: string; opts: RequestInit }> = [];
