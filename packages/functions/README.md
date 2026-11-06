@@ -537,21 +537,21 @@ It is your judgement and is sent unchanged: omitted is stored as `info`, and the
 
 **Always `await` it (and every other side-channel call).** The function's sandbox freezes the moment your handler's response is returned — a fire-and-forget `void events.emit(...)` (or any un-awaited `fetch` to a webhook, analytics endpoint, etc.) is silently killed mid-flight and the event never lands. There is no error, no log, nothing: the request just evaporates with the freeze. If you don't want the caller's latency to include the emit, bound it instead of detaching it — `await` with a short `AbortSignal.timeout(...)` on hand-rolled calls — but never let the handler return before the side effect settles.
 
-## `push.send(...)` — web push notifications to your users' phones
+## `push.send(...)` — push notifications to your users' phones
 
-Send a notification to the phones and browsers signed up to your app, from inside a deployed function. Needs Run402 Cloud: on a host without the push routes (Run402 Core) it throws `Run402PushError` with `code: "PUSH_UNSUPPORTED"`.
+Send a notification to the phones and browsers signed up to your app, and to your own phone app's devices, from inside a deployed function. Needs Run402 Cloud: on a host without the push routes (Run402 Core) it throws `Run402PushError` with `code: "PUSH_UNSUPPORTED"`.
 
 ```ts
 import { push } from "@run402/functions";
 
 const sent = await push.send({
-  title: "Your order shipped",     // required, 1–100 characters
+  title: "Your order shipped",     // 1–100 characters; required unless `data` is given
   body: "Arrives Thursday",        // optional, ≤ 1000
   url: "/orders/123",              // optional path on the app the tap opens, default "/"
   tag: "order-123",                // optional, ≤ 64: a newer message with the same tag replaces the older one
   to: { user_id: order.user_id },  // optional: omit to reach every phone signed up to the project
 });
-// { message_id, status: "queued", devices: 2, next_actions: [...] }
+// { message_id, status: "queued", devices: 2, web_devices: 2, native_devices: 0, next_actions: [...] }
 ```
 
 `send` queues the message and returns at once: `status: "queued"` (HTTP 202) with `devices`, the number of subscriptions it will reach, or `status: "no_subscribers"` (HTTP 200, `devices: 0`) when nobody it addresses has a phone signed up. The platform then encrypts the message for each device, hands it to each browser's push service, and drops subscriptions the push service says are gone. `url` is resolved against the origin each phone signed up on, so one message works across the app's subdomain and custom domains. Field limits are checked by the gateway, not locally.
@@ -592,6 +592,26 @@ importScripts("/_run402/push-sw.js");
 `subscribe()` never registers over an app's worker: without that line it rejects `worker_missing_snippet` with `err.fix` set to the line to add.
 
 **iPhone and iPad.** Web push needs iOS 16.4 or later and works only from the Home Screen app (Share, then Add to Home Screen; the site needs a web app manifest with `"display": "standalone"`), so in a Safari tab `status()` is `"needs_install"`. The permission prompt appears only from a tap. A denial can be undone only by removing the Home Screen icon and adding it again.
+
+### Your own phone app
+
+The same `push.send` reaches the devices of the app's own Android app (or an iPhone app built with Firebase's SDK), counted against the same daily cap:
+
+1. The app's owner gives Run402 the key of the app's Firebase project once: `run402 push fcm set --service-account ./firebase-key.json` (a service account allowed to send with Firebase Cloud Messaging). Run402 checks it with Google, keeps it encrypted, and never returns it.
+2. The phone app, signed in with Run402's native sign-in, registers its Firebase token at start-up and whenever Firebase rotates it: `POST /_run402/push/devices` on the app's host with `Authorization: Bearer <access_token>` and `{ "provider": "fcm", "token": "<FirebaseMessaging.getToken()>" }`. A session holds one device; when the member signs out, the device stops receiving at once.
+3. A function sends as before. Add `data` to reach the app's own code instead of the system tray:
+
+```ts
+await push.send({
+  to: { user_id: member.id },
+  title: "Tal",                     // browsers show this (end-to-end encrypted)
+  body: "Abba, what was Saba's school called?",
+  url: `/threads/${threadId}`,
+  data: { thread_id: String(threadId), message_id: String(messageId) },
+});
+```
+
+With `data`, a device gets a Firebase data message carrying `data` plus `run402_message_id`, `run402_url` and `run402_tag`, and never the title or body: Google's servers see only what you put in `data`, and the app fetches the rest with the member's session and shows its own notification. Without `data`, the phone shows `title` and `body` itself, and a tap opens the app with the same `run402_*` keys in its launch extras. Browsers always get the title and body and never `data`; a message with only `data` (no `title`) reaches phone apps only. `data` is at most 2,048 bytes as JSON, string values, keys starting with a letter and not with `run402_`, `google` or `gcm`.
 
 ## `repo` and `repos` — the project's app repos
 
@@ -887,7 +907,7 @@ try {
 
 `push.send()` throws `Run402PushError` (exported) with `code`, `status`, `details`, `next_actions`, and `body`, passed through from the gateway:
 
-- `VALIDATION_FAILED` (400) — a field is missing, empty, or too long.
+- `VALIDATION_FAILED` (400) — a field is missing, empty, or too long, or `data` breaks its rules (`details.field` names it).
 - `QUOTA_EXCEEDED` (403) — the organization's daily delivery cap is reached; `details` is `{ resource: "push_deliveries_per_day", used, limit, resets_at }`.
 - `RATE_LIMITED` (429) — the daily delivery cap is reached on the top tier, where no upgrade raises it; retry after `Retry-After`.
 - `AUTH_REQUIRED` (401) / `FORBIDDEN` (403) — the service key is missing or not this project's.

@@ -1,6 +1,6 @@
 /**
- * `push` namespace — send a web push notification to the phones and browsers
- * signed up to this project's app.
+ * `push` namespace — send a push notification to the phones and browsers
+ * signed up to this project's app, and to its own phone app's devices.
  *
  * ```ts
  * import { push } from "@run402/functions";
@@ -21,6 +21,25 @@
  * push service says are gone. `url` is a path on the app; the platform
  * resolves it against the origin each phone signed up on.
  *
+ * **Phone apps.** The same call reaches the devices a phone app registered
+ * with its native session (`POST /_run402/push/devices`), through the
+ * project's Firebase key. With `data`, a device gets a data message: `data`
+ * plus `run402_message_id`, `run402_url` and `run402_tag`, never the title or
+ * body, and the app's own code shows the notification. Without `data`, it gets
+ * a notification the phone shows by itself. Browsers always get the title and
+ * body (end-to-end encrypted) and never `data`; a message with only `data`
+ * reaches phone apps only.
+ *
+ * ```ts
+ * await push.send({
+ *   to: { user_id: member.id },
+ *   title: "Tal",
+ *   body: text,
+ *   url: `/threads/${threadId}`,
+ *   data: { thread_id: String(threadId), message_id: String(messageId) },
+ * });
+ * ```
+ *
  * **Policy lives on the gateway.** Field limits (`title` 1–100 characters,
  * `body` ≤ 1000, `tag` ≤ 64) and the organization's daily delivery cap are
  * enforced server-side only; this call sends the known keys as given and a
@@ -35,14 +54,21 @@
 import { config } from "./config.js";
 
 export interface PushSendOptions {
-  /** 1–100 characters (checked server-side). */
-  title: string;
+  /** 1–100 characters (checked server-side). Required unless `data` is given. */
+  title?: string;
   /** At most 1000 characters. */
   body?: string;
   /** A path on the app the notification opens; default `"/"`. */
   url?: string;
   /** At most 64 characters. A newer message with the same tag replaces the older one on the phone. */
   tag?: string;
+  /**
+   * String values for a phone app's own code: its devices get a data message
+   * with these keys and no title or body. At most 2,048 bytes as JSON; keys
+   * start with a letter and may not start with `run402_`, `google` or `gcm`.
+   * Browsers never receive it.
+   */
+  data?: Record<string, string>;
   /** Reach one user's phones. Omit to reach every phone signed up to the project. */
   to?: { user_id: string };
 }
@@ -58,13 +84,18 @@ export interface PushNextAction {
 
 /**
  * The queued message. `status` is `"no_subscribers"` (HTTP 200, `devices: 0`)
- * when nobody the message addresses has a phone signed up, `"queued"`
- * (HTTP 202) otherwise; `devices` counts the subscriptions it will reach.
+ * when nobody the message addresses has a browser or device signed up,
+ * `"queued"` (HTTP 202) otherwise; `devices` counts what it will reach,
+ * `web_devices` the browsers and `native_devices` the phone app's devices.
  */
 export interface PushSendResult {
   message_id: string;
   status: "queued" | "no_subscribers";
   devices: number;
+  /** Absent from a gateway older than native push. */
+  web_devices?: number;
+  /** Absent from a gateway older than native push. */
+  native_devices?: number;
   next_actions?: PushNextAction[];
 }
 
@@ -180,8 +211,8 @@ function errorFromResponse(status: number, body: unknown): Run402PushError {
 
 export const push = {
   /**
-   * Queue a notification for this project's subscribed phones — every one, or
-   * one user's with `to: { user_id }`.
+   * Queue a notification for this project's subscribed phones and phone-app
+   * devices — every one, or one user's with `to: { user_id }`.
    *
    * Resolves on HTTP 202 (`status: "queued"`) and 200
    * (`status: "no_subscribers"`); throws {@link Run402PushError} otherwise.
@@ -197,10 +228,12 @@ export const push = {
     }
 
     // Only the known keys go on the wire.
-    const body: Record<string, unknown> = { title: options.title };
+    const body: Record<string, unknown> = {};
+    if (options.title !== undefined) body.title = options.title;
     if (options.body !== undefined) body.body = options.body;
     if (options.url !== undefined) body.url = options.url;
     if (options.tag !== undefined) body.tag = options.tag;
+    if (options.data !== undefined) body.data = options.data;
     if (options.to !== undefined) body.to = { user_id: options.to.user_id };
 
     const res = await fetch(`${config.API_BASE}/projects/v1/${encodeURIComponent(projectId)}/push/messages`, {

@@ -77,6 +77,15 @@ describe("push.send — request", () => {
     assert.deepEqual(calls[0].body, { title: "Hello" });
   });
 
+  it("sends data for a phone app's own code, with or without a title", async () => {
+    await push.send({ title: "Tal", body: "Abba?", url: "/threads/42", data: { thread_id: "42" }, to: { user_id: "user_1" } });
+    assert.deepEqual(calls[0].body, { title: "Tal", body: "Abba?", url: "/threads/42", data: { thread_id: "42" }, to: { user_id: "user_1" } });
+    respond = () => json({ message_id: "pmsg_2", status: "queued", devices: 1, web_devices: 0, native_devices: 1 }, 202);
+    const result = await push.send({ data: { thread_id: "42" } });
+    assert.deepEqual(calls[1].body, { data: { thread_id: "42" } });
+    assert.deepEqual([result.web_devices, result.native_devices], [0, 1]);
+  });
+
   it("does not validate field lengths locally (the gateway owns the limits)", async () => {
     respond = () => json({ code: "VALIDATION_FAILED", message: "title must be 1-100 characters" }, 400);
     await assert.rejects(() => push.send({ title: "" }), (err: unknown) => {
