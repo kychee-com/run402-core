@@ -696,6 +696,15 @@ describe("assets.list — URL fields on each row", () => {
     updated_at: "2026-10-06T10:00:00.000Z",
     metadata: null,
   };
+  const preparedVideo = {
+    spec_version: "v1",
+    duration_seconds: 42,
+    width: 1280,
+    height: 720,
+    web: { kind: "video_web", content_type: "video/mp4", size_bytes: 1000, sha256: "aa" },
+    poster: { kind: "video_poster", content_type: "image/jpeg", size_bytes: 10, sha256: "bb" },
+    transcript: null,
+  };
   beforeEach(() => {
     mock.method(globalThis, "fetch", async () =>
       new Response(
@@ -717,6 +726,7 @@ describe("assets.list — URL fields on each row", () => {
               asset_schema: "v1.54",
             },
             { ...base, key: "legacy.bin" },
+            { ...base, key: "v/talk.mov", content_type: "video/quicktime", video: preparedVideo },
           ],
           next_cursor: null,
         }),
@@ -742,9 +752,14 @@ describe("assets.list — URL fields on each row", () => {
   it("omits URL fields a gateway did not send", async () => {
     const { blobs } = await assets.list({});
     const row = blobs[1]!;
-    for (const field of ["immutable", "url", "cdn_url", "variants", "variant_spec_version"]) {
+    for (const field of ["immutable", "url", "cdn_url", "variants", "variant_spec_version", "video"]) {
       assert.equal(field in row, false, field);
     }
+  });
+
+  it("passes a prepared video's outputs through", async () => {
+    const { blobs } = await assets.list({});
+    assert.deepEqual(blobs[2]!.video, preparedVideo);
   });
 });
 

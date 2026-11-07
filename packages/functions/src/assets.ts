@@ -950,6 +950,8 @@ export interface AssetListRow {
   variants?: AssetRef["variants"];
   blurhash_data_url?: string | null;
   asset_schema?: "v1.49" | "v1.50" | "v1.54" | null;
+  /** A video run402 prepared, as on `AssetRef.video`. Absent until it is prepared. */
+  video?: AssetVideo;
 }
 
 /** The encoded image variants `assets.sign` can sign, as `AssetVariant.kind`. */
@@ -1080,6 +1082,7 @@ function listRowUrls(row: Record<string, unknown>): Partial<AssetListRow> {
   if (row.asset_schema !== undefined) {
     out.asset_schema = row.asset_schema as AssetListRow["asset_schema"];
   }
+  if (row.video && typeof row.video === "object") out.video = row.video as AssetVideo;
   return out;
 }
 
