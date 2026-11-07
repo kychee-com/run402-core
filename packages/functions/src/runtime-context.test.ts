@@ -336,6 +336,7 @@ describe("runWithContext — routed_http actor from a Web Request (auth-hosted-s
     const requestId = "req_rt_abc123";
     const actor = {
       id: "11111111-2222-3333-4444-555555555555",
+      sessionId: "6f1c2d3e-4b5a-4c6d-8e7f-901234567890",
       email: "u@example.com",
       isTest: true,
       emailVerified: true,
@@ -417,5 +418,96 @@ describe("runWithContext — routed_http actor from a Web Request (auth-hosted-s
       resolved = getCurrentContext()?.actor ?? null;
     });
     assert.equal(resolved, null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// routed-actor-has-session-id — the routed actor's `sessionId` is the session
+// the gateway signed the envelope from (`actor.sessionId`), never the request
+// id; `auth.csrfToken()` derived from it is the token the gateway's hosted form
+// routes accept; an actor without one is malformed (D4).
+// ---------------------------------------------------------------------------
+
+describe("runWithContext — the routed actor names its session (routed-actor-has-session-id)", () => {
+  const host = "kychon.run402.app";
+  const sessionId = "6f1c2d3e-4b5a-4c6d-8e7f-901234567890";
+  const sessionActor = {
+    id: "11111111-2222-3333-4444-555555555555",
+    sessionId,
+    email: "u@example.com",
+    emailVerified: true,
+    authTime: 1779960000,
+    amr: ["password"],
+    amrTimes: { password: 1779960000 },
+    authzVersion: 1,
+  };
+
+  function routedRequest(requestId: string, actor: Record<string, unknown>): Request {
+    const envelope = signActorEnvelope({
+      host,
+      path: "/me",
+      method: "GET",
+      requestId,
+      projectId: "prj_rt_test",
+      actor,
+    });
+    return new Request(`https://${host}/me`, {
+      method: "GET",
+      headers: new Headers({
+        "x-run402-actor-context": envelope,
+        "x-run402-request-id": requestId,
+      }),
+    });
+  }
+
+  it("takes sessionId from the envelope's actor, the same on every request, never the request id", async () => {
+    _setActorContextKeyMapForTest({ [ACTOR_KID]: ACTOR_KEY });
+    const seen: Array<string | undefined> = [];
+    for (const requestId of ["req_rt_first", "req_rt_second"]) {
+      await runWithContext(routedCtx(routedRequest(requestId, sessionActor)), () => {
+        seen.push(getCurrentContext()?.actor?.sessionId);
+      });
+    }
+    assert.deepEqual(seen, [sessionId, sessionId]);
+  });
+
+  it("auth.csrfToken() is the gateway's hosted-form token for that session", async () => {
+    _setActorContextKeyMapForTest({ [ACTOR_KID]: ACTOR_KEY });
+    const { auth } = await import("./auth/index.js");
+    let token: string | null = null;
+    await runWithContext(routedCtx(routedRequest("req_rt_csrf", sessionActor)), () => {
+      token = auth.csrfToken();
+    });
+    // deriveCsrfTokenForSession in the gateway's routes/auth-hosted.ts.
+    const gatewayToken = crypto
+      .createHash("sha256")
+      .update(`${sessionId}:${sessionActor.authTime}:csrf`, "utf8")
+      .digest("hex")
+      .slice(0, 32);
+    assert.equal(token, gatewayToken);
+  });
+
+  it("treats an envelope whose actor carries no sessionId as malformed: anonymous, spoof logged", async () => {
+    _setActorContextKeyMapForTest({ [ACTOR_KID]: ACTOR_KEY });
+    const { sessionId: _omitted, ...withoutSession } = sessionActor;
+    for (const actor of [withoutSession, { ...withoutSession, sessionId: "" }, { ...withoutSession, sessionId: 7 }]) {
+      const warnings: string[] = [];
+      const originalWarn = console.warn;
+      console.warn = (line: unknown) => { warnings.push(String(line)); };
+      let resolved: unknown = "unset";
+      try {
+        await runWithContext(routedCtx(routedRequest("req_rt_nosession", actor)), () => {
+          resolved = getCurrentContext()?.actor ?? null;
+        });
+      } finally {
+        console.warn = originalWarn;
+      }
+      assert.equal(resolved, null);
+      assert.equal(warnings.length, 1);
+      assert.deepEqual(
+        { event: JSON.parse(warnings[0]!).event, reason: JSON.parse(warnings[0]!).reason },
+        { event: "R402_AUTH_ACTOR_HEADER_SPOOF", reason: "malformed" },
+      );
+    }
   });
 });

@@ -35,6 +35,8 @@
  *   - "host_mismatch"           — different host (after default-port normalise)
  *   - "path_mismatch"           — different path (compared by sha256)
  *   - "version_mismatch"        — schema version not what we compiled
+ *   - "malformed" (again)       — the verified actor names no session
+ *                                 (`actor.sessionId` missing or empty)
  *
  * On ANY failure the SDK runtime treats the request as anonymous AND
  * logs `R402_AUTH_ACTOR_HEADER_SPOOF` so spoofs / replays are visible
@@ -56,6 +58,10 @@ export const ACTOR_CONTEXT_HEADER = "x-run402-actor-context";
 
 export interface VerifiedActorPayload {
   id: string;
+  /** The id of the session the gateway signed this actor from: a hosted
+   *  session cookie, a native app session or an MCP grant. The same on every
+   *  request of that session; never the request id. */
+  sessionId: string;
   email: string;
   /** Present only for Run402 tenant test-session actors. */
   isTest?: true;
@@ -337,8 +343,20 @@ export function verifyActorContextEnvelope(
   if (envelope.path_hash !== sha256Hex(ctx.path)) {
     return { ok: false, reason: "path_mismatch" };
   }
+  // The gateway always names the session the actor was signed from; an actor
+  // without one is not an envelope this runtime accepts, so it never presents
+  // some other id (the request's) in its place.
+  if (!actorNamesItsSession(envelope.actor)) {
+    return { ok: false, reason: "malformed" };
+  }
 
   return { ok: true, envelope };
+}
+
+function actorNamesItsSession(actor: unknown): boolean {
+  if (typeof actor !== "object" || actor === null) return false;
+  const sessionId = (actor as { sessionId?: unknown }).sessionId;
+  return typeof sessionId === "string" && sessionId.length > 0;
 }
 
 function normaliseHost(host: string): string {

@@ -12,6 +12,13 @@ export interface Actor {
   /** Canonical public user-id. Matches `internal.users.id` UUID. */
   id: string;
   projectId: string;
+  /** The session this request is signed in with. On a routed request (a
+   *  browser session, a native app session, an MCP grant) it is that session's
+   *  id: the same on every request of the sign-in, and the `session_id` that
+   *  `auth.account.sessions.list()` reports and `auth.account.sessions.revoke()`
+   *  takes. It identifies the session and authorizes nothing. On a direct
+   *  Bearer-JWT invocation it is the JWT's `session_id` claim, else
+   *  `bearer:<id>`. */
   sessionId: string;
   /** The user's current email address, whatever method they signed in with.
    *  On a routed request (a browser session, a native app session, an MCP

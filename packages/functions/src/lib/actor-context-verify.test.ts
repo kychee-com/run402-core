@@ -22,6 +22,7 @@ beforeEach(() => {
 
 const actor: VerifiedActorPayload = {
   id: "11111111-2222-3333-4444-555555555555",
+  sessionId: "6f1c2d3e-4b5a-4c6d-8e7f-901234567890",
   email: "user@example.com",
   emailVerified: true,
   authTime: 1779960000,
@@ -87,6 +88,7 @@ describe("SDK actor-context verifier — happy path", () => {
     assert.equal(r.ok, true);
     if (r.ok) {
       assert.equal(r.envelope.actor.id, actor.id);
+      assert.equal(r.envelope.actor.sessionId, "6f1c2d3e-4b5a-4c6d-8e7f-901234567890");
       assert.equal(r.envelope.actor.emailVerified, true);
       assert.deepEqual(r.envelope.actor.amrTimes, { passkey: 1779960000 });
     }
@@ -193,6 +195,17 @@ describe("SDK actor-context verifier — failure modes (each maps to anonymous +
     const r = verifyActorContextEnvelope(encoded, ctxFor({ path: "/admin/delete" }));
     assert.equal(r.ok, false);
     if (!r.ok) assert.equal(r.reason, "path_mismatch");
+  });
+
+  it("an actor without a session id (missing, empty, or not a string) is malformed", () => {
+    // routed-actor-has-session-id D4: the gateway always names the session.
+    for (const sessionId of [undefined, "", 42]) {
+      const encoded = signEnvelope({
+        actorOverride: { sessionId: sessionId as unknown as string },
+      });
+      const r = verifyActorContextEnvelope(encoded, ctxFor());
+      assert.deepEqual(r, { ok: false, reason: "malformed" });
+    }
   });
 
   it("version mismatch (v: 2 not supported by this runtime)", () => {

@@ -40,7 +40,7 @@ import {
  *  it verifies the inbound actor-context envelope. `null` when the
  *  request is anonymous OR when verification failed (defense in depth:
  *  forged envelopes never surface as a non-null actor). */
-export type ActorContext = VerifiedActorPayload & { sessionId: string };
+export type ActorContext = VerifiedActorPayload;
 
 /** The shape stored in AsyncLocalStorage. See the spec referenced above
  *  for the canonical definition. */
@@ -211,12 +211,9 @@ function verifyEnvelopeFromRequest(
     amr: outcome.envelope.actor.amr,
     amrTimes: outcome.envelope.actor.amrTimes,
     authzVersion: outcome.envelope.actor.authzVersion,
-    // session_id is NOT in the envelope — it's gateway-internal state.
-    // For now we mint a deterministic-by-request id so downstream code
-    // has a string to hang `db()` set_config on. Once the gateway adds
-    // session_id to the envelope (planned in section 4 of the spec),
-    // populate it here from outcome.envelope.actor.sessionId.
-    sessionId: outcome.envelope.request_id,
+    // The session the gateway resolved, never the request: `auth.csrfToken()`
+    // derives the hosted form routes' token from it.
+    sessionId: outcome.envelope.actor.sessionId,
   };
 }
 
