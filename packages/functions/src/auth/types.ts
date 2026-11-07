@@ -13,12 +13,12 @@ export interface Actor {
   id: string;
   projectId: string;
   sessionId: string;
-  /** The user's email. Populated ONLY on the direct Bearer-JWT invocation
-   *  path (machine / mobile callers, from the JWT `email` claim). On the
-   *  browser cookie-session / SSR path it is `""`: the actor envelope is
-   *  signed from the session row, which carries no email. Do NOT gate on
-   *  `email` for SSR surfaces — key off `id` and resolve the email yourself
-   *  if needed. */
+  /** The user's current email address, whatever method they signed in with.
+   *  On a routed request (a browser session, a native app session, an MCP
+   *  grant) the platform reads it from the user's record on every request; on
+   *  a direct Bearer-JWT invocation it is the JWT's `email` claim. Key stored
+   *  data off `id`, which never changes; before linking a person to existing
+   *  data by this address, check `emailVerified`. */
   email: string;
   /** True only for Run402 tenant test-session users.
    *
@@ -27,6 +27,10 @@ export interface Actor {
    * test mode, audited by the gateway.
    */
   is_test?: true;
+  /** True only when the platform verified `email`: an email code, a magic
+   *  link, or Google reporting a verified address. A password sign-up proves
+   *  nothing about the address, so it is `false` until the user verifies it.
+   *  Always `false` on a direct Bearer-JWT invocation. */
   emailVerified: boolean;
   /** Last any-method auth proof, seconds-since-epoch. */
   authTime: number;
