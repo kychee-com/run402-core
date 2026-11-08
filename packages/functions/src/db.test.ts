@@ -905,7 +905,7 @@ describe("single() / maybeSingle() row modes", () => {
   });
 });
 
-describe("db().sql() — SQL as the request's end user (group-owned-rows D9)", () => {
+describe("db().sql() — SQL as the request's end user (D-project-sql-endpoint-11)", () => {
   const envelope = {
     status: "ok",
     schema: "p0001",
