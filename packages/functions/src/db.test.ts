@@ -904,3 +904,83 @@ describe("single() / maybeSingle() row modes", () => {
     assert.deepEqual(rows, [{ id: 1 }, { id: 2 }]);
   });
 });
+
+// project-sql-endpoint "First-party SQL clients wait out a retryable refusal".
+describe("adminDb().sql() — waits out a retryable refusal (a deploy's write pause)", () => {
+  const paused = (retryAfter = "1") =>
+    new Response(
+      JSON.stringify({ code: "PROJECT_WRITES_PAUSED", retryable: true, safe_to_retry: true, mutation_state: "none", details: { holder_kind: "snapshot" } }),
+      { status: 503, headers: { "Retry-After": retryAfter, "Content-Type": "application/json" } },
+    );
+  const ok = () => new Response(JSON.stringify({ status: "ok", rows: [{ id: 1 }], row_count: 1 }), { status: 200 });
+
+  // Advance the mocked clock until the call settles, letting each fetch resolve between ticks.
+  async function drive<T>(p: Promise<T>, stepMs = 250, maxSteps = 200): Promise<T> {
+    let settled = false;
+    p.then(() => { settled = true; }, () => { settled = true; });
+    for (let i = 0; i < maxSteps && !settled; i++) {
+      await new Promise((r) => setImmediate(r));
+      mock.timers.tick(stepMs);
+    }
+    return p;
+  }
+
+  beforeEach(() => {
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  });
+
+  it("repeats after Retry-After and returns the answer once the pause lifts", async () => {
+    const answers = [paused(), paused(), ok()];
+    let calls = 0;
+    mock.method(globalThis, "fetch", async () => answers[calls++]!);
+    const result = await drive(adminDb().sql("INSERT INTO pages (slug) VALUES ('x') RETURNING id"));
+    mock.timers.reset();
+    assert.deepEqual(result.rows, [{ id: 1 }]);
+    assert.equal(calls, 3);
+  });
+
+  it("throws on the first attempt for an error that is not safe to retry", async () => {
+    let calls = 0;
+    mock.method(globalThis, "fetch", async () => {
+      calls++;
+      return new Response(JSON.stringify({ code: "VALIDATION_FAILED", retryable: false, safe_to_retry: true }), { status: 400 });
+    });
+    const err = (await catchThrown(() => drive(adminDb().sql("SELEC 1")))) as InstanceType<typeof R402DbError>;
+    mock.timers.reset();
+    assert.equal(calls, 1);
+    assert.equal(err.status, 400);
+    assert.equal(err.attempts, undefined);
+  });
+
+  it("a pause past the 8-second budget throws the last refusal with attempts and waited_ms", async () => {
+    let calls = 0;
+    mock.method(globalThis, "fetch", async () => {
+      calls++;
+      return paused();
+    });
+    const startedAt = Date.now();
+    const err = (await catchThrown(() => drive(adminDb().sql("INSERT INTO t VALUES (1)")))) as InstanceType<typeof R402DbError>;
+    const elapsed = Date.now() - startedAt;
+    mock.timers.reset();
+    assert.ok(err instanceof R402DbError);
+    assert.equal(err.status, 503);
+    assert.equal(err.remote_code, "PROJECT_WRITES_PAUSED");
+    assert.ok(calls > 1);
+    assert.equal(err.attempts, calls);
+    assert.ok(typeof err.waited_ms === "number" && err.waited_ms > 0);
+    assert.ok(elapsed <= 8_000, `stayed within the budget (${elapsed} ms)`);
+  });
+
+  it("a Retry-After the remaining budget cannot cover throws at once", async () => {
+    let calls = 0;
+    mock.method(globalThis, "fetch", async () => {
+      calls++;
+      return paused("30");
+    });
+    const err = (await catchThrown(() => drive(adminDb().sql("INSERT INTO t VALUES (1)")))) as InstanceType<typeof R402DbError>;
+    mock.timers.reset();
+    assert.equal(calls, 1);
+    assert.equal(err.remote_code, "PROJECT_WRITES_PAUSED");
+    assert.equal(err.attempts, undefined, "no wait happened");
+  });
+});

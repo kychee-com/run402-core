@@ -64,6 +64,10 @@ export class R402DbError extends Error {
   readonly remote_code: string | null;
   /** Full response body preserved for debugging — parsed object, or raw string when unparseable. */
   readonly body: unknown;
+  /** `adminDb().sql()` only, after it waited out a retryable refusal: requests sent. */
+  attempts?: number;
+  /** `adminDb().sql()` only, after it waited out a retryable refusal: milliseconds spent waiting. */
+  waited_ms?: number;
   readonly docs = "https://run402.com/errors/#R402_DB_ERROR";
 
   constructor(
@@ -524,6 +528,57 @@ interface AdminDbClient {
 }
 
 /**
+ * How long `adminDb().sql()` waits out a retryable refusal (a deploy's write
+ * pause answers `503 PROJECT_WRITES_PAUSED`): under the prototype tier's
+ * 10-second default function timeout, so a function never dies waiting
+ * (project-sql-endpoint "First-party SQL clients wait out a retryable refusal").
+ */
+export const ADMIN_SQL_WAIT_BUDGET_MS = 8_000;
+
+/** The wait before attempt `attempt + 1`: the response's Retry-After, at least 0.5 s growing to 2 s. */
+function retryWaitMs(res: Response, attempt: number): number {
+  const header = Number(res.headers.get("retry-after"));
+  const retryAfterMs = Number.isFinite(header) && header > 0 ? header * 1000 : 0;
+  return Math.max(retryAfterMs, Math.min(500 * attempt, 2_000));
+}
+
+/** True when the gateway envelope says repeating the identical request is safe. */
+function isSafeRetryEnvelope(body: unknown): boolean {
+  if (body === null || typeof body !== "object" || Array.isArray(body)) return false;
+  const b = body as Record<string, unknown>;
+  return b.retryable === true && b.safe_to_retry === true;
+}
+
+/**
+ * Send, repeating while the gateway marks the refusal retryable and safe to
+ * retry and the budget still covers the wait. Answers the ok response, or the
+ * last refusal as an {@link R402DbError} carrying `attempts` and `waited_ms`
+ * when it waited at all.
+ */
+async function sendWaitingOutRetryable(
+  send: () => Promise<Response>,
+): Promise<{ ok: true; response: Response } | { ok: false; error: R402DbError }> {
+  const startedAt = Date.now();
+  let waitedMs = 0;
+  for (let attempt = 1; ; attempt++) {
+    const res = await send();
+    if (res.ok) return { ok: true, response: res };
+    const errBody = await res.text();
+    const error = buildDbError("R402_DB_SQL_ERROR", "SQL error", res.status, errBody);
+    const wait = retryWaitMs(res, attempt);
+    if (!isSafeRetryEnvelope(error.body) || Date.now() - startedAt + wait > ADMIN_SQL_WAIT_BUDGET_MS) {
+      if (attempt > 1) {
+        error.attempts = attempt;
+        error.waited_ms = waitedMs;
+      }
+      return { ok: false, error };
+    }
+    await new Promise((resolve) => setTimeout(resolve, wait));
+    waitedMs += wait;
+  }
+}
+
+/**
  * Admin DB client. Uses the project's service_key (role=service_role,
  * BYPASSRLS). Routes through /projects/v1/:project_id/rest/* at the gateway,
  * which accepts only the project's own service key. Use for explicit
@@ -549,7 +604,7 @@ export function adminDb(): AdminDbClient {
     async sql(query: string, params?: unknown[]): Promise<AdminSqlResult> {
       const url = `${config.API_BASE}/projects/v1/${config.PROJECT_ID}/sql`;
       const hasParams = Array.isArray(params) && params.length > 0;
-      const res = await fetch(url, {
+      const send = () => fetch(url, {
         method: "POST",
         headers: {
           ...functionClientHeader(),
@@ -558,10 +613,9 @@ export function adminDb(): AdminDbClient {
         },
         body: hasParams ? JSON.stringify({ sql: query, params }) : query,
       });
-      if (!res.ok) {
-        const errBody = await res.text();
-        throw buildDbError("R402_DB_SQL_ERROR", "SQL error", res.status, errBody);
-      }
+      const sent = await sendWaitingOutRetryable(send);
+      if (!sent.ok) throw sent.error;
+      const res = sent.response;
       const body: unknown = await res.json();
       if (
         body === null ||
