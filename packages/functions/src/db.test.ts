@@ -1127,6 +1127,18 @@ describe("adminDb().sql() — waits out a retryable refusal (a deploy's write pa
       { status: 503, headers: { "Retry-After": retryAfter, "Content-Type": "application/json" } },
     );
   const ok = () => new Response(JSON.stringify({ status: "ok", rows: [{ id: 1 }], row_count: 1 }), { status: 200 });
+  const busy = () =>
+    new Response(
+      JSON.stringify({ code: "PROJECT_DATABASE_BUSY", retryable: true, safe_to_retry: true, mutation_state: "none", details: { retry_after_seconds: 1 } }),
+      { status: 503, headers: { "Retry-After": "1", "Content-Type": "application/json" } },
+    );
+  // The gateway's side of Run402-Connection-Wait-Ms: it waits for a connection
+  // at most what the header says (and never past its 5-second ceiling).
+  const connectionWait = (init: RequestInit | undefined): number => {
+    const value = (init?.headers as Record<string, string> | undefined)?.["Run402-Connection-Wait-Ms"];
+    assert.ok(value !== undefined, "every attempt says how long the gateway may wait for a connection");
+    return Math.min(Number(value), 5_000);
+  };
 
   // Advance the mocked clock until the call settles, letting each fetch resolve between ticks.
   async function drive<T>(p: Promise<T>, stepMs = 250, maxSteps = 200): Promise<T> {
@@ -1212,6 +1224,42 @@ describe("adminDb().sql() — waits out a retryable refusal (a deploy's write pa
     mock.timers.reset();
     assert.equal(calls, 1);
     assert.equal(err.remote_code, "PROJECT_WRITES_PAUSED");
-    assert.equal(err.attempts, undefined, "no wait happened");
+    assert.equal(err.attempts, 1, "the refusal the budget ended says so, even on the first attempt");
+    assert.equal(err.waited_ms, 0);
+  });
+
+  it("every attempt bounds the gateway's connection wait to the budget left, so busy answers end the call by 8 seconds", async () => {
+    const sent: number[] = [];
+    mock.method(globalThis, "fetch", async (_url: string, init?: RequestInit) => {
+      const wait = connectionWait(init);
+      sent.push(Number((init!.headers as Record<string, string>)["Run402-Connection-Wait-Ms"]));
+      await new Promise((r) => setTimeout(r, wait));
+      return busy();
+    });
+    const startedAt = Date.now();
+    const err = (await catchThrown(() => drive(adminDb().sql("INSERT INTO t VALUES (1)")))) as InstanceType<typeof R402DbError>;
+    const elapsed = Date.now() - startedAt;
+    mock.timers.reset();
+    assert.equal(err.remote_code, "PROJECT_DATABASE_BUSY");
+    assert.ok(elapsed <= 8_000, `the call ended within the budget (${elapsed} ms)`);
+    assert.equal(sent[0], 7_000, "the first attempt offers the budget less the statement allowance");
+    assert.ok(sent.length >= 2 && sent.every((v, i) => i === 0 || v < sent[i - 1]!), `each attempt offers less: ${sent.join(", ")}`);
+    assert.equal(err.attempts, sent.length);
+  });
+
+  it("a read that finds every connection busy for 5 seconds is repeated and answers", async () => {
+    let calls = 0;
+    mock.method(globalThis, "fetch", async (_url: string, init?: RequestInit) => {
+      calls++;
+      if (calls === 1) {
+        await new Promise((r) => setTimeout(r, connectionWait(init)));
+        return busy();
+      }
+      return ok();
+    });
+    const result = await drive(adminDb().sql("SELECT id FROM members WHERE user_id = $1", ["u1"]));
+    mock.timers.reset();
+    assert.deepEqual(result.rows, [{ id: 1 }]);
+    assert.equal(calls, 2);
   });
 });

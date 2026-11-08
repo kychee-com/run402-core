@@ -67,9 +67,9 @@ export class R402DbError extends Error {
   readonly remote_code: string | null;
   /** Full response body preserved for debugging — parsed object, or raw string when unparseable. */
   readonly body: unknown;
-  /** `adminDb().sql()` only, after it waited out a retryable refusal: requests sent. */
+  /** `adminDb().sql()` only, when a retryable refusal outlasted the budget: requests sent. */
   attempts?: number;
-  /** `adminDb().sql()` only, after it waited out a retryable refusal: milliseconds spent waiting. */
+  /** `adminDb().sql()` only, when a retryable refusal outlasted the budget: milliseconds spent waiting (0 when there was no time to repeat it). */
   waited_ms?: number;
   readonly docs = "https://run402.com/errors/#R402_DB_ERROR";
 
@@ -448,13 +448,14 @@ async function requestSql(
   init: { headers?: Record<string, string>; contentType: string; body: string },
 ): Promise<AdminSqlResult> {
   const url = `${config.API_BASE}/projects/v1/${config.PROJECT_ID}/sql`;
-  const send = () => fetch(url, {
+  const send = (connectionWaitMs: number) => fetch(url, {
     method: "POST",
     headers: {
       ...functionClientHeader(),
       ...init.headers,
       Authorization: `Bearer ${serviceKey}`,
       "Content-Type": init.contentType,
+      [CONNECTION_WAIT_HEADER]: String(connectionWaitMs),
     },
     body: init.body,
   });
@@ -694,6 +695,18 @@ interface AdminDbClient {
  */
 export const ADMIN_SQL_WAIT_BUDGET_MS = 8_000;
 
+/**
+ * Each attempt tells the gateway how long it may wait for a database
+ * connection: what is left of the budget, less this allowance for the
+ * statement itself and the round trip. The gateway answers
+ * `503 PROJECT_DATABASE_BUSY` when that wait runs out, so no attempt's
+ * connection wait can carry the call past the budget.
+ */
+const CONNECTION_WAIT_HEADER = "Run402-Connection-Wait-Ms";
+const STATEMENT_ALLOWANCE_MS = 1_000;
+/** A retry starts only when at least this much budget is left after its wait. */
+const MIN_ATTEMPT_MS = 1_500;
+
 /** The wait before attempt `attempt + 1`: the response's Retry-After, at least 0.5 s growing to 2 s. */
 function retryWaitMs(res: Response, attempt: number): number {
   const header = Number(res.headers.get("retry-after"));
@@ -710,31 +723,29 @@ function isSafeRetryEnvelope(body: unknown): boolean {
 
 /**
  * Send, repeating while the gateway marks the refusal retryable and safe to
- * retry and the budget still covers the wait. Answers the ok response, or the
- * last refusal as an {@link R402DbError} carrying `attempts` and `waited_ms`
- * when it waited at all.
+ * retry and the budget still covers the wait plus a useful attempt. Every
+ * attempt carries `Run402-Connection-Wait-Ms` so the gateway bounds its
+ * connection wait to what the budget has left. Answers the ok response, or
+ * the last refusal as an {@link R402DbError}; a retryable refusal the budget
+ * ends carries `attempts` and `waited_ms` (1 and 0 when there was no time to
+ * repeat it), any other error is the gateway's own.
  */
 async function sendWaitingOutRetryable(
-  send: () => Promise<Response>,
+  send: (connectionWaitMs: number) => Promise<Response>,
 ): Promise<{ ok: true; response: Response } | { ok: false; error: R402DbError }> {
   const startedAt = Date.now();
+  const remaining = (): number => ADMIN_SQL_WAIT_BUDGET_MS - (Date.now() - startedAt);
   let waitedMs = 0;
-  // The budget bounds the whole call, so a retry starts only when it still
-  // covers the wait plus an attempt as slow as the slowest one so far.
-  let slowestAttemptMs = 0;
   for (let attempt = 1; ; attempt++) {
-    const attemptStartedAt = Date.now();
-    const res = await send();
+    const res = await send(Math.max(0, remaining() - STATEMENT_ALLOWANCE_MS));
     if (res.ok) return { ok: true, response: res };
     const errBody = await res.text();
-    slowestAttemptMs = Math.max(slowestAttemptMs, Date.now() - attemptStartedAt);
     const error = buildDbError("R402_DB_SQL_ERROR", "SQL error", res.status, errBody);
+    if (!isSafeRetryEnvelope(error.body)) return { ok: false, error };
     const wait = retryWaitMs(res, attempt);
-    if (!isSafeRetryEnvelope(error.body) || Date.now() - startedAt + wait + slowestAttemptMs > ADMIN_SQL_WAIT_BUDGET_MS) {
-      if (attempt > 1) {
-        error.attempts = attempt;
-        error.waited_ms = waitedMs;
-      }
+    if (remaining() - wait < MIN_ATTEMPT_MS) {
+      error.attempts = attempt;
+      error.waited_ms = waitedMs;
       return { ok: false, error };
     }
     await new Promise((resolve) => setTimeout(resolve, wait));
