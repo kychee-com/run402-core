@@ -1,6 +1,9 @@
 import { config } from "./config.js";
-import { forwardedActorAuthorization } from "./lib/project-jwt-keys.js";
+import { DATA_PLANE_ACTOR_TOKEN_HEADER, forwardedActorAuthorization } from "./lib/project-jwt-keys.js";
 import { getCurrentContext } from "./runtime-context.js";
+
+/** The client-facing header that names a request's current group (`group_owns_rows`). */
+const GROUP_HEADER = "Run402-Group";
 
 interface QueryBuilderOpts {
   apikey: string;
@@ -31,9 +34,9 @@ export type R402DbErrorCode =
  * Structured error thrown by the DB helpers on a non-ok gateway/PostgREST
  * response:
  *   - `db()` / `adminDb().from()` (QueryBuilder) → code `R402_DB_QUERY_ERROR`
- *   - `adminDb().sql()` → code `R402_DB_SQL_ERROR`
+ *   - `db().sql()` / `adminDb().sql()` → code `R402_DB_SQL_ERROR`
  *
- * Also thrown by `adminDb().sql()` on a 2xx whose body is NOT the
+ * Also thrown by `db().sql()` / `adminDb().sql()` on a 2xx whose body is NOT the
  * `{ rows: [...] }` envelope → code `R402_DB_SQL_RESULT_SHAPE` (see
  * {@link buildSqlResultShapeError}); the message names only the top-level
  * type / keys of what came back, never the body.
@@ -54,7 +57,7 @@ export type R402DbErrorCode =
  *     so old-bundle and new-bundle non-JSON failures fingerprint identically.
  *
  * `prefix` is `PostgREST error` for the QueryBuilder path and `SQL error`
- * for the `adminDb().sql()` path.
+ * for the `db().sql()` / `adminDb().sql()` path.
  */
 export class R402DbError extends Error {
   readonly code: R402DbErrorCode;
@@ -141,10 +144,11 @@ function describeBodyShape(body: unknown): string {
 }
 
 /**
- * Build the {@link R402DbError} thrown when `adminDb().sql()` gets a 2xx whose
- * body is not the `{ rows: [...] }` envelope. Same fingerprint discipline as
- * {@link buildDbError}: the message carries only a low-cardinality shape
- * description (top-level type / keys); the full body rides on `body`.
+ * Build the {@link R402DbError} thrown when `db().sql()` / `adminDb().sql()`
+ * gets a 2xx whose body is not the `{ rows: [...] }` envelope. Same
+ * fingerprint discipline as {@link buildDbError}: the message carries only a
+ * low-cardinality shape description (top-level type / keys); the full body
+ * rides on `body`.
  */
 function buildSqlResultShapeError(status: number, body: unknown): R402DbError {
   const shape = describeBodyShape(body);
@@ -422,45 +426,156 @@ function extractAuthFromAls(): string | undefined {
   return raw ?? undefined;
 }
 
-interface CallerDbClient {
-  from(table: string): QueryBuilder;
+/** The bare `x-run402-actor-token` value behind an `Authorization`-ready bearer, if it is one. */
+function bareBearer(authorization: string | undefined): string | undefined {
+  if (!authorization) return undefined;
+  const m = /^Bearer\s+(.+)$/i.exec(authorization);
+  return m ? m[1] : undefined;
 }
 
 /**
- * Caller-context DB client. Forwards the caller's Authorization header
- * to PostgREST so RLS policies evaluate against the caller's role.
+ * Run one request against `POST /projects/v1/:project_id/sql` with the
+ * project's service key and map the answer the one way both SQL clients
+ * share: a non-2xx throws `R402_DB_SQL_ERROR`, a 2xx that is not the
+ * `{ rows: [...] }` envelope throws `R402_DB_SQL_RESULT_SHAPE`.
+ */
+async function requestSql(
+  serviceKey: string,
+  init: { headers?: Record<string, string>; contentType: string; body: string },
+): Promise<AdminSqlResult> {
+  const url = `${config.API_BASE}/projects/v1/${config.PROJECT_ID}/sql`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      ...functionClientHeader(),
+      ...init.headers,
+      Authorization: `Bearer ${serviceKey}`,
+      "Content-Type": init.contentType,
+    },
+    body: init.body,
+  });
+  if (!res.ok) {
+    const errBody = await res.text();
+    throw buildDbError("R402_DB_SQL_ERROR", "SQL error", res.status, errBody);
+  }
+  const body: unknown = await res.json();
+  if (
+    body === null ||
+    typeof body !== "object" ||
+    Array.isArray(body) ||
+    !Array.isArray((body as Record<string, unknown>).rows)
+  ) {
+    throw buildSqlResultShapeError(res.status, body);
+  }
+  return body as AdminSqlResult;
+}
+
+/**
+ * How `db()` learns the request it acts for and the group it acts in.
  *
- * `db()` accepts the request via either path:
+ * - `request` — the inbound Web `Request`; omitted, the active request
+ *   context (AsyncLocalStorage, populated by the routed runtime) is read.
+ * - `group` — the request's current group for tables declared
+ *   `group_owns_rows`: sent as the `Run402-Group` header on `from()` and as
+ *   the body's `group` on `sql()`. The policy narrows to that group and never
+ *   widens: a group the user is not a member of yields no rows, and a
+ *   `force_group_on_insert` table fills a NULL group column from it.
+ */
+export interface DbOptions {
+  request?: Request;
+  group?: string;
+}
+
+interface CallerDbClient {
+  from(table: string): QueryBuilder;
+  /**
+   * Run SQL as the request's end user, under row-level security.
+   *
+   * Posts the project's service key with `as_actor: true` and the request's
+   * forwarded actor token to `/projects/v1/:project_id/sql`; the gateway runs
+   * the statement as that user (role `authenticated`), or as `anon` when the
+   * request carries no actor (a scheduled function, an anonymous visitor),
+   * never silently as the service key. The result says whom it ran as:
+   * `actor: { user_id } | null` and `role: "authenticated" | "anon"`.
+   *
+   * ```ts
+   * const { rows, actor } = await db().sql(
+   *   "SELECT * FROM threads WHERE created_at > $1",
+   *   [since],
+   * );
+   * ```
+   *
+   * The result is the gateway ENVELOPE ({@link AdminSqlResult}), never a bare
+   * row array: destructure `rows`. Reads are governed by the tables' policies
+   * (rows the user may not see are absent); a write a policy refuses throws
+   * `R402DbError` with `status: 403` and `remote_code: "REST_PERMISSION_DENIED"`.
+   * A non-2xx throws `R402_DB_SQL_ERROR`; a 2xx whose body is not
+   * `{ rows: [...] }` throws `R402_DB_SQL_RESULT_SHAPE`, exactly as
+   * `adminDb().sql()` does, so moving a call between the two changes one
+   * identifier.
+   *
+   * Needs `RUN402_SERVICE_KEY` in the function's environment (the gateway
+   * injects it); without it this throws before any request.
+   */
+  sql(query: string, params?: unknown[]): Promise<AdminSqlResult>;
+}
+
+function isRequest(value: Request | DbOptions): value is Request {
+  if (typeof Request !== "undefined" && value instanceof Request) return true;
+  const headers = (value as { headers?: unknown }).headers;
+  return typeof headers === "object" && headers !== null && typeof (headers as Headers).get === "function";
+}
+
+/**
+ * Caller-context DB client: the visitor's reads and writes, under row-level
+ * security. Use it for anything a function does on behalf of the person
+ * whose request it is serving; use {@link adminDb} for platform work (audit
+ * logs, cron cleanup, webhooks) where there is no caller to act as.
  *
- *   1. **Explicit `db(req)`** — pass a Web `Request` (or Express
- *      `req.raw` equivalent).
+ * `from(table)` forwards the caller's identity to PostgREST so RLS evaluates
+ * against the caller's role; `sql(query, params?)` runs a statement as the
+ * same user through the gateway's SQL route (`as_actor`), for the joins and
+ * aggregates a REST query cannot express. Both see only what the manifest's
+ * policies allow that user.
  *
- *   2. **Implicit `db()`** — when called with no argument, reads the
- *      Authorization header from the active AsyncLocalStorage request
- *      context (populated by the SSR Lambda runtime in `@run402/astro`).
- *      This is what makes `await db().from(...)` work naturally inside
- *      Astro `[slug].astro` frontmatter without explicit plumbing.
+ * `db()` learns the request via either path:
+ *
+ *   1. **Explicit `db(req)`** or **`db({ request: req })`** — pass a Web
+ *      `Request` (or Express `req.raw` equivalent).
+ *
+ *   2. **Implicit `db()`** — with no request, reads the active
+ *      AsyncLocalStorage request context (populated by the routed runtime and
+ *      `@run402/astro`). This is what makes `await db().from(...)` work
+ *      naturally inside Astro `[slug].astro` frontmatter without plumbing.
+ *
+ * `db({ group })` names the request's current group for tables declared
+ * `group_owns_rows` (see {@link DbOptions}): `Run402-Group` on `from()`, the
+ * body's `group` on `sql()`.
  *
  * `apikey` is the project's anon key (routing only — does not grant
- * bypass). If no Authorization is present (in either form), the request
- * is sent with just the anon apikey; PostgREST resolves role=anon and
- * RLS decides whether the query succeeds or returns 401/403.
+ * bypass). If no identity is present (in either form), `from()` is sent with
+ * just the anon apikey and PostgREST resolves role=anon, and `sql()` runs as
+ * `anon` and says so (`role: "anon"`); RLS decides what either returns.
  *
- * Outside an active request context (module scope, background timer
- * past response materialization), `db()` (no arg) still works — it
- * sends with no Authorization, matching a Request with no auth header.
- * SDK functions that REQUIRE a context
- * (like `cache.invalidate` path-form) throw `R402_SDK_OUTSIDE_REQUEST_CONTEXT`
- * separately.
+ * Outside an active request context (module scope, background timer past
+ * response materialization, a scheduled function), `db()` (no arg) still
+ * works — it sends no identity, matching a Request with no auth header. SDK
+ * functions that REQUIRE a context (like `cache.invalidate` path-form) throw
+ * `R402_SDK_OUTSIDE_REQUEST_CONTEXT` separately.
  */
-export function db(req?: Request): CallerDbClient {
+export function db(reqOrOpts?: Request | DbOptions): CallerDbClient {
   if (!config.ANON_KEY) {
     throw new Error(
       "db() requires RUN402_ANON_KEY in the Lambda environment. " +
         "Redeploy this function via the gateway to pick up the new env var.",
     );
   }
-  const authorization = req !== undefined ? extractAuth(req) : extractAuthFromAls();
+  const opts: DbOptions = reqOrOpts === undefined ? {} : isRequest(reqOrOpts) ? { request: reqOrOpts } : reqOrOpts;
+  if (opts.group !== undefined && (typeof opts.group !== "string" || opts.group.length === 0)) {
+    throw new Error("db({ group }) needs a non-empty string: the request's current group, sent as Run402-Group.");
+  }
+  const group = opts.group;
+  const authorization = opts.request !== undefined ? extractAuth(opts.request) : extractAuthFromAls();
   const anonKey = config.ANON_KEY;
   return {
     from(table: string) {
@@ -468,13 +583,35 @@ export function db(req?: Request): CallerDbClient {
         apikey: anonKey,
         authorization,
         basePath: "/rest/v1",
+        ...(group !== undefined ? { headers: { [GROUP_HEADER]: group } } : {}),
+      });
+    },
+    sql(query: string, params?: unknown[]): Promise<AdminSqlResult> {
+      if (!config.SERVICE_KEY) {
+        throw new Error(
+          "db().sql() requires RUN402_SERVICE_KEY in the Lambda environment: " +
+            "it posts the service key with as_actor: true so the statement runs as the request's user. " +
+            "Redeploy this function via the gateway to pick up the env var.",
+        );
+      }
+      const actorToken = bareBearer(authorization);
+      return requestSql(config.SERVICE_KEY, {
+        ...(actorToken !== undefined ? { headers: { [DATA_PLANE_ACTOR_TOKEN_HEADER]: actorToken } } : {}),
+        contentType: "application/json",
+        body: JSON.stringify({
+          sql: query,
+          params: Array.isArray(params) ? params : [],
+          as_actor: true,
+          ...(group !== undefined ? { group } : {}),
+        }),
       });
     },
   };
 }
 
 /**
- * The gateway's SQL endpoint envelope, returned verbatim by `adminDb().sql()`.
+ * The gateway's SQL endpoint envelope, returned verbatim by `db().sql()` and
+ * `adminDb().sql()`.
  * NOTE the snake_case `row_count` — this shape is the wire contract
  * (docs/style.md snake_case), not a camelCase SDK projection. Do not declare
  * this type as a bare row array; it does not match the runtime response shape.
@@ -485,16 +622,35 @@ export interface AdminSqlResult {
   schema: string;
   /** SELECT rows — and RETURNING rows for INSERT/UPDATE/DELETE .. RETURNING. */
   rows: Record<string, unknown>[];
-  /** Matched/affected row count (snake_case on the wire). */
+  /** Matched/affected row count of the last statement (snake_case on the wire). */
   row_count: number;
   /** Column metadata for the returned rows. */
   fields: { name: string; type: string }[];
+  /** One entry per statement, in order: its command tag and its own count. */
+  statements: { command: string | null; row_count: number }[];
+  /**
+   * Warnings that never change the result (`SCHEMA_CHANGE_OUTSIDE_MIGRATION`,
+   * `MULTI_STATEMENT_TEXT_BODY`, `ROUTE_RETIRING`), each with `next_actions`.
+   */
+  warnings: { code: string; message: string; severity?: string; next_actions: unknown[] }[];
+  /**
+   * `db().sql()` only: the end user the statement ran as, or `null` when the
+   * request carried no actor. Absent on `adminDb().sql()`.
+   */
+  actor?: { user_id: string } | null;
+  /**
+   * `db().sql()` only: `"authenticated"` when an actor was forwarded, else
+   * `"anon"`. Absent on `adminDb().sql()`, which runs as the service role.
+   */
+  role?: "authenticated" | "anon";
 }
 
 interface AdminDbClient {
   from(table: string): QueryBuilder;
   /**
    * Run raw SQL as the project's superuser-scoped role (always BYPASSRLS).
+   * For a statement on behalf of the request's visitor, under their
+   * policies, use `db().sql()` instead.
    *
    * The result is the gateway ENVELOPE, never a bare row array:
    *
@@ -508,7 +664,8 @@ interface AdminDbClient {
    * - `rows` — SELECT rows, and `RETURNING` rows for INSERT/UPDATE/DELETE
    *   (`[]` for a write without `RETURNING`).
    * - `row_count` — the matched/affected count (snake_case, wire contract).
-   * - `status`, `schema`, `fields` — see {@link AdminSqlResult}.
+   * - `status`, `schema`, `fields`, `statements`, `warnings` — see
+   *   {@link AdminSqlResult}.
    *
    * Iterating the result itself (`for (const r of result)`) or reading
    * `result.length` is wrong and silently yields nothing — destructure `rows`.
@@ -524,10 +681,18 @@ interface AdminDbClient {
 }
 
 /**
- * Admin DB client. Uses the project's service_key (role=service_role,
- * BYPASSRLS). Routes through /projects/v1/:project_id/rest/* at the gateway,
- * which accepts only the project's own service key. Use for explicit
- * server-side operations that must ignore RLS.
+ * Admin DB client: the platform's own reads and writes, bypassing row-level
+ * security. Uses the project's service_key (role=service_role, BYPASSRLS).
+ * Routes through /projects/v1/:project_id/rest/* at the gateway, which
+ * accepts only the project's own service key.
+ *
+ * Use it when the function acts for the PLATFORM, not for the caller: audit
+ * logs, cron cleanup, webhook handlers, fan-out writes after a payment event.
+ * A request served on behalf of a visitor belongs on {@link db}: `db().from()`
+ * and `db().sql()` run as that visitor and let the manifest's policies
+ * decide, so a bug in the handler's own checks cannot expose every row
+ * (`run402 doctor` flags `adminDb()` in a file that reads the current user
+ * as `SERVICE_KEY_IN_USER_REQUEST`).
  *
  * `adminDb().sql()` targets /projects/v1/:project_id/sql, which runs
  * arbitrary SQL as a superuser-scoped role on the project schema.
@@ -546,32 +711,12 @@ export function adminDb(): AdminDbClient {
         headers: functionClientHeader(),
       });
     },
-    async sql(query: string, params?: unknown[]): Promise<AdminSqlResult> {
-      const url = `${config.API_BASE}/projects/v1/${config.PROJECT_ID}/sql`;
+    sql(query: string, params?: unknown[]): Promise<AdminSqlResult> {
       const hasParams = Array.isArray(params) && params.length > 0;
-      const res = await fetch(url, {
-        method: "POST",
-        headers: {
-          ...functionClientHeader(),
-          Authorization: `Bearer ${serviceKey}`,
-          "Content-Type": hasParams ? "application/json" : "text/plain",
-        },
+      return requestSql(serviceKey, {
+        contentType: hasParams ? "application/json" : "text/plain",
         body: hasParams ? JSON.stringify({ sql: query, params }) : query,
       });
-      if (!res.ok) {
-        const errBody = await res.text();
-        throw buildDbError("R402_DB_SQL_ERROR", "SQL error", res.status, errBody);
-      }
-      const body: unknown = await res.json();
-      if (
-        body === null ||
-        typeof body !== "object" ||
-        Array.isArray(body) ||
-        !Array.isArray((body as Record<string, unknown>).rows)
-      ) {
-        throw buildSqlResultShapeError(res.status, body);
-      }
-      return body as AdminSqlResult;
     },
   };
 }

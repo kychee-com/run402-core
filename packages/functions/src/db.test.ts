@@ -904,3 +904,217 @@ describe("single() / maybeSingle() row modes", () => {
     assert.deepEqual(rows, [{ id: 1 }, { id: 2 }]);
   });
 });
+
+describe("db().sql() — SQL as the request's end user (group-owned-rows D9)", () => {
+  const envelope = {
+    status: "ok",
+    schema: "p0001",
+    rows: [{ id: 1 }],
+    row_count: 1,
+    fields: [{ name: "id", type: "int4" }],
+    statements: [{ command: "SELECT", row_count: 1 }],
+    warnings: [],
+    actor: { user_id: "user-uuid-1" },
+    role: "authenticated",
+  };
+  let fetchCalls: { url: string; opts: RequestInit }[];
+
+  beforeEach(() => {
+    fetchCalls = [];
+    mock.method(globalThis, "fetch", async (url: string, opts: RequestInit) => {
+      fetchCalls.push({ url, opts });
+      return new Response(JSON.stringify(envelope), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+  });
+
+  const lastHeaders = () => fetchCalls[fetchCalls.length - 1]!.opts.headers as Record<string, string>;
+  const lastBody = () => JSON.parse(fetchCalls[fetchCalls.length - 1]!.opts.body as string) as Record<string, unknown>;
+
+  it("posts the service key with as_actor: true to /projects/v1/:project_id/sql", async () => {
+    const result = await db().sql("SELECT * FROM threads");
+    assert.equal(fetchCalls[0]!.url, "https://test.run402.com/projects/v1/prj_test/sql");
+    assert.equal(fetchCalls[0]!.opts.method, "POST");
+    const headers = lastHeaders();
+    assert.equal(headers.Authorization, "Bearer sk_test");
+    assert.equal(headers["Content-Type"], "application/json");
+    assert.match(headers["Run402-Client"]!, /^surface="function"/);
+    assert.equal("x-run402-actor-token" in headers, false, "no actor token outside a request context");
+    assert.deepEqual(lastBody(), { sql: "SELECT * FROM threads", params: [], as_actor: true });
+    assert.deepEqual(result, envelope);
+  });
+
+  it("sends params, and group as the body's group", async () => {
+    await db({ group: "2" }).sql("SELECT * FROM threads WHERE title = $1", ["hi"]);
+    assert.deepEqual(lastBody(), {
+      sql: "SELECT * FROM threads WHERE title = $1",
+      params: ["hi"],
+      as_actor: true,
+      group: "2",
+    });
+  });
+
+  it("forwards the gateway-minted actor token, bare, under x-run402-actor-token (ALS form)", async () => {
+    const { runWithContext } = await import("./runtime-context.js");
+    await runWithContext(
+      {
+        requestId: "req_test",
+        projectId: "prj_test",
+        releaseId: "rel_test",
+        locale: null,
+        defaultLocale: null,
+        host: "test.run402.com",
+        request: {
+          method: "GET",
+          url: "/threads",
+          headers: { "x-run402-actor-token": "GATEWAY_MINTED_TOKEN" },
+        },
+        actor: {
+          id: "user-uuid-1",
+          email: "u@example.com",
+          emailVerified: true,
+          authTime: 1779960000,
+          amr: ["passkey"],
+          amrTimes: { passkey: 1779960000 },
+          authzVersion: 7,
+          sessionId: "sess-uuid-1",
+        },
+      },
+      async () => {
+        await db().sql("SELECT 1");
+      },
+    );
+    const headers = lastHeaders();
+    assert.equal(headers["x-run402-actor-token"], "GATEWAY_MINTED_TOKEN");
+    assert.equal(headers.Authorization, "Bearer sk_test", "the service key stays the credential; the token names the actor");
+  });
+
+  it("a verified actor with NO forwarded token sends no actor token (never the inbound header)", async () => {
+    const { runWithContext } = await import("./runtime-context.js");
+    await runWithContext(
+      {
+        requestId: "req_test",
+        projectId: "prj_test",
+        releaseId: "rel_test",
+        locale: null,
+        defaultLocale: null,
+        host: "test.run402.com",
+        request: {
+          method: "GET",
+          url: "/threads",
+          headers: { authorization: "Bearer CALLER_SUPPLIED" },
+        },
+        actor: {
+          id: "user-uuid-1",
+          email: "u@example.com",
+          emailVerified: true,
+          authTime: 1779960000,
+          amr: ["passkey"],
+          amrTimes: { passkey: 1779960000 },
+          authzVersion: 7,
+          sessionId: "sess-uuid-1",
+        },
+      },
+      async () => {
+        await db().sql("SELECT 1");
+      },
+    );
+    assert.equal("x-run402-actor-token" in lastHeaders(), false);
+  });
+
+  it("db(req) and db({ request }) forward the request's actor token the same way", async () => {
+    const req = new Request("https://fn.localhost/", {
+      method: "POST",
+      headers: { "x-run402-actor-token": "FROM_REQUEST" },
+    });
+    await db(req).sql("SELECT 1");
+    assert.equal(lastHeaders()["x-run402-actor-token"], "FROM_REQUEST");
+    await db({ request: req, group: "7" }).sql("SELECT 1");
+    assert.equal(lastHeaders()["x-run402-actor-token"], "FROM_REQUEST");
+    assert.equal(lastBody().group, "7");
+  });
+
+  it("an explicit Bearer on the request is forwarded bare, as db(req).from() forwards it", async () => {
+    await db(makeRequest("Bearer USER_JWT")).sql("SELECT 1");
+    assert.equal(lastHeaders()["x-run402-actor-token"], "USER_JWT");
+  });
+
+  it("a non-2xx throws R402_DB_SQL_ERROR with the gateway code, as adminDb().sql() does", async () => {
+    mock.method(globalThis, "fetch", async () =>
+      new Response(JSON.stringify({ code: "REST_PERMISSION_DENIED", message: "denied", trace_id: "tr_1" }), { status: 403 }),
+    );
+    const err = (await catchThrown(() => db().sql("INSERT INTO threads (circle_id) VALUES (3)"))) as InstanceType<typeof R402DbError>;
+    assert.ok(err instanceof R402DbError);
+    assert.equal(err.code, "R402_DB_SQL_ERROR");
+    assert.equal(err.status, 403);
+    assert.equal(err.remote_code, "REST_PERMISSION_DENIED");
+    assert.equal(err.trace_id, "tr_1");
+    assert.equal(err.message, "SQL error (403): REST_PERMISSION_DENIED");
+  });
+
+  it("a 2xx that is not the envelope throws R402_DB_SQL_RESULT_SHAPE", async () => {
+    mock.method(globalThis, "fetch", async () => new Response(JSON.stringify([{ id: 1 }]), { status: 200 }));
+    const err = (await catchThrown(() => db().sql("SELECT 1"))) as InstanceType<typeof R402DbError>;
+    assert.equal(err.code, "R402_DB_SQL_RESULT_SHAPE");
+  });
+
+  it("without RUN402_SERVICE_KEY it throws before any request, naming the variable", async () => {
+    const { config } = await import("./config.js");
+    const saved = config.SERVICE_KEY;
+    (config as { SERVICE_KEY: string | undefined }).SERVICE_KEY = undefined;
+    try {
+      const err = (await catchThrown(() => db().sql("SELECT 1"))) as Error;
+      assert.match(err.message, /RUN402_SERVICE_KEY/);
+      assert.equal(fetchCalls.length, 0);
+      // from() needs only the anon key and keeps working.
+      await db().from("threads").select();
+      assert.equal(fetchCalls.length, 1);
+    } finally {
+      (config as { SERVICE_KEY: string | undefined }).SERVICE_KEY = saved;
+    }
+  });
+});
+
+describe("db({ group }) — the current group on from() (Run402-Group)", () => {
+  let lastFetchOpts: RequestInit;
+
+  beforeEach(() => {
+    lastFetchOpts = {};
+    mock.method(globalThis, "fetch", async (_url: string, opts: RequestInit) => {
+      lastFetchOpts = opts;
+      return new Response(JSON.stringify([{ id: 1 }]), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+  });
+
+  it("sends Run402-Group on every from() request", async () => {
+    await db({ group: "2" }).from("threads").select();
+    const headers = lastFetchOpts.headers as Record<string, string>;
+    assert.equal(headers["Run402-Group"], "2");
+    assert.equal(headers.apikey, "anon_test");
+    assert.equal("Authorization" in headers, false);
+  });
+
+  it("db({ request, group }) keeps the request's authorization beside the group", async () => {
+    await db({ request: makeRequest("Bearer USER_JWT"), group: "2" }).from("threads").insert({ text: "hi" });
+    const headers = lastFetchOpts.headers as Record<string, string>;
+    assert.equal(headers["Run402-Group"], "2");
+    assert.equal(headers.Authorization, "Bearer USER_JWT");
+    assert.equal(lastFetchOpts.method, "POST");
+  });
+
+  it("no group means no header, on db(), db(req) and db({})", async () => {
+    for (const client of [db(), db(makeRequest()), db({})]) {
+      await client.from("threads").select();
+      assert.equal("Run402-Group" in (lastFetchOpts.headers as Record<string, string>), false);
+    }
+  });
+
+  it("refuses an empty group before any request", () => {
+    assert.throws(() => db({ group: "" }), /group/);
+  });
+});

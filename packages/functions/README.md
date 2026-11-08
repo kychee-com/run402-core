@@ -26,7 +26,7 @@ npm install @run402/functions
 
 ## The two DB clients
 
-The most important distinction in this library: **`db(req)` runs as the caller, `adminDb()` bypasses RLS.**
+The most important distinction in this library: **`db(req)` runs as the caller, `adminDb()` bypasses RLS.** A request served on behalf of a visitor belongs on `db()`, whether it is a REST query (`db().from()`) or SQL (`db().sql()`); `adminDb()` is for platform work with no caller to act as.
 
 ### `db(req).from(table)` — caller-context
 
@@ -39,6 +39,30 @@ const mine = await db(req).from("items").select("title, done").eq("user_id", use
 // Writes go through RLS too. If the policy says the caller can't insert, it errors.
 const [created] = await db(req).from("items").insert({ title: "New", done: false });
 ```
+
+`db()` takes the request either way: `db(req)` / `db({ request: req })` with a Web `Request`, or bare `db()` inside a routed request, which reads the active request context. A second option names the request's **current group** for tables declared `group_owns_rows` in the expose manifest:
+
+```ts
+// Every from() query carries `Run402-Group: <circleId>`; every sql() call sends it as the body's `group`.
+const circle = db({ group: circleId });
+const threads = await circle.from("threads").select("*");          // this circle's threads only
+await circle.from("threads").insert({ text: "hi" });               // force_group_on_insert fills circle_id
+```
+
+The named group narrows and never widens: the policy still checks the membership table, so a group the user is not a member of yields no rows, and a write into it is refused. Without `group`, a member reads every group they belong to. An empty `group` throws before any request.
+
+### `db(req).sql(query, params?)` — SQL as the caller
+
+Runs one statement as the request's end user, under the same row-level security `from()` gets: the joins and aggregates a REST query cannot express, without reaching for the service key.
+
+```ts
+const { rows, actor, role } = await db().sql(
+  "SELECT t.*, count(r.id)::int AS replies FROM threads t LEFT JOIN replies r ON r.thread_id = t.id GROUP BY t.id",
+);
+// actor: { user_id: "…" }, role: "authenticated"  — or actor: null, role: "anon" with no signed-in visitor
+```
+
+It posts the project's service key with `as_actor: true` and the request's forwarded actor token to `/projects/v1/:project_id/sql`; the gateway verifies the token and runs the statement as that user (role `authenticated`), or as `anon` when the request carries no actor (an anonymous visitor, a scheduled function), **never silently as the service key**. The answer says whom it ran as: `actor: { user_id } | null` and `role: "authenticated" | "anon"`. Reads return only the rows the user's policies allow; a write a policy refuses throws `R402DbError` with `status: 403` and `remote_code: "REST_PERMISSION_DENIED"`. The result is the same `AdminSqlResult` envelope as `adminDb().sql()` and the errors are the same codes, so moving a call between the two changes one identifier. Needs `RUN402_SERVICE_KEY` in the function's environment (the gateway injects it); without it the call throws before any request.
 
 ### `adminDb().from(table)` — bypass RLS
 
@@ -94,6 +118,8 @@ returns a supabase-style `{ data, error }` envelope.
 
 ### `adminDb().sql(query, params?)` — raw SQL, always BYPASSRLS
 
+For a statement on behalf of the request's visitor, use `db().sql()` above; this one runs as the service role and sees every row.
+
 ```ts
 const { rows, row_count } = await adminDb().sql(
   "SELECT count(*)::int AS n FROM items WHERE user_id = $1",
@@ -103,7 +129,7 @@ const { rows, row_count } = await adminDb().sql(
 //   fields: [{ name: "n", type: "int4" }] }
 ```
 
-Returns `AdminSqlResult` (exported type): `{ status, schema, rows, row_count, fields }` — snake_case on the wire. For SELECT, `rows` is the result set and `row_count` is the row count. For INSERT/UPDATE/DELETE, `rows` is `[]` and `row_count` is the affected count — unless the statement uses `RETURNING`, in which case `rows` carries the returned rows. `fields` lists the result columns (`{ name, type }`) so even an empty SELECT conveys its shape.
+Returns `AdminSqlResult` (exported type): `{ status, schema, rows, row_count, fields, statements, warnings }` — snake_case on the wire. For SELECT, `rows` is the result set and `row_count` is the row count. For INSERT/UPDATE/DELETE, `rows` is `[]` and `row_count` is the affected count — unless the statement uses `RETURNING`, in which case `rows` carries the returned rows. `fields` lists the result columns (`{ name, type }`) so even an empty SELECT conveys its shape. `statements` lists each statement's command tag and count in order, and `warnings` carries the gateway's result-preserving warnings (`SCHEMA_CHANGE_OUTSIDE_MIGRATION`, `MULTI_STATEMENT_TEXT_BODY`, `ROUTE_RETIRING`), each with `next_actions`. `actor` and `role` are present only on `db().sql()`.
 
 The result is the **envelope, never a bare row array** — iterating the result itself or reading `.length` on it silently yields nothing; destructure `rows`. A 2xx whose body is not `{ rows: [...] }` throws `R402DbError` with `code: "R402_DB_SQL_RESULT_SHAPE"` rather than resolving. An omitted or **empty** `params` array sends the query as `text/plain` with no parameter binding, so `$1` placeholders fail server-side — pass a non-empty array whenever the query uses placeholders.
 
@@ -830,7 +856,7 @@ All helpers throw on non-2xx responses.
 
 The DB helpers throw a structured `R402DbError` (also exported as a type from the package). Both throw sites carry a stable SDK-level `code`:
 
-- `adminDb().sql(...)` → `code: "R402_DB_SQL_ERROR"` (non-2xx), or `code: "R402_DB_SQL_RESULT_SHAPE"` (a 2xx whose body is not the `{ rows: [...] }` envelope — `status` is the HTTP status, `body` the full parsed body, and the message names only the top-level type / keys, e.g. `SQL result shape (200): expected envelope { rows: [...] }, got array(length=2)`)
+- `db().sql(...)` / `adminDb().sql(...)` → `code: "R402_DB_SQL_ERROR"` (non-2xx; a policy refusal is `status: 403` with `remote_code: "REST_PERMISSION_DENIED"`), or `code: "R402_DB_SQL_RESULT_SHAPE"` (a 2xx whose body is not the `{ rows: [...] }` envelope — `status` is the HTTP status, `body` the full parsed body, and the message names only the top-level type / keys, e.g. `SQL result shape (200): expected envelope { rows: [...] }, got array(length=2)`)
 - `db(req).from(...)` / `adminDb().from(...)` (the `QueryBuilder`) → `code: "R402_DB_QUERY_ERROR"`
 
 Branch on the **properties**, not the message string:

@@ -1,5 +1,5 @@
 export { db, adminDb, QueryBuilder, R402DbError } from "./db.js";
-export type { R402DbErrorCode, AdminSqlResult } from "./db.js";
+export type { R402DbErrorCode, AdminSqlResult, DbOptions } from "./db.js";
 // eslint-disable-next-line @typescript-eslint/no-deprecated -- trap exports: they throw R402_AUTH_UNKNOWN_EXPORT with a fix-it
 export { getUser, getUserId, getRole } from "./auth.js";
 export type { User } from "./auth.js";
