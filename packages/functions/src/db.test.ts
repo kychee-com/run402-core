@@ -1185,6 +1185,23 @@ describe("adminDb().sql() — waits out a retryable refusal (a deploy's write pa
     assert.ok(elapsed <= 8_000, `stayed within the budget (${elapsed} ms)`);
   });
 
+  it("slow attempts count against the budget: the whole call ends within 8 seconds", async () => {
+    let calls = 0;
+    mock.method(globalThis, "fetch", async () => {
+      calls++;
+      await new Promise((r) => setTimeout(r, 3_000));
+      return paused();
+    });
+    const startedAt = Date.now();
+    const err = (await catchThrown(() => drive(adminDb().sql("INSERT INTO t VALUES (1)")))) as InstanceType<typeof R402DbError>;
+    const elapsed = Date.now() - startedAt;
+    mock.timers.reset();
+    assert.equal(err.remote_code, "PROJECT_WRITES_PAUSED");
+    assert.equal(calls, 2, "a third 3-second attempt would end past the budget");
+    assert.equal(err.attempts, 2);
+    assert.ok(elapsed <= 8_000, `the call ended within the budget (${elapsed} ms)`);
+  });
+
   it("a Retry-After the remaining budget cannot cover throws at once", async () => {
     let calls = 0;
     mock.method(globalThis, "fetch", async () => {

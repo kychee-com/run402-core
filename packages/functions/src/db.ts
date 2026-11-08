@@ -686,8 +686,9 @@ interface AdminDbClient {
 }
 
 /**
- * How long `adminDb().sql()` waits out a retryable refusal (a deploy's write
- * pause answers `503 PROJECT_WRITES_PAUSED`): under the prototype tier's
+ * How long one `adminDb().sql()` call may take, attempts and waits together,
+ * while it waits out a retryable refusal (a deploy's write pause answers
+ * `503 PROJECT_WRITES_PAUSED`): under the prototype tier's
  * 10-second default function timeout, so a function never dies waiting
  * (project-sql-endpoint "First-party SQL clients wait out a retryable refusal").
  */
@@ -718,13 +719,18 @@ async function sendWaitingOutRetryable(
 ): Promise<{ ok: true; response: Response } | { ok: false; error: R402DbError }> {
   const startedAt = Date.now();
   let waitedMs = 0;
+  // The budget bounds the whole call, so a retry starts only when it still
+  // covers the wait plus an attempt as slow as the slowest one so far.
+  let slowestAttemptMs = 0;
   for (let attempt = 1; ; attempt++) {
+    const attemptStartedAt = Date.now();
     const res = await send();
     if (res.ok) return { ok: true, response: res };
     const errBody = await res.text();
+    slowestAttemptMs = Math.max(slowestAttemptMs, Date.now() - attemptStartedAt);
     const error = buildDbError("R402_DB_SQL_ERROR", "SQL error", res.status, errBody);
     const wait = retryWaitMs(res, attempt);
-    if (!isSafeRetryEnvelope(error.body) || Date.now() - startedAt + wait > ADMIN_SQL_WAIT_BUDGET_MS) {
+    if (!isSafeRetryEnvelope(error.body) || Date.now() - startedAt + wait + slowestAttemptMs > ADMIN_SQL_WAIT_BUDGET_MS) {
       if (attempt > 1) {
         error.attempts = attempt;
         error.waited_ms = waitedMs;
