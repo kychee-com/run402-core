@@ -934,7 +934,7 @@ try {
 
 ### `R402SnapshotsError` — `snapshots.*` failures
 
-`snapshots.*` throws `R402SnapshotsError` (exported) with `code` (the gateway's, e.g. `SNAPSHOT_MANUAL_CAP_EXCEEDED`, `STALE_RESTORE_CONFIRMATION`, `SNAPSHOT_RELEASE_NOT_RESTORABLE`; `VALIDATION_FAILED` with `field` for input checked before any request; `SNAPSHOTS_UNSUPPORTED` on a host without snapshots; `PROJECT_ID_MISSING` outside a function), `status`, `details`, `next_actions`, and `body`.
+`snapshots.*` throws `R402SnapshotsError` (exported) with `code` (the gateway's, e.g. `SNAPSHOT_MANUAL_CAP_EXCEEDED`, `CAPTURE_SIZE_LIMIT_EXCEEDED` when the project's table data is over the 128 MiB capture size limit, `STALE_RESTORE_CONFIRMATION`, `SNAPSHOT_RELEASE_NOT_RESTORABLE`; `VALIDATION_FAILED` with `field` for input checked before any request; `SNAPSHOTS_UNSUPPORTED` on a host without snapshots; `PROJECT_ID_MISSING` outside a function), `status`, `details`, `next_actions`, and `body`.
 
 ### `Run402PushError` — `push.send()` failures
 

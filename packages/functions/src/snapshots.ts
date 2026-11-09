@@ -151,7 +151,8 @@ export interface SnapshotRestoreStatus {
 
 /**
  * A snapshots call failed. `code` is the gateway's code (for example
- * `SNAPSHOT_MANUAL_CAP_EXCEEDED`, `STALE_RESTORE_CONFIRMATION`,
+ * `SNAPSHOT_MANUAL_CAP_EXCEEDED`, `CAPTURE_SIZE_LIMIT_EXCEEDED` when the project's
+ * table data is over the 128 MiB capture size limit, `STALE_RESTORE_CONFIRMATION`,
  * `SNAPSHOT_RESTORE_IN_PROGRESS`), a local validation code
  * (`VALIDATION_FAILED` with `field`), or `SNAPSHOTS_UNSUPPORTED` when the host
  * serving this function has no snapshot routes (Run402 Core).
