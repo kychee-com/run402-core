@@ -456,9 +456,9 @@ describe("assets.list — v1.50 sort + filter + new row fields", () => {
     });
   });
 
-  it("issues GET /storage/v1/blobs with apikey auth", async () => {
+  it("issues GET on the project storage listing with the service key as Bearer", async () => {
     const result = await assets.list({ prefix: "images/" });
-    assert.match(capturedUrl, /\/storage\/v1\/blobs\?/);
+    assert.match(capturedUrl, /\/projects\/v1\/prj_test\/storage\/blobs\?/);
     assert.match(capturedUrl, /prefix=images%2F/);
     assert.equal(result.blobs.length, 1);
     assert.equal(result.next_cursor, null);
@@ -783,11 +783,11 @@ describe("assets.delete", () => {
     });
   });
 
-  it("issues DELETE /storage/v1/blob/:key with the service key, segments encoded", async () => {
+  it("issues DELETE on the project storage blob route with the service key, segments encoded", async () => {
     await assets.delete("media/a b.jpg");
-    assert.equal(captured!.url, "https://test.run402.com/storage/v1/blob/media/a%20b.jpg");
+    assert.equal(captured!.url, "https://test.run402.com/projects/v1/prj_test/storage/blob/media/a%20b.jpg");
     assert.equal(captured!.init.method, "DELETE");
-    assert.equal((captured!.init.headers as Record<string, string>).apikey, "sk_test");
+    assert.equal((captured!.init.headers as Record<string, string>).Authorization, "Bearer sk_test");
   });
 
   it("returns the gateway's delete result", async () => {
@@ -856,11 +856,11 @@ describe("assets.sign", () => {
     });
   });
 
-  it("POSTs /storage/v1/blob/:key/sign with the service key and the variant", async () => {
+  it("POSTs the project blob sign route with the service key and the variant", async () => {
     const result = await assets.sign("family/a b.jpg", { variant: "medium", ttl_seconds: 600 });
-    assert.equal(captured!.url, "https://test.run402.com/storage/v1/blob/family/a%20b.jpg/sign");
+    assert.equal(captured!.url, "https://test.run402.com/projects/v1/prj_test/storage/blob/family/a%20b.jpg/sign");
     assert.equal(captured!.init.method, "POST");
-    assert.equal((captured!.init.headers as Record<string, string>).apikey, "sk_test");
+    assert.equal((captured!.init.headers as Record<string, string>).Authorization, "Bearer sk_test");
     assert.deepEqual(JSON.parse(String(captured!.init.body)), { ttl_seconds: 600, variant: "medium" });
     assert.deepEqual(result, {
       signed_url: "https://s3.example.com/_cas/bb/rest?X-Amz-Signature=x",
@@ -926,14 +926,14 @@ describe("assets.signMany", () => {
     });
   });
 
-  it("POSTs /storage/v1/blobs/sign once and answers every item in order", async () => {
+  it("POSTs the project blobs/sign once and answers every item in order", async () => {
     const result = await assets.signMany(
       [{ key: "family/a.jpg", variant: "thumb" }, { key: "family/a.jpg" }, { key: "gone.jpg", variant: "medium" }],
       { ttl_seconds: 600 },
     );
-    assert.equal(captured!.url, "https://test.run402.com/storage/v1/blobs/sign");
+    assert.equal(captured!.url, "https://test.run402.com/projects/v1/prj_test/storage/blobs/sign");
     assert.equal(captured!.init.method, "POST");
-    assert.equal((captured!.init.headers as Record<string, string>).apikey, "sk_test");
+    assert.equal((captured!.init.headers as Record<string, string>).Authorization, "Bearer sk_test");
     assert.deepEqual(JSON.parse(String(captured!.init.body)), {
       items: [{ key: "family/a.jpg", variant: "thumb" }, { key: "family/a.jpg" }, { key: "gone.jpg", variant: "medium" }],
       ttl_seconds: 600,

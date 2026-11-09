@@ -11,6 +11,20 @@
 import { config } from "./config.js";
 import { abortUpload, completeUpload, createUpload, getUpload, renewUpload } from "./asset-uploads.js";
 
+
+/**
+ * The project's storage routes (`/projects/v1/:project_id/storage`). The
+ * function's service key authorizes there as the project's own credential,
+ * sent as `Authorization: Bearer` like `adminDb()`'s SQL and REST.
+ */
+function storageBase(): string {
+  return config.API_BASE + "/projects/v1/" + encodeURIComponent(config.PROJECT_ID) + "/storage";
+}
+
+function serviceKeyHeaders(): Record<string, string> {
+  return { Authorization: "Bearer " + config.SERVICE_KEY };
+}
+
 export type AssetVisibility = "public" | "private";
 
 export interface AssetPutSource {
@@ -599,12 +613,12 @@ export const assets = {
     }
 
     const url =
-      config.API_BASE +
-      "/storage/v1/blobs" +
+      storageBase() +
+      "/blobs" +
       (params.toString() ? "?" + params.toString() : "");
     const res = await fetch(url, {
       method: "GET",
-      headers: { apikey: config.SERVICE_KEY },
+      headers: serviceKeyHeaders(),
     });
     if (!res.ok) {
       throw new Error(
@@ -645,7 +659,7 @@ export const assets = {
   /**
    * Delete a blob by key from the function's own project.
    *
-   * Calls `DELETE /storage/v1/blob/:key` with the service key, the same
+   * Calls `DELETE /projects/v1/:project_id/storage/blob/:key` with the service key, the same
    * route as the owner-side `r.assets.rm`. The gateway removes the key,
    * revokes its immutable URLs (the source's and every image variant's),
    * queues a CDN invalidation of the mutable URL for a public key, and
@@ -660,10 +674,10 @@ export const assets = {
       throw new Error("assets.delete: key must be a non-empty string");
     }
     const res = await fetch(
-      config.API_BASE + "/storage/v1/blob/" + key.split("/").map(encodeURIComponent).join("/"),
+      storageBase() + "/blob/" + key.split("/").map(encodeURIComponent).join("/"),
       {
         method: "DELETE",
-        headers: { apikey: config.SERVICE_KEY },
+        headers: serviceKeyHeaders(),
       },
     );
     if (!res.ok) {
@@ -696,7 +710,7 @@ export const assets = {
    * project: the way to deliver a private key, whose `AssetRef` URL fields
    * are all `null`.
    *
-   * Calls `POST /storage/v1/blob/:key/sign` with the service key, the same
+   * Calls `POST /projects/v1/:project_id/storage/blob/:key/sign` with the service key, the same
    * route as the owner-side `r.assets.sign`. Pass `variant` to sign one of
    * an image's encoded variants (`thumb` / `medium` / `large` WebP, or a
    * HEIC source's `display_jpeg`), or one of a prepared video's outputs
@@ -737,10 +751,10 @@ export const assets = {
       body.variant = opts.variant;
     }
     const res = await fetch(
-      config.API_BASE + "/storage/v1/blob/" + key.split("/").map(encodeURIComponent).join("/") + "/sign",
+      storageBase() + "/blob/" + key.split("/").map(encodeURIComponent).join("/") + "/sign",
       {
         method: "POST",
-        headers: { apikey: config.SERVICE_KEY, "Content-Type": "application/json" },
+        headers: { ...serviceKeyHeaders(), "Content-Type": "application/json" },
         body: JSON.stringify(body),
       },
     );
@@ -762,7 +776,7 @@ export const assets = {
    * Mint signed GET URLs for many keys and variants in one request: the way
    * to deliver a page of private images without one round trip per URL.
    *
-   * Calls `POST /storage/v1/blobs/sign` with the service key. Each item is a
+   * Calls `POST /projects/v1/:project_id/storage/blobs/sign` with the service key. Each item is a
    * `key` and an optional `variant`; the result's `items` answer them in
    * order, each with `signed_url`, or with `error` (`RESOURCE_NOT_FOUND`,
    * `details.available` for a missing variant) when the project lacks that
@@ -800,9 +814,9 @@ export const assets = {
       }
       body.ttl_seconds = opts.ttl_seconds;
     }
-    const res = await fetch(config.API_BASE + "/storage/v1/blobs/sign", {
+    const res = await fetch(storageBase() + "/blobs/sign", {
       method: "POST",
-      headers: { apikey: config.SERVICE_KEY, "Content-Type": "application/json" },
+      headers: { ...serviceKeyHeaders(), "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
     if (!res.ok) {
