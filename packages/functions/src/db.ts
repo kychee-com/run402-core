@@ -455,6 +455,9 @@ async function requestSql(
       ...init.headers,
       Authorization: `Bearer ${serviceKey}`,
       "Content-Type": init.contentType,
+      // The gateway holds a write through a deploy's write pause for at most
+      // `Prefer: wait`, so the hold ends inside the budget too.
+      Prefer: `wait=${Math.floor(connectionWaitMs / 1000)}`,
       [CONNECTION_WAIT_HEADER]: String(connectionWaitMs),
     },
     body: init.body,

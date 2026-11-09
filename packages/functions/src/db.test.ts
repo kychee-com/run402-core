@@ -1230,9 +1230,11 @@ describe("adminDb().sql() — waits out a retryable refusal (a deploy's write pa
 
   it("every attempt bounds the gateway's connection wait to the budget left, so busy answers end the call by 8 seconds", async () => {
     const sent: number[] = [];
+    const prefer: string[] = [];
     mock.method(globalThis, "fetch", async (_url: string, init?: RequestInit) => {
       const wait = connectionWait(init);
       sent.push(Number((init!.headers as Record<string, string>)["Run402-Connection-Wait-Ms"]));
+      prefer.push((init!.headers as Record<string, string>)["Prefer"]!);
       await new Promise((r) => setTimeout(r, wait));
       return busy();
     });
@@ -1243,6 +1245,8 @@ describe("adminDb().sql() — waits out a retryable refusal (a deploy's write pa
     assert.equal(err.remote_code, "PROJECT_DATABASE_BUSY");
     assert.ok(elapsed <= 8_000, `the call ended within the budget (${elapsed} ms)`);
     assert.equal(sent[0], 7_000, "the first attempt offers the budget less the statement allowance");
+    assert.equal(prefer[0], "wait=7", "the gateway's hold of a write through a pause ends inside the budget too");
+    assert.ok(prefer.every((v, i) => Number(v.slice(5)) === Math.floor(sent[i]! / 1000)), `Prefer follows the budget: ${prefer.join(", ")}`);
     assert.ok(sent.length >= 2 && sent.every((v, i) => i === 0 || v < sent[i - 1]!), `each attempt offers less: ${sent.join(", ")}`);
     assert.equal(err.attempts, sent.length);
   });
