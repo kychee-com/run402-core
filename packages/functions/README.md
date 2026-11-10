@@ -371,7 +371,7 @@ A private key's `AssetRef` carries its whole variant set, but every URL field is
 
 ### `assets.signMany(items, { ttl_seconds? })` — a page of private images in one request
 
-`assets.signMany` mints many URLs with one `POST /storage/v1/blobs/sign`: each item is `{ key, variant? }` (1 to 1000), and the result's `items` answer them in order with `signed_url`, or with `error` (`RESOURCE_NOT_FOUND`; `details.available` lists the variants a key has) for a key or variant the project lacks, so one stale row does not fail the page. One `ttl_seconds` covers every URL. Use it for a srcset or a gallery instead of one `assets.sign` per URL.
+`assets.signMany` mints many URLs with one `POST /projects/v1/:project_id/storage/blobs/sign`: each item is `{ key, variant? }` (1 to 1000), and the result's `items` answer them in order with `signed_url`, or with `error` (`RESOURCE_NOT_FOUND`; `details.available` lists the variants a key has) for a key or variant the project lacks, so one stale row does not fail the page. One `ttl_seconds` covers every URL. Use it for a srcset or a gallery instead of one `assets.sign` per URL.
 
 ```ts
 import { assets, auth } from "@run402/functions";
