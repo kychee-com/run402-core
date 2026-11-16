@@ -113,7 +113,7 @@ import {
 
 async function user(): Promise<Actor | null> {
   // Taint cache regardless of outcome — the response depends on actor
-  // state once any consumer asks. The taint is monotonic (D23).
+  // state once any consumer asks. The taint is monotonic (D-routed-http-functions-4).
   taintCacheBypass();
   const ctx = getCurrentContext();
   if (ctx === undefined) {

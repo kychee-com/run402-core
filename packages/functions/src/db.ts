@@ -399,7 +399,7 @@ function extractAuthFromAls(): string | undefined {
   // actor's claims so the gateway's PostgREST proxy → pre_request → RLS
   // pipeline sees the browser-cookie actor identically to a Bearer-JWT call.
   // The cookie itself is `__Host-` scoped and never forwarded server-to-server
-  // (D13 forbids cookie forwarding), so something has to carry the identity.
+  // (D-functions-sdk-auth-model-12 forbids cookie forwarding), so something has to carry the identity.
   //
   // The GATEWAY mints that token and this runtime forwards it: a short-lived
   // token scoped to ONE identity. This runtime never holds a key capable of
