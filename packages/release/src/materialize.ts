@@ -1,4 +1,5 @@
 import { ReleaseSpecValidationError } from "./errors.js";
+import { assertUniqueToolNames, normalizeFunctionTools } from "./function-tools.js";
 import {
   emptyPortableReleaseState,
   normalizeFunctionTriggers,
@@ -116,6 +117,8 @@ export function materializeRelease(input: MaterializeReleaseInput): PortableRele
     }
   }
   out.functions.sort((a, b) => compareAscii(a.name, b.name));
+  // A tool's name is unique in the release, the functions it carries forward included.
+  assertUniqueToolNames(out.functions);
 
   if (spec.secrets) {
     const set = new Set(out.secrets.keys);
@@ -326,6 +329,8 @@ function clonePortableReleaseState(base: PortableReleaseState): PortableReleaseS
       };
       const triggers = normalizeFunctionTriggers(fn.triggers ?? []);
       if (triggers.length > 0) cloned.triggers = triggers;
+      const tools = normalizeFunctionTools(fn.tools ?? [], fn.name);
+      if (tools.length > 0) cloned.tools = tools;
       if (fn.class) cloned.class = fn.class;
       if (fn.capabilities) cloned.capabilities = [...fn.capabilities];
       return cloned;
@@ -364,6 +369,9 @@ function functionEntryFromSpec(name: string, spec: FunctionSpec): PortableFuncti
   };
   const triggers = normalizeFunctionTriggers(spec.triggers ?? []);
   if (triggers.length > 0) entry.triggers = triggers;
+  // As with triggers, an omitted `tools` means none.
+  const tools = normalizeFunctionTools(spec.tools ?? [], name);
+  if (tools.length > 0) entry.tools = tools;
   return entry;
 }
 

@@ -1,3 +1,4 @@
+import { computeToolsDiff, functionToolsIdentity, type ToolsDiff } from "./function-tools.js";
 import { buildStaticManifestFromPortableState } from "./materialize.js";
 import { normalizeFunctionTriggers } from "./normalize.js";
 import { sortRouteEntries } from "./routes.js";
@@ -53,6 +54,8 @@ export interface PlanDiffEnvelope {
   routes: RoutesDiff;
   public_paths: PublicPathsDiff;
   static_assets: StaticAssetsDiff;
+  /** MCP tools added, removed, or changed, by name. */
+  tools: ToolsDiff;
 }
 
 export interface ReleaseDiffEnvelope {
@@ -69,6 +72,8 @@ export interface ReleaseDiffEnvelope {
   routes: RoutesDiff;
   public_paths: PublicPathsDiff;
   static_assets: StaticAssetsDiff;
+  /** MCP tools added, removed, or changed, by name. */
+  tools: ToolsDiff;
 }
 
 export interface SiteDiff {
@@ -115,6 +120,7 @@ export interface FunctionsDiff {
       | "memory_mb"
       | "schedule"
       | "triggers"
+      | "tools"
       | "deps"
     >;
   }>;
@@ -201,7 +207,10 @@ export function computeReleaseDiff(
   const routes = computeRoutesDiff(from, to);
   const staticAssets = computeStaticAssetsDiff(from, to);
   const publicPaths = computePublicPathsDiff(from, to, siteCap);
+  const tools = computeToolsDiff(from, to);
 
+  // A tool belongs to a function entry, so a tool change is already a
+  // function change and needs no clause of its own in the noop test.
   const isNoop = isDiffNoop(site, functions, secrets, subdomains, routes, publicPaths);
   const base = {
     site,
@@ -211,6 +220,7 @@ export function computeReleaseDiff(
     routes,
     public_paths: publicPaths,
     static_assets: staticAssets,
+    tools,
   };
 
   if (options.plan_migrations) {
@@ -218,7 +228,7 @@ export function computeReleaseDiff(
       isNoop && options.plan_migrations.new.length === 0;
     const envelope: PlanDiffEnvelope = {
       is_noop: isNoopWithMigrations,
-      summary: renderSummary(options.plan_migrations, site, functions, secrets, subdomains, routes, publicPaths),
+      summary: withToolClauses(renderSummary(options.plan_migrations, site, functions, secrets, subdomains, routes, publicPaths), tools),
       warnings: [],
       migrations: options.plan_migrations,
       ...base,
@@ -237,7 +247,7 @@ export function computeReleaseDiff(
   const isNoopWithMigrations = isNoop && appliedBetween.length === 0;
   const envelope: ReleaseDiffEnvelope = {
     is_noop: isNoopWithMigrations,
-    summary: renderSummaryReleaseDiff(appliedBetween.length, site, functions, secrets, subdomains, routes, publicPaths),
+    summary: withToolClauses(renderSummaryReleaseDiff(appliedBetween.length, site, functions, secrets, subdomains, routes, publicPaths), tools),
     warnings: [],
     migrations: { applied_between_releases: appliedBetween },
     ...base,
@@ -725,6 +735,7 @@ function changedFunctionFields(
   if (JSON.stringify(normalizeFunctionTriggers(fromFn.triggers ?? [])) !== JSON.stringify(normalizeFunctionTriggers(toFn.triggers ?? []))) {
     fields.push("triggers");
   }
+  if (functionToolsIdentity(fromFn) !== functionToolsIdentity(toFn)) fields.push("tools");
   if (JSON.stringify([...(fromFn.deps ?? [])].sort()) !== JSON.stringify([...(toFn.deps ?? [])].sort())) {
     fields.push("deps");
   }
@@ -949,6 +960,18 @@ function renderSummaryReleaseDiff(
   }
   if (parts.length === 0) return "No changes between releases (noop)";
   return parts.join(", ");
+}
+
+/** Tools are counted after the rest: a tool change already shows as a function change. */
+function withToolClauses(summary: string, tools: ToolsDiff): string {
+  const clause = (count: number, verb: string): string[] =>
+    count > 0 ? [`${count} tool${count === 1 ? "" : "s"} ${verb}`] : [];
+  const parts = [
+    ...clause(tools.added.length, "added"),
+    ...clause(tools.changed.length, "changed"),
+    ...clause(tools.removed.length, "removed"),
+  ];
+  return parts.length === 0 ? summary : [summary, ...parts].join(", ");
 }
 
 function commonSummaryParts(

@@ -1,4 +1,5 @@
 import { ReleaseSpecValidationError } from "./errors.js";
+import { assertUniqueToolNames, validateFunctionTools } from "./function-tools.js";
 import { canonicalizeRepoRouteTarget, isValidAppRepoTriggerRepo, validateRoleGate } from "./repo-route-target.js";
 import { validateRouteDiscovery } from "./route-discovery.js";
 import {
@@ -158,11 +159,14 @@ function validateFunctionMap(value: unknown, resource: string): void {
   if (!isRecord(value)) throw invalid(resource, `${resource} must be an object`);
   for (const [name, fn] of Object.entries(value)) {
     if (!FUNCTION_NAME.test(name)) throw invalid(`${resource}.${name}`, `function name '${name}' is invalid`);
-    validateFunctionSpec(fn as FunctionSpec, `${resource}.${name}`);
+    validateFunctionSpec(fn as FunctionSpec, `${resource}.${name}`, name);
   }
+  // A tool's name is unique in the release. This is the spec's own functions;
+  // materializeRelease checks again against the functions it carries forward.
+  assertUniqueToolNames(Object.entries(value).map(([name, fn]) => ({ name, tools: (fn as FunctionSpec).tools })));
 }
 
-function validateFunctionSpec(fn: FunctionSpec, resource: string): void {
+function validateFunctionSpec(fn: FunctionSpec, resource: string, name: string): void {
   if (!isRecord(fn)) throw invalid(resource, "function spec must be an object");
   rejectUnknownKeys(fn, resource, [
     "runtime",
@@ -171,6 +175,7 @@ function validateFunctionSpec(fn: FunctionSpec, resource: string): void {
     "files",
     "config",
     "triggers",
+    "tools",
     "schedule",
     "deps",
     "requireAuth",
@@ -189,6 +194,7 @@ function validateFunctionSpec(fn: FunctionSpec, resource: string): void {
     rejectUnknownKeys(fn.config, `${resource}.config`, ["timeoutSeconds", "memoryMb"]);
   }
   if (fn.triggers !== undefined) validateFunctionTriggers(fn.triggers, `${resource}.triggers`);
+  if (fn.tools !== undefined) validateFunctionTools(fn.tools, `${resource}.tools`, name);
   if (fn.schedule !== undefined && fn.schedule !== null && typeof fn.schedule !== "string") {
     throw invalid(`${resource}.schedule`, "function schedule must be a string or null");
   }

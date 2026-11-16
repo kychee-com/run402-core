@@ -18,6 +18,7 @@ This matrix defines how `@run402/release` treats the current ReleaseSpec surface
 | `functions.*.files` | Public content requirement | Bundling and activation remain Cloud behavior. |
 | `functions.*.config` | Publicly interpreted | Provider limits and tier caps remain Cloud policy. |
 | `functions.*.triggers[]` | Publicly interpreted | Schedule triggers create durable function runs. Core runs them with a single-node gateway scheduler; distributed scheduling and fleet replay remain Cloud behavior. |
+| `functions.*.tools[]` | Carried, served by Cloud | The function's MCP tools: validated, normalized, digested and diffed here, and shown in release reads. Run402 Cloud serves them at `/_run402/mcp`; Core serves no MCP endpoint. An omitted `tools` means none. |
 | `functions.*.schedule` | Legacy compatibility | Prefer `triggers[]` for new manifests. |
 | `functions.*.deps` | Publicly interpreted | Dependency resolution and bundling remain Cloud behavior. |
 | `functions.*.requireAuth` | Publicly interpreted | Runtime enforcement remains Cloud/data-plane behavior. |

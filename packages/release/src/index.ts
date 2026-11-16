@@ -3,6 +3,7 @@ export * from "./diff.js";
 export * from "./digest.js";
 export * from "./errors.js";
 export * from "./facts.js";
+export * from "./function-tools.js";
 export * from "./materialize.js";
 export * from "./normalize.js";
 export * from "./plan-fingerprint.js";

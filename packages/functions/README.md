@@ -768,9 +768,9 @@ The raw `run402.routed_http.v1` envelope is an internal gateway transport. Low-l
 
 Runtime route failure codes to branch on: `ROUTE_MANIFEST_LOAD_FAILED` (manifest/propagation), `ROUTED_INVOKE_WORKER_SECRET_MISSING` (custom-domain Worker secret), `ROUTED_INVOKE_AUTH_FAILED` (internal invoke signature), `ROUTED_ROUTE_STALE` (selected route failed release revalidation), `ROUTE_METHOD_NOT_ALLOWED` (method mismatch), and `ROUTED_RESPONSE_TOO_LARGE` (body over 6 MiB).
 
-## MCP tools (`export const tool`)
+## MCP tools (`export const tool`, `export const tools`)
 
-On Run402 Cloud, every app host serves an MCP endpoint at `https://<host>/_run402/mcp`. A routed function becomes one of its tools when it exports a static `tool` declaration next to its handler:
+On Run402 Cloud, every app host serves an MCP endpoint at `https://<host>/_run402/mcp`. A request your app already answers becomes one of its tools when you declare it beside the handler:
 
 ```ts
 import type { ToolDeclaration } from "@run402/functions";
@@ -792,12 +792,26 @@ export default async function handler(req: Request): Promise<Response> {
 }
 ```
 
-- The tool name is the function name. The function needs exactly one exact `POST` route in the release (for example `/api/cancel`); `tools/call` sends the arguments to that route as the JSON body, through the same pipeline as a browser request.
-- The platform reads the declaration at deploy and never runs it, so it must be a literal: strings, numbers, booleans, `null`, arrays, and objects, with `satisfies` or a type annotation allowed. `description` is 1-1024 characters, `title` at most 128, `input` a JSON Schema whose `type` is `"object"`. Deploy fails with `MCP_TOOL_NOT_STATIC`, `MCP_TOOL_SCHEMA_INVALID` (including a declaration over 64 KiB), `MCP_TOOL_NAME_INVALID` (the function name is not `[A-Za-z0-9_.-]{1,128}`), `MCP_TOOL_ROUTE_MISSING`, or `MCP_TOOL_ROUTE_AMBIGUOUS`.
-- Auth gates carry over. A tool whose function declares `requireAuth` / `requireRole` is called as the signed-in user of the app: the MCP client connects through the host's own OAuth sign-in and consent, and `auth.user()` and `db(req)` see that user.
-- `ToolDeclaration`, `ToolInputSchema`, and `ToolAnnotations` are type-only exports; nothing runs at runtime.
+Several tools in one file use `tools`, keyed by tool name:
 
-Run402 Core does not serve `/_run402/mcp` yet; the export is inert there ([#7](https://github.com/kychee-com/run402-core/issues/7), [#8](https://github.com/kychee-com/run402-core/issues/8)).
+```ts
+import type { ToolDeclarations } from "@run402/functions";
+
+export const tools = {
+  list_notes: { method: "GET", description: "List notes.", input: { type: "object", properties: { tag: { type: "string" } } } },
+  add_note: { method: "POST", description: "Add a note.", input: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } },
+} satisfies ToolDeclarations;
+```
+
+- A tool names a request: a method and a path. In a function file `method` defaults to `POST` and `path` to the function's one exact `POST` route (for example `/api/cancel`), and a single `tool` takes the function's name unless it states one. A stated `path` may hold `{param}` segments, each filled from the required string or integer argument of that name. In an Astro endpoint file (`@run402/astro`) the path is the endpoint's own route, the method defaults to the one handler the file exports, and a single `tool` states its `name`.
+- `GET` and `DELETE` send the remaining arguments as a query string, so they must be strings, numbers, integers or booleans; `POST`, `PATCH` and `PUT` send them as a JSON body. The call goes through the same pipeline as a browser request to that method and path, the app's own middleware included, and carries `x-run402-trigger: mcp_tool` and `x-run402-mcp-tool: <name>`, so a handler that serves several tools on one route can tell them apart.
+- A `GET` tool is listed read-only without an annotation. Set `annotations.readOnlyHint: false` on a `GET` whose handler leaves a mark.
+- Your deploy tooling (`run402 deploy`, `run402 up`, `@run402/sdk/node`, `@run402/astro`) reads the export by parsing the file, never by running it, and carries it in the release as `functions.<name>.tools`. The platform reads no source for tools: over raw HTTP you send that field yourself, and an omitted `tools` means the function has none. So the export must be a literal: strings, numbers, booleans, `null`, arrays, and objects, with `satisfies` or a type annotation allowed. `description` is 1-1024 characters, `title` at most 128, `input` a JSON Schema whose `type` is `"object"`, one tool at most 64 KiB, at most 100 tools on a function, and a tool's name is `[A-Za-z0-9_.-]{1,128}` and unique in the app.
+- Refused before anything is sent: `MCP_TOOL_NOT_STATIC`, `MCP_TOOL_SCHEMA_INVALID`, `MCP_TOOL_NAME_INVALID`, `MCP_TOOL_NAME_DUPLICATE`, `MCP_TOOL_PATH_UNSUPPORTED` (a wildcard or rest segment). Refused at the plan, where the routes of the release are known: `MCP_TOOL_ROUTE_MISSING`, `MCP_TOOL_ROUTE_AMBIGUOUS`, `MCP_TOOL_ROUTE_ELSEWHERE` (a static file or another function answers that request).
+- Auth gates carry over. A tool whose function declares `requireAuth` / `requireRole`, or whose app answers 401 to an anonymous call, is called as the signed-in user of the app: the MCP client connects through the host's own OAuth sign-in and consent, and `auth.user()` and `db(req)` see that user.
+- `ToolDeclaration`, `ToolDeclarations`, `ToolMethod`, `ToolInputSchema`, and `ToolAnnotations` are type-only exports; nothing runs at runtime.
+
+Run402 Core carries `tools` in the release format and shows them in release reads; it does not serve `/_run402/mcp` ([#7](https://github.com/kychee-com/run402-core/issues/7), [#8](https://github.com/kychee-com/run402-core/issues/8)).
 
 ### Connected assistants: `auth.grants`
 

@@ -88,9 +88,9 @@ export type {
   SnapshotRestoreResult,
   SnapshotRestoreStatus,
 } from "./snapshots.js";
-// The static `tool` export that makes a routed function an MCP tool of its
-// app (`https://<host>/_run402/mcp`). Type-only.
-export type { ToolDeclaration, ToolInputSchema, ToolAnnotations } from "./tool.js";
+// The static `tool` / `tools` exports that make a request the app already
+// answers an MCP tool of the app (`https://<host>/_run402/mcp`). Type-only.
+export type { ToolDeclaration, ToolDeclarations, ToolMethod, ToolInputSchema, ToolAnnotations } from "./tool.js";
 // `verifyWebhook(headers, rawBody, secret)` — verify a Run402-signed
 // operator-notifications webhook delivery. Stripe-shape HMAC SHA256 with
 // dual-secret rotation grace.

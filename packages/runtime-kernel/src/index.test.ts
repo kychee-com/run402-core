@@ -4,6 +4,13 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 
 import {
+  ReleaseSpecValidationError,
+  digestMaterializedRelease,
+  materializeRelease,
+  type ReleaseSpec,
+} from "@run402/release";
+
+import {
   createCoreProject,
   commitApplyPlan,
   createApplyPlan,
@@ -847,6 +854,38 @@ test("function apply carries app-repo function triggers as declared, without sch
   assert.deepEqual(bundle?.triggers, [
     { id: "bundle", type: "app_repo", repo: "default", paths: ["people/"], run: { event_type: "content.changed" } },
   ]);
+});
+
+test("a function's tools are part of the plan's identity, which is the release format's own digest", async () => {
+  const tool = { name: "add_note", description: "Add a note.", input: { type: "object", properties: { text: { type: "string" } } } };
+  const withTools = (tools: unknown[]) => {
+    const spec = prebundledFunctionSpec("c".repeat(64), 12);
+    (spec.functions.replace.api as Record<string, unknown>).tools = tools;
+    return spec;
+  };
+  const plan = async (spec: ReturnType<typeof prebundledFunctionSpec>) =>
+    createApplyPlan(new MemoryRuntimePorts({ contentPresent: true }), { spec });
+
+  const none = await plan(prebundledFunctionSpec("c".repeat(64), 12));
+  const one = await plan(withTools([tool]));
+  const reworded = await plan(withTools([{ ...tool, description: "Add one note." }]));
+
+  // Cloud computes the same identity from the same spec with the same package.
+  const expected = digestMaterializedRelease(materializeRelease({
+    spec: withTools([tool]) as unknown as ReleaseSpec,
+    concreteBase: emptyCoreReleaseState(),
+  }));
+  assert.equal(one.target_release_digest, expected);
+  assert.notEqual(one.target_release_digest, none.target_release_digest);
+  assert.notEqual(one.target_release_digest, reworded.target_release_digest);
+  assert.notEqual(one.target_release_id, reworded.target_release_id);
+  // An empty list is the same release as no list.
+  assert.equal((await plan(withTools([]))).target_release_digest, none.target_release_digest);
+
+  await assert.rejects(
+    plan(withTools([{ ...tool, name: "has space" }])),
+    (error) => error instanceof ReleaseSpecValidationError && error.details.code === "MCP_TOOL_NAME_INVALID",
+  );
 });
 
 test("function apply rejects invalid schedules and host-owned schedule limit violations", async () => {

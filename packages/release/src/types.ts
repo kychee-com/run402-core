@@ -72,6 +72,54 @@ export interface RoleGateSpec {
   signInPath?: string;
 }
 
+/** The methods a tool call can send. */
+export const SUPPORTED_TOOL_METHODS = ["GET", "POST", "PATCH", "PUT", "DELETE"] as const;
+export type ToolHttpMethod = typeof SUPPORTED_TOOL_METHODS[number];
+
+/** MCP tool annotations. The names are MCP's own; hints only, they grant nothing. */
+export interface ToolAnnotations {
+  readOnlyHint?: boolean;
+  destructiveHint?: boolean;
+  idempotentHint?: boolean;
+  openWorldHint?: boolean;
+}
+
+/**
+ * One MCP tool of an app, as a release carries it on the function that
+ * answers it. A tool names a request the function already answers: a method
+ * and a path. Deploy tooling reads it from an export beside the handler; the
+ * release is its only carrier.
+ */
+export interface FunctionToolSpec {
+  /** Unique in the release. A function's single tool may omit it: it is then the function's name. */
+  name?: string;
+  title?: string;
+  /** What the tool does, for the model choosing it. 1 to 1024 characters. */
+  description: string;
+  /** JSON Schema of the arguments; its root `type` is `"object"`. */
+  input: Record<string, unknown>;
+  annotations?: ToolAnnotations;
+  /** Defaults to `POST`. */
+  method?: ToolHttpMethod;
+  /**
+   * The path the call is sent to; a `{param}` segment is filled from the
+   * argument of that name. Omitted, the tool is bound to its function's one
+   * exact `POST` route.
+   */
+  path?: string;
+}
+
+/** A tool as a materialized release holds it: named, with its method. */
+export interface PortableFunctionTool {
+  name: string;
+  title?: string;
+  description: string;
+  input: Record<string, unknown>;
+  annotations?: ToolAnnotations;
+  method: ToolHttpMethod;
+  path?: string;
+}
+
 export interface FunctionSpec {
   runtime: "node22";
   entrypoint?: string;
@@ -79,6 +127,8 @@ export interface FunctionSpec {
   files?: FileSet;
   config?: { timeoutSeconds?: number; memoryMb?: number };
   triggers?: FunctionTriggerSpec[];
+  /** The function's MCP tools. As with `triggers`, omitted means none. */
+  tools?: FunctionToolSpec[];
   schedule?: string | null;
   deps?: string[];
   requireAuth?: boolean;
@@ -359,6 +409,8 @@ export interface PortableFunctionEntry {
   memory_mb: number;
   schedule: string | null;
   triggers?: FunctionTriggerSpec[];
+  /** Present only when the function has tools; sorted by name. */
+  tools?: PortableFunctionTool[];
   deps: string[];
   require_auth: boolean;
   require_role: RoleGateSpec | null;

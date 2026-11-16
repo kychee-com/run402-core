@@ -390,6 +390,11 @@
           "type": "array",
           "items": { "$ref": "#/$defs/function_trigger" }
         },
+        "tools": {
+          "type": "array",
+          "maxItems": 100,
+          "items": { "$ref": "#/$defs/function_tool" }
+        },
         "deps": {
           "type": "array",
           "items": { "type": "string", "minLength": 1 }
@@ -421,6 +426,34 @@
         "payload": { "type": "object" },
         "retry": { "type": "object" },
         "expires_after_seconds": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "function_tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["description", "input"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,128}$" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "description": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "input": {
+          "type": "object",
+          "required": ["type"],
+          "properties": { "type": { "const": "object" } },
+          "additionalProperties": true
+        },
+        "annotations": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "readOnlyHint": { "type": "boolean" },
+            "destructiveHint": { "type": "boolean" },
+            "idempotentHint": { "type": "boolean" },
+            "openWorldHint": { "type": "boolean" }
+          }
+        },
+        "method": { "enum": ["GET", "POST", "PATCH", "PUT", "DELETE"] },
+        "path": { "type": "string", "pattern": "^/" }
       }
     },
     "function_trigger": {

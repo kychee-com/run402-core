@@ -180,6 +180,23 @@
           "type": "array",
           "items": { "type": "object", "additionalProperties": true }
         },
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "description", "input", "method"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "title": { "type": "string" },
+              "description": { "type": "string" },
+              "input": { "type": "object", "additionalProperties": true },
+              "annotations": { "type": "object", "additionalProperties": true },
+              "method": { "enum": ["GET", "POST", "PATCH", "PUT", "DELETE"] },
+              "path": { "type": "string" }
+            }
+          }
+        },
         "deps": {
           "type": "array",
           "items": { "type": "string" }

@@ -1,5 +1,6 @@
 import { PORTABLE_RELEASE_STATE_VERSION } from "./versions.js";
 import { canonicalizeStaticManifest } from "./static-manifest.js";
+import { normalizeFunctionTools } from "./function-tools.js";
 import type { FunctionTriggerSpec, PortableReleaseState, ReleaseSpec } from "./types.js";
 import { validateReleaseSpec } from "./validate.js";
 
@@ -74,6 +75,8 @@ export function normalizePortableReleaseState(state: PortableReleaseState): Port
             : null,
         } as typeof fn;
         if (triggers.length > 0) normalized.triggers = triggers;
+        const tools = normalizeFunctionTools(fn.tools ?? [], fn.name);
+        if (tools.length > 0) normalized.tools = tools;
         if (fn.class) normalized.class = fn.class;
         if (fn.capabilities) normalized.capabilities = [...fn.capabilities].sort(compareAscii);
         return normalized;
