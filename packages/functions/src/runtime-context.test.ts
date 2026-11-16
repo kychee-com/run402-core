@@ -422,13 +422,13 @@ describe("runWithContext — routed_http actor from a Web Request (auth-hosted-s
 });
 
 // ---------------------------------------------------------------------------
-// routed-actor-has-session-id — the routed actor's `sessionId` is the session
+// D-functions-sdk-auth-model-5 — the routed actor's `sessionId` is the session
 // the gateway signed the envelope from (`actor.sessionId`), never the request
 // id; `auth.csrfToken()` derived from it is the token the gateway's hosted form
 // routes accept; an actor without one is malformed (D4).
 // ---------------------------------------------------------------------------
 
-describe("runWithContext — the routed actor names its session (routed-actor-has-session-id)", () => {
+describe("runWithContext — the routed actor names its session (D-functions-sdk-auth-model-5)", () => {
   const host = "kychon.run402.app";
   const sessionId = "6f1c2d3e-4b5a-4c6d-8e7f-901234567890";
   const sessionActor = {

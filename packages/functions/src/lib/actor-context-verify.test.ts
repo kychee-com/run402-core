@@ -198,7 +198,7 @@ describe("SDK actor-context verifier — failure modes (each maps to anonymous +
   });
 
   it("an actor without a session id (missing, empty, or not a string) is malformed", () => {
-    // routed-actor-has-session-id D4: the gateway always names the session.
+    // D-functions-sdk-auth-model-8: the gateway always names the session.
     for (const sessionId of [undefined, "", 42]) {
       const encoded = signEnvelope({
         actorOverride: { sessionId: sessionId as unknown as string },
