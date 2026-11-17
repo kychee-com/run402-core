@@ -369,16 +369,13 @@ describe("repo.commit", () => {
     assert.equal(atOf(calls[2]), "c1");
   });
 
-  it("a conflict keeps the pin and surfaces the gateway's details", async () => {
+  const conflict = (details: Record<string, unknown>) =>
+    json({ code: "APP_REPO_CONFLICT", message: "people/a.json changed", details, next_actions: [{ type: "reread_and_retry" }] }, 409);
+
+  // specs/run402/function-runtime-app-repos.md D-function-runtime-app-repos-3
+  it("a conflict surfaces the gateway's details and moves the pin to the head it names", async () => {
     respond = (call) =>
-      call.method === "POST"
-        ? json({
-            code: "APP_REPO_CONFLICT",
-            message: "people/a.json changed",
-            details: { head: "c9", base: "c1", conflicting_paths: ["people/a.json"] },
-            next_actions: [{ type: "reread_and_retry" }],
-          }, 409)
-        : file("x", "c1");
+      call.method === "POST" ? conflict({ head: "c9", base: "c1", conflicting_paths: ["people/a.json"] }) : file("x", atOf(call) ?? "c1");
     await inRequest(async () => {
       await repo.read("people/a.json");
       await assert.rejects(() => repo.commit({ "people/a.json": { a: 1 } }), (err: unknown) => {
@@ -390,8 +387,62 @@ describe("repo.commit", () => {
         return true;
       });
       await repo.read("people/b.json");
+      assert.equal(await repo.head(), "c9");
     });
-    assert.equal(atOf(calls[2]), "c1");
+    assert.equal(atOf(calls[2]), "c9");
+    assert.equal(calls.length, 3); // head() answers from the pin
+  });
+
+  it("a refused commit is retried in the same request: read again, commit again, on the new head", async () => {
+    let posts = 0;
+    respond = (call) => {
+      if (call.method === "POST") {
+        posts++;
+        return posts === 1
+          ? conflict({ head: "c2", base: "c1", conflicting_paths: ["letters.json"] })
+          : json({ committed: true, commit: "c3", parent: "c2", head: "c3", seq: 3, paths: ["letters.json"], author: { name: "a", email: "e" } }, 201);
+      }
+      return atOf(call) === "c2" ? file('["theirs"]', "c2") : file("[]", "c1");
+    };
+    const landed = await inRequest(async () => {
+      for (let attempt = 0; ; attempt++) {
+        const letters = (await repo.readJson<string[]>("letters.json")) ?? [];
+        try {
+          await repo.commit({ "letters.json": [...letters, "mine"] });
+          return letters;
+        } catch (err) {
+          if (!(err instanceof R402AppRepoError && err.code === "APP_REPO_CONFLICT") || attempt) throw err;
+        }
+      }
+    });
+    assert.deepEqual(landed, ["theirs"]);
+    const commits = calls.filter((c) => c.method === "POST").map((c) => c.body as { base?: string; files: Record<string, { json: string[] }> });
+    assert.deepEqual(commits.map((c) => c.base), ["c1", "c2"]);
+    assert.deepEqual(commits[1].files["letters.json"].json, ["theirs", "mine"]);
+  });
+
+  it("a conflict that names no head, and any other refusal, leave the pin", async () => {
+    const refusals = [
+      conflict({ base: "c1", conflicting_paths: [] }),
+      json({ code: "APP_REPO_FILE_TOO_LARGE", message: "too large", details: { head: "c9" } }, 422),
+    ];
+    for (const refusal of refusals) {
+      calls.length = 0;
+      respond = (call) => (call.method === "POST" ? refusal.clone() : file("x", "c1"));
+      await inRequest(async () => {
+        await repo.read("a");
+        await assert.rejects(() => repo.commit({ a: "y" }), R402AppRepoError);
+        await repo.read("b");
+      });
+      assert.equal(atOf(calls[2]), "c1");
+    }
+  });
+
+  it("outside a request a conflict pins nothing", async () => {
+    respond = (call) => (call.method === "POST" ? conflict({ head: "c9", base: null, conflicting_paths: ["a"] }) : file("x", "c9"));
+    await assert.rejects(() => repo.commit({ a: "y" }), R402AppRepoError);
+    await repo.read("a");
+    assert.equal(atOf(calls[1]), null);
   });
 
   it("forwards the actor token on commit and revert, never on reads", async () => {
@@ -443,6 +494,18 @@ describe("repo.revert", () => {
     assert.equal(calls[1].url, `${BASE}/default/reverts`);
     assert.deepEqual(calls[1].body, { commit: "c2", message: "undo", base: "c2" });
     assert.equal(atOf(calls[2]), "c3");
+  });
+  it("a refused revert moves the pin to the head it names", async () => {
+    respond = (call) =>
+      call.method === "POST"
+        ? json({ code: "APP_REPO_CONFLICT", message: "a changed", details: { head: "c5", base: "c2", conflicting_paths: ["a"] }, next_actions: [] }, 409)
+        : file("x", atOf(call) ?? "c2");
+    await inRequest(async () => {
+      await repo.read("a");
+      await assert.rejects(() => repo.revert("c1"), R402AppRepoError);
+      await repo.read("a");
+    });
+    assert.equal(atOf(calls[2]), "c5");
   });
 });
 

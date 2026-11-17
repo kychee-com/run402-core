@@ -20,8 +20,9 @@
  * repo resolves its head once and pins that commit in the request context;
  * every later read of that repo in the request reads the pinned commit, and a
  * commit is built on it (`base`). A successful `commit` or `revert` moves the
- * pin to the new head, so the request reads what it wrote. The next request
- * resolves the head afresh. Outside a request context (a scheduled or
+ * pin to the new head, so the request reads what it wrote. One refused with
+ * `APP_REPO_CONFLICT` moves it to the head the refusal names, so the request
+ * can read again and commit again. The next request resolves the head afresh. Outside a request context (a scheduled or
  * triggered run without one) nothing is pinned: each call reads the head,
  * unless you pin with `at(commit)`.
  *
@@ -478,6 +479,25 @@ function movePin(name: string, head: unknown): void {
   if (typeof head === "string" || head === null) pins.set(name, { state: "pinned", commit: head });
 }
 
+/**
+ * Run a commit or revert of `name` and move the request's pin by its answer:
+ * to the new head when it landed, so the request reads what it wrote, and to
+ * the head an `APP_REPO_CONFLICT` names, so what the request reads next, and
+ * the base of its next commit, is the commit that refused it and a retry can
+ * land (D-function-runtime-app-repos-3). Any other error leaves the pin.
+ */
+async function pinnedWrite(name: string, write: () => Promise<AppRepoCommitResult>): Promise<AppRepoCommitResult> {
+  let result: AppRepoCommitResult;
+  try {
+    result = await write();
+  } catch (err) {
+    if (err instanceof R402AppRepoError && err.code === "APP_REPO_CONFLICT") movePin(name, err.details?.head);
+    throw err;
+  }
+  movePin(name, result?.head);
+  return result;
+}
+
 // ---------------------------------------------------------------------------
 // Reads
 // ---------------------------------------------------------------------------
@@ -635,33 +655,33 @@ function openRepo(name: string): AppRepo {
     async commit(files, opts = {}) {
       const encoded = encodeFiles(files);
       const base = await pinnedBase(name);
-      const result = await requestJson<AppRepoCommitResult>("POST", `${repoPath(name)}/commits`, {
-        body: {
-          files: encoded,
-          ...(opts.message !== undefined ? { message: opts.message } : {}),
-          ...(opts.author !== undefined ? { author: opts.author } : {}),
-          ...(opts.parent !== undefined ? { parent: opts.parent } : {}),
-          ...(base !== undefined ? { base } : {}),
-        },
-        actorToken: requestActorToken(),
-      });
-      movePin(name, result?.head);
-      return result;
+      return pinnedWrite(name, () =>
+        requestJson<AppRepoCommitResult>("POST", `${repoPath(name)}/commits`, {
+          body: {
+            files: encoded,
+            ...(opts.message !== undefined ? { message: opts.message } : {}),
+            ...(opts.author !== undefined ? { author: opts.author } : {}),
+            ...(opts.parent !== undefined ? { parent: opts.parent } : {}),
+            ...(base !== undefined ? { base } : {}),
+          },
+          actorToken: requestActorToken(),
+        }),
+      );
     },
 
     async revert(commit, opts = {}) {
       const target = requireId(commit, "commit");
       const base = await pinnedBase(name);
-      const result = await requestJson<AppRepoCommitResult>("POST", `${repoPath(name)}/reverts`, {
-        body: {
-          commit: target,
-          ...(opts.message !== undefined ? { message: opts.message } : {}),
-          ...(base !== undefined ? { base } : {}),
-        },
-        actorToken: requestActorToken(),
-      });
-      movePin(name, result?.head);
-      return result;
+      return pinnedWrite(name, () =>
+        requestJson<AppRepoCommitResult>("POST", `${repoPath(name)}/reverts`, {
+          body: {
+            commit: target,
+            ...(opts.message !== undefined ? { message: opts.message } : {}),
+            ...(base !== undefined ? { base } : {}),
+          },
+          actorToken: requestActorToken(),
+        }),
+      );
     },
 
     at(commit) {
