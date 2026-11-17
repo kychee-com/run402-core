@@ -372,7 +372,7 @@ describe("repo.commit", () => {
   const conflict = (details: Record<string, unknown>) =>
     json({ code: "APP_REPO_CONFLICT", message: "people/a.json changed", details, next_actions: [{ type: "reread_and_retry" }] }, 409);
 
-  // specs/run402/function-runtime-app-repos.md D-function-runtime-app-repos-3
+  // D-function-runtime-app-repos-3
   it("a conflict surfaces the gateway's details and moves the pin to the head it names", async () => {
     respond = (call) =>
       call.method === "POST" ? conflict({ head: "c9", base: "c1", conflicting_paths: ["people/a.json"] }) : file("x", atOf(call) ?? "c1");
