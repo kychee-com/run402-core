@@ -65,7 +65,7 @@ interface ArchiveRuntimeIndex {
     artifact_digest: `sha256:${string}`;
     artifact_path: string;
     required_secrets?: string[];
-    class?: "standard" | "ssr";
+    class?: "standard" | "ssr" | "run";
   }>;
   astro_ssr?: {
     enabled: boolean;

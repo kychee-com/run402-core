@@ -249,7 +249,7 @@ export interface CoreFunctionBundleMetadata {
   schedule: string | null;
   schedule_meta: CoreFunctionScheduleMetadata | null;
   triggers?: CoreFunctionTriggerMetadata[];
-  class: "standard" | "ssr";
+  class: "standard" | "ssr" | "run";
   capabilities: string[];
 }
 

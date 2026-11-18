@@ -409,7 +409,7 @@
           ]
         },
         "class": {
-          "enum": ["standard", "ssr"]
+          "enum": ["standard", "ssr", "run"]
         },
         "capabilities": {
           "type": "array",

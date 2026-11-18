@@ -208,7 +208,7 @@
             { "type": "object", "additionalProperties": true }
           ]
         },
-        "class": { "enum": ["standard", "ssr"] },
+        "class": { "enum": ["standard", "ssr", "run"] },
         "capabilities": {
           "type": "array",
           "items": { "type": "string" }

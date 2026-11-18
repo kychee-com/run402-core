@@ -133,7 +133,7 @@ export interface FunctionSpec {
   deps?: string[];
   requireAuth?: boolean;
   requireRole?: RoleGateSpec | null;
-  class?: "ssr" | "standard";
+  class?: "ssr" | "standard" | "run";
   capabilities?: string[];
 }
 
@@ -414,7 +414,7 @@ export interface PortableFunctionEntry {
   deps: string[];
   require_auth: boolean;
   require_role: RoleGateSpec | null;
-  class?: "standard" | "ssr";
+  class?: "standard" | "ssr" | "run";
   capabilities?: string[];
 }
 

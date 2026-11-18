@@ -203,8 +203,8 @@ function validateFunctionSpec(fn: FunctionSpec, resource: string, name: string):
     throw invalid(`${resource}.requireAuth`, "requireAuth must be a boolean");
   }
   if (fn.requireRole !== undefined && fn.requireRole !== null) validateRoleGate(fn.requireRole, `${resource}.requireRole`);
-  if (fn.class !== undefined && fn.class !== "standard" && fn.class !== "ssr") {
-    throw invalid(`${resource}.class`, "function class must be standard or ssr");
+  if (fn.class !== undefined && fn.class !== "standard" && fn.class !== "ssr" && fn.class !== "run") {
+    throw invalid(`${resource}.class`, "function class must be standard, ssr or run");
   }
   if (fn.capabilities !== undefined) validateStringArray(fn.capabilities, `${resource}.capabilities`);
 }

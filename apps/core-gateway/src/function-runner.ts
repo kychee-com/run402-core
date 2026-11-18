@@ -15,7 +15,7 @@ import type {
 interface RunnerPayload {
   module_path: string;
   entrypoint: string;
-  function_class: "standard" | "ssr";
+  function_class: "standard" | "ssr" | "run";
   invocation: CoreFunctionInvocationInput;
   env: Record<string, string>;
   response_body_limit_bytes: number;
